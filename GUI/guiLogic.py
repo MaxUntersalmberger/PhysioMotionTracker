@@ -1,12 +1,12 @@
 class Logic:
     def __init__(self, window):
         self.window = window
-        self.hello_visible = False
-        self.window.pushButton.clicked.connect(self.toggle_hello)
+        
+        # Koppel de knoppen aan de pagina's van de stackedWidget
+        # Index 0 = Main, Index 1 = Camera's, Index 2 = Settings (gebaseerd op je gui.py)
+        self.window.btn_main.clicked.connect(lambda: self.window.stackedWidget.setCurrentIndex(0))
+        self.window.btn_cameras.clicked.connect(lambda: self.window.stackedWidget.setCurrentIndex(1))
+        self.window.btn_settings.clicked.connect(lambda: self.window.stackedWidget.setCurrentIndex(2))
 
-    def toggle_hello(self):
-        if self.hello_visible:
-            self.window.label.setText("")
-        else:
-            self.window.label.setText("Hello World")
-        self.hello_visible = not self.hello_visible
+    # De oude toggle_hello functie heb ik verwijderd omdat de objecten 
+    # (pushButton en label) niet meer in je nieuwe gui.py staan.
