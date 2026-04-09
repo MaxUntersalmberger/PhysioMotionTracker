@@ -1,3 +1,2 @@
-hoi dit is een test123
-Guacamole
-test123
+Deze GitHub is voor en door studenten :)
+
