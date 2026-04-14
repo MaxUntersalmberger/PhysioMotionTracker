@@ -1,2 +1,2 @@
-Deze GitHub is voor en door studenten :)
+Deze GitHub is voor en door studenten :) :D
 
