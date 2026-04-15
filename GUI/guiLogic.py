@@ -1,163 +1,314 @@
 import cv2
-from PyQt5 import QtCore, QtGui, QtWidgets
+import sys
+from PyQt5 import QtCore, QtGui, QtWidgets 
 
+def get_available_cameras():
+    """Scant beschikbare camera's met een fallback naar MSMF"""
+    available_indices = []
+    # Probeer eerst DSHOW (vaak sneller voor simpele webcams)
+    for i in range(4): 
+        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            available_indices.append(f"Camera {i}")
+            cap.release()
+            continue # Volgende index
+            
+        # Fallback naar MSMF als DSHOW niet werkt
+        cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
+        if cap.isOpened():
+            available_indices.append(f"Camera {i}")
+            cap.release()
+            
+    return available_indices
+
+class CameraWidget(QtWidgets.QFrame):
+    def __init__(self, logic_instance):
+        super().__init__()
+        self.logic = logic_instance 
+        self.cap = None  # Hier bewaren we de OpenCV verbinding
+
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.update_frame)
+
+        # --- Bestaande UI setup ---
+        self.setMinimumWidth(200) 
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.setStyleSheet("QFrame { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; }")
+        
+        self.main_layout = QtWidgets.QVBoxLayout(self)
+        self.top_bar_layout = QtWidgets.QHBoxLayout()
+        
+        self.combo_cam_selector = QtWidgets.QComboBox(self)
+        self.combo_cam_selector.setStyleSheet("background-color: #333; color: white; padding: 5px;")
+        
+        cameras = get_available_cameras()
+        if cameras:
+            self.combo_cam_selector.addItems(cameras)
+            # Start direct de eerste camera in de lijst
+            self.start_camera() 
+        else:
+            self.combo_cam_selector.addItem("Geen camera gevonden")
+            self.combo_cam_selector.setEnabled(False) # Blokkeer als er niets is
+
+        self.combo_cam_selector.currentIndexChanged.connect(self.start_camera)
+
+        self.btn_cam_del = QtWidgets.QPushButton("✕", self)
+        self.btn_cam_del.setFixedSize(30, 30)
+        self.btn_cam_del.clicked.connect(self.remove_self)
+        
+        self.top_bar_layout.addWidget(self.combo_cam_selector)
+        self.top_bar_layout.addWidget(self.btn_cam_del)
+        
+        self.label_cam_view = QtWidgets.QLabel("Camera Feed", self)
+        self.label_cam_view.setAlignment(QtCore.Qt.AlignCenter)
+        self.label_cam_view.setScaledContents(False)
+        self.label_cam_view.setStyleSheet("background-color: black; border-radius: 4px; color: #555;")
+        
+        self.main_layout.addLayout(self.top_bar_layout)
+        self.main_layout.addWidget(self.label_cam_view)
+
+        # --- TIMER VOOR DE FEED ---
+        
+
+    def start_camera(self):
+        """Stopt oude stream en start de nieuwe op basis van de geselecteerde index"""
+        if self.cap is not None:
+            self.timer.stop()
+            self.cap.release()
+            self.cap = None
+
+        selection = self.combo_cam_selector.currentText()
+        
+        # We splitsen alleen als het woord 'Camera' erin staat (veiligheid voor 'Geen camera gevonden')
+        if "Camera" in selection:
+            try:
+                index = int(selection.split(" ")[1])
+                self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+                if self.cap.isOpened():
+                    self.timer.start(30)
+                else:
+                    self.label_cam_view.setText("Fout: Camera bezet")
+            except (IndexError, ValueError):
+                pass
+
+    def update_frame(self):
+        """Haalt frame op, converteert het en zet het op het label zonder stretching"""
+        if self.cap and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret:
+                # 1. Conversie naar RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # 2. Maak de QImage
+                height, width, channel = frame.shape
+                bytes_per_line = channel * width
+                q_img = QtGui.QImage(frame.data, width, height, bytes_per_line, QtGui.QImage.Format_RGB888)
+                
+                # 3. Maak een Pixmap van de afbeelding
+                pixmap = QtGui.QPixmap.fromImage(q_img)
+                
+                # 4. SCHALEN MET BEHOUD VAN VERHOUDING (Aspect Ratio)
+                # We schalen de pixmap naar de huidige grootte van het label
+                scaled_pixmap = pixmap.scaled(
+                    self.label_cam_view.size(), 
+                    QtCore.Qt.KeepAspectRatio, 
+                    QtCore.Qt.SmoothTransformation
+                )
+                
+                # 5. Toon de geschaalde pixmap
+                self.label_cam_view.setPixmap(scaled_pixmap)
+
+    def remove_self(self):
+        """Zorg dat de camera ook echt afgesloten wordt bij verwijderen"""
+        self.timer.stop()
+        if self.cap:
+            self.cap.release()
+        self.setParent(None)
+        self.deleteLater()
+        self.logic.reorganize_layout()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Bereken hoogte op basis van 4:3 verhouding (3 / 4 = 0.75)
+        target_height = int(self.width() * 0.75)
+        self.setFixedHeight(target_height)
+
+class AspectButton(QtWidgets.QPushButton):
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Ook hier 0.75 voor de 4:3 verhouding
+        self.setFixedHeight(int(self.width() * 0.75))
+
+# --- DE KLASSE VOOR DE CAMERA KAART ---
 class Logic:
     def __init__(self, window):
         self.window = window
-        self.camera_units = []  
+
+        self.nav_buttons = [
+            self.window.btn_main, 
+            self.window.btn_cameras, 
+            self.window.btn_settings
+        ]
         
-        # Sla de navigatieknoppen op voor styling
-        self.nav_buttons = [self.window.btn_main, self.window.btn_cameras, self.window.btn_settings]
-        
-        # Pagina navigatie koppelen
         self.window.btn_main.clicked.connect(lambda: self.switch_page(0))
         self.window.btn_cameras.clicked.connect(lambda: self.switch_page(1))
         self.window.btn_settings.clicked.connect(lambda: self.switch_page(2))
 
-        # Verberg de sjabloon container uit de Designer (voorkomt dubbele elementen)
-        if hasattr(self.window, 'cam_container'):
-            self.window.cam_container.hide()
+        # --- OPSCHONEN EN SETUP ---
         
-        # Koppel de "Add" knop uit je nieuwe GUI
-        self.window.btn_cam_add.clicked.connect(self.add_camera_unit)
-        
-        # Start op de eerste pagina en voeg direct de eerste camera toe
-        self.add_camera_unit()
-        self.switch_page(0) 
+        if hasattr(self.window, 'gridLayout_6'):
+            self.cam_layout = self.window.gridLayout_6
+        else:
+            # Fallback voor als de naam in Designer toch anders is
+            print("Waarschuwing: gridLayout_6 niet gevonden, controleer de naam in Qt Designer")
+            return
+
+        self.cam_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+
+        # Verwijder de oude statische elementen uit de UI (als ze nog bestaan)
+        if hasattr(self.window, 'cam_container'): self.window.cam_container.deleteLater()
+        if hasattr(self.window, 'btn_cam_add'): self.window.btn_cam_add.deleteLater()
+
+        # Maak de nieuwe dynamische 'Toevoegen' knop
+        self.btn_add_cam = AspectButton("+ Camera Toevoegen")
+        self.btn_add_cam.setMinimumWidth(200)
+        self.btn_add_cam.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.btn_add_cam.setStyleSheet("""
+            QPushButton { 
+                background-color: #252525; 
+                color: #0078D4; 
+                border: 2px dashed #0078D4; 
+                border-radius: 8px; 
+            }
+        """)
+        self.btn_add_cam.clicked.connect(self.add_camera_card)
+
+        # Voeg de knop toe aan gridLayout_6 binnen frame_cam
+        self.cam_layout.addWidget(self.btn_add_cam, 0, 0)
+
+        self.setup_settings_logic()
+        self.switch_page(0)
 
     def switch_page(self, index):
-        """Wisselt pagina en verandert de kleur van de actieve knop"""
+        """Wisselt de actieve pagina in het stackedWidget en update de knop-styling"""
+        # Verander de pagina van het stackedWidget uit de Designer
         self.window.stackedWidget.setCurrentIndex(index)
         
-        # Styling: Actieve knop wordt blauw (#0078D4)
-        active_style = "background-color: #0078D4; color: white; border: 1px solid #005A9E; font-weight: bold;"
+        # Styling: De actieve knop krijgt een duidelijke kleur, de rest blijft standaard
+        active_style = "background-color: #0078D4; color: white; font-weight: bold; border: 1px solid #005A9E;"
         normal_style = "background-color: #2D2D2D; color: white; border: 1px solid #444;"
 
         for i, btn in enumerate(self.nav_buttons):
-            btn.setStyleSheet(active_style if i == index else normal_style)
+            if i == index:
+                btn.setStyleSheet(active_style)
+            else:
+                btn.setStyleSheet(normal_style)
 
-    def add_camera_unit(self):
-        """Maakt een nieuwe camera unit met Dropdowns voor resolutie en FPS SpinBox"""
-        unit_frame = QtWidgets.QFrame()
-        unit_frame.setMinimumSize(300, 260)
-        unit_frame.setStyleSheet("background-color: #1E1E1E; border: 1px solid #333; border-radius: 8px;")
+    # In guiLogic.py
+###################################################################################
+#   Camera's tab
+###################################################################################
+    def add_camera_card(self):
+        """Plaatst een nieuwe kaart en geeft de logic-referentie mee"""
+        new_cam = CameraWidget(self) # Geef 'self' (de Logic instantie) mee
+        self.reorganize_layout(new_widget=new_cam)
+
+    def reorganize_layout(self, new_widget=None):
+        """Verplaatst alle widgets en reset de stretch om gaten en schaalproblemen te voorkomen"""
+        layout = self.cam_layout
+        widgets = []
+
+        # 1. Verzamel actieve camera's
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and item.widget() and item.widget() != self.btn_add_cam:
+                widgets.append(item.widget())
         
-        layout = QtWidgets.QGridLayout(unit_frame)
+        if new_widget:
+            widgets.append(new_widget)
 
-        # 1. Widgets aanmaken
-        combo_cam = QtWidgets.QComboBox()
-        combo_cam.addItems(["Selecteer Cam", "0", "1", "2", "3"])
-        
-        combo_res = QtWidgets.QComboBox()
-        combo_res.addItems(["640x480", "1280x720", "1920x1080"])
-        
-        # FPS Label en Spinbox
-        fps_label = QtWidgets.QLabel("FPS:")
-        fps_label.setStyleSheet("border: none; color: #888;")
-        
-        spin_fps = QtWidgets.QSpinBox()
-        spin_fps.setRange(1, 120)
-        spin_fps.setValue(30)
-        spin_fps.setSuffix(" fps")
-        
-        btn_del = QtWidgets.QPushButton("X")
-        btn_del.setFixedSize(30, 30)
-        btn_del.setStyleSheet("background-color: #A03030; color: white; font-weight: bold;")
-        
-        video_label = QtWidgets.QLabel("Geen Beeld")
-        video_label.setAlignment(QtCore.Qt.AlignCenter)
-        video_label.setStyleSheet("background-color: black; border-radius: 4px;")
-        video_label.setScaledContents(True)
+        # --- NIEUW: RESET STRETCH ---
+        # We moeten de stretch van de kolommen en rijen terug op 0 zetten
+        # zodat een enkele camera weer de volle breedte kan pakken.
+        for i in range(layout.columnCount()):
+            layout.setColumnStretch(i, 0)
+        for i in range(layout.rowCount()):
+            layout.setRowStretch(i, 0)
 
-        # 2. Widgets in grid plaatsen
-        layout.addWidget(combo_cam, 0, 0)
-        layout.addWidget(combo_res, 0, 1)
-        layout.addWidget(fps_label, 0, 2)
-        layout.addWidget(spin_fps, 0, 3)
-        layout.addWidget(btn_del, 0, 4)
-        layout.addWidget(video_label, 1, 0, 1, 5)
+        # 2. Haal alles uit de grid
+        for w in widgets:
+            layout.removeWidget(w)
+        layout.removeWidget(self.btn_add_cam)
 
-        unit_data = {
-            'frame': unit_frame,
-            'cap': None,
-            'label': video_label,
-            'timer': QtCore.QTimer(),
-            'spin_fps': spin_fps,
-            'combo_res': combo_res
-        }
-        
-        # 3. Events koppelen
-        btn_del.clicked.connect(lambda: self.delete_camera_unit(unit_data))
-        combo_cam.currentIndexChanged.connect(lambda: self.toggle_camera(unit_data, combo_cam))
-        combo_res.currentIndexChanged.connect(lambda: self.update_resolution(unit_data))
-        spin_fps.valueChanged.connect(lambda val: self.update_timer_speed(unit_data, val))
-        unit_data['timer'].timeout.connect(lambda: self.update_frame(unit_data))
-        
-        self.camera_units.append(unit_data)
-        self.reorganize_grid()
-
-    def delete_camera_unit(self, unit_data):
-        if unit_data['cap']:
-            unit_data['cap'].release()
-        unit_data['timer'].stop()
-        unit_data['frame'].deleteLater()
-        self.camera_units.remove(unit_data)
-        self.reorganize_grid()
-
-    def toggle_camera(self, unit_data, combo):
-        selection = combo.currentText()
-        if selection.isdigit():
-            if unit_data['cap']: unit_data['cap'].release()
-            
-            cap = cv2.VideoCapture(int(selection), cv2.CAP_DSHOW)
-            unit_data['cap'] = cap
-            
-            # Detecteer hardware FPS limiet
-            hw_fps = int(cap.get(cv2.CAP_PROP_FPS))
-            if hw_fps <= 0 or hw_fps > 120: hw_fps = 30
-            
-            unit_data['spin_fps'].setRange(1, hw_fps)
-            unit_data['spin_fps'].setValue(hw_fps)
-            
-            self.update_resolution(unit_data)
-            unit_data['timer'].start(1000 // hw_fps)
-        else:
-            if unit_data['cap']: unit_data['cap'].release()
-            unit_data['timer'].stop()
-            unit_data['label'].setText("Geen Beeld")
-
-    def update_resolution(self, unit_data):
-        if unit_data['cap'] and unit_data['cap'].isOpened():
-            res_text = unit_data['combo_res'].currentText()
-            w, h = map(int, res_text.split('x'))
-            unit_data['cap'].set(cv2.CAP_PROP_FRAME_WIDTH, w)
-            unit_data['cap'].set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-
-    def update_timer_speed(self, unit_data, fps_val):
-        if fps_val > 0 and unit_data['timer'].isActive():
-            unit_data['timer'].setInterval(1000 // fps_val)
-
-    def update_frame(self, unit_data):
-        if unit_data['cap'] and unit_data['cap'].isOpened():
-            ret, frame = unit_data['cap'].read()
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = frame.shape
-                qt_img = QtGui.QImage(frame.data, w, h, ch * w, QtGui.QImage.Format_RGB888)
-                unit_data['label'].setPixmap(QtGui.QPixmap.fromImage(qt_img))
-
-    def reorganize_grid(self):
-        """Plaats camera's en de Add-knop in het gridLayout_3"""
-        layout = self.window.gridLayout_3
+        # 3. Deel opnieuw in (max 3 kolommen breed)
         max_cols = 3
+        # Als er maar 1 widget is (camera of alleen de knop), 
+        # willen we niet dat hij vastzit in een 3-kolom grid stretch.
+        current_num_widgets = len(widgets) + 1 # +1 voor de add_cam knop
         
-        # Verwijder de knop tijdelijk om hem naar het einde te kunnen verplaatsen
-        layout.removeWidget(self.window.btn_cam_add)
+        for i, w in enumerate(widgets):
+            row, col = i // max_cols, i % max_cols
+            layout.addWidget(w, row, col)
+            # Voeg alleen stretch toe als er daadwerkelijk meer kolommen nodig zijn
+            layout.setColumnStretch(col, 1)
+            layout.setRowStretch(row, 1)
+
+        # 4. Zet de 'add' knop aan het einde
+        last_idx = len(widgets)
+        last_row, last_col = last_idx // max_cols, last_idx % max_cols
+        layout.addWidget(self.btn_add_cam, last_row, last_col)
         
-        for i, unit in enumerate(self.camera_units):
-            # We beginnen op rij 1 omdat label_2 (titel) op rij 0 staat
-            layout.addWidget(unit['frame'], (i // max_cols) + 1, i % max_cols)
+        # Geef de kolom waar de knop in staat ook stretch
+        layout.setColumnStretch(last_col, 1)
+        layout.setRowStretch(last_row, 1)
+###################################################################################
+#   settings tab
+###################################################################################
+    def setup_settings_logic(self):
+        """Initialiseert alle widgets op de instellingenpagina"""
+        if hasattr(self.window, 'combo_set_res'):
+            self.window.combo_set_res.blockSignals(True)
+            self.window.combo_set_res.clear()
+            self.window.combo_set_res.addItems(["988x720", "1280x720", "1920x1080", "Fullscreen"])
+            self.window.combo_set_res.setCurrentIndex(0)
+            self.window.combo_set_res.blockSignals(False)
+            
+            self.window.combo_set_res.currentIndexChanged.connect(self.change_window_size)
+
+    def change_window_size(self):
+        """Handelt resoluties af en zorgt dat Fullscreen ook echt het scherm vult"""
+        res_text = self.window.combo_set_res.currentText()
         
-        # Plaats de add-knop op de volgende positie
-        next_pos = len(self.camera_units)
-        layout.addWidget(self.window.btn_cam_add, (next_pos // max_cols) + 1, next_pos % max_cols)
+        if res_text == "Fullscreen":
+            # STAP 1: Hef de vaste maat op zodat het venster kan groeien
+            self.window.setMinimumSize(0, 0)
+            self.window.setMaximumSize(16777215, 16777215)
+            self.window.centralwidget.setMinimumSize(0, 0)
+            self.window.centralwidget.setMaximumSize(16777215, 16777215)
+            
+            # STAP 2: Ga naar Fullscreen
+            self.window.showFullScreen()
+        else:
+            # Altijd terug naar normale modus
+            if self.window.isFullScreen():
+                self.window.showNormal()
+            
+            try:
+                # Breedte en hoogte bepalen
+                width, height = map(int, res_text.split('x'))
+                
+                # Zet het venster EN de centralwidget op de vaste maat
+                self.window.centralwidget.setFixedSize(width, height)
+                self.window.setFixedSize(width, height)
+                
+                # Centreer het venster op het scherm
+                self.center_window()
+            except ValueError:
+                pass
+
+    def center_window(self):
+        """Hulpmethode om venster te centreren"""
+        qr = self.window.frameGeometry()
+        cp = QtWidgets.QDesktopWidget().availableGeometry().center()
+        qr.moveCenter(cp)
+        self.window.move(qr.topLeft())
