@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "saved_at_iso": "2026-04-14T13:56:22.241704",
+  "metadata": {
+    "schema_version": 2,
+    "board_shape": [
+      9,
+      6
+    ],
+    "square_size_m": 0.024,
+    "min_samples_per_camera": 8,
+    "min_quality_score": 0.45,
+    "min_coverage_ratio": 0.07,
+    "charuco_available": true,
+    "charuco_squares_x": 5,
+    "charuco_squares_y": 7,
+    "charuco_square_size_m": 0.032,
+    "charuco_marker_size_m": 0.024,
+    "solved_at_iso": "2026-04-14T13:56:15.402252"
+  },
+  "notes": [
+    "No observations available. Capture chessboard or Charuco samples first.",
+    "TODO: Add bundle-adjustment refinement over intrinsics+extrinsics.",
+    "TODO: Add pairwise baseline diagnostics and epipolar residual plots.",
+    "Extrinsics solve requires at least two cameras with valid intrinsics."
+  ],
+  "cameras": {}
+}
