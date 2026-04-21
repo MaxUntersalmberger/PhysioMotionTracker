@@ -2,6 +2,7 @@ from PyQt5 import QtCore, QtWidgets
 from tab_main import TabMain
 from tab_cameras import TabCameras
 from tab_settings import TabSettings
+from tab_processing import TabProcessing
 
 # --- DE KLASSE VOOR ORCHESTRATIE ---
 class Logic:
@@ -11,22 +12,26 @@ class Logic:
         self.nav_buttons = [
             self.window.btn_main,
             self.window.btn_cameras,
-            self.window.btn_settings
+            self.window.btn_settings,
+            self.window.btn_processing
         ]
 
         self.window.btn_main.clicked.connect(lambda: self.switch_page(0))
         self.window.btn_cameras.clicked.connect(lambda: self.switch_page(1))
         self.window.btn_settings.clicked.connect(lambda: self.switch_page(2))
+        self.window.btn_processing.clicked.connect(lambda: self.switch_page(3))
 
         # --- INITIALISEER TABS ---
         self.tab_main = TabMain(self)
         self.tab_cameras = TabCameras(self)
         self.tab_settings = TabSettings(self)
+        self.tab_processing = TabProcessing(self)
 
         # Setup elke tab
         self.tab_main.setup()
         self.tab_cameras.setup()
         self.tab_settings.setup()
+        self.tab_processing.setup()
 
         self.switch_page(0)
 
