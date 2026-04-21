@@ -28,3 +28,6 @@
 2026-04-14 14:22:50 | WARNING | mocap_app.pipeline.detection | MediaPipe Solutions detector unavailable (mediapipe is not installed.). Trying MediaPipe Tasks.
 2026-04-14 14:22:50 | WARNING | mocap_app.pipeline.detection | MediaPipe Tasks detector unavailable (MediaPipe Tasks API is not available.). Falling back to placeholder detector.
 2026-04-14 14:22:50 | INFO | mocap_app.ui.main_window | Pipeline worker state: pipeline_started
+2026-04-21 13:11:27 | WARNING | mocap_app.pipeline.detection | MediaPipe Solutions detector unavailable (mediapipe is not installed.). Trying MediaPipe Tasks.
+2026-04-21 13:11:27 | WARNING | mocap_app.pipeline.detection | MediaPipe Tasks detector unavailable (MediaPipe Tasks API is not available.). Falling back to placeholder detector.
+2026-04-21 13:11:27 | INFO | mocap_app.ui.main_window | Pipeline worker state: pipeline_started

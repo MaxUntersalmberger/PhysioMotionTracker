@@ -1,0 +1,21 @@
+# Configuration file for Motion Capture Processing
+# This file will be populated with processing data
+
+[session]
+name = "Default Session"
+date = "2024-01-01"
+description = "Motion capture session configuration"
+
+[camera_settings]
+resolution = "1920x1080"
+fps = 30
+exposure = "auto"
+
+[processing]
+enabled = true
+filter_type = "kalman"
+filter_strength = 0.8
+
+[export]
+format = "csv"
+include_metadata = true
