@@ -1,5 +1,5 @@
 from PyQt5 import QtCore, QtWidgets # Voeg deze imports toe
-from guiDesigner.gui import Ui_MainWindow
+from gui import Ui_MainWindow
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from guiLogic import Logic
 from guiStyle import apply_styles

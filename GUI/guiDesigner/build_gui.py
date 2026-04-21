@@ -3,12 +3,16 @@ import os
 import re
 
 def build_and_fix():
+    # Ga naar het directory van dit script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+
     # 1. Voer je standaard commando uit
     print("UI omzetten naar Python...")
-    os.system("python -m PyQt5.uic.pyuic GUI.ui -o gui.py")
+    os.system("python -m PyQt5.uic.pyuic GUI.ui -o ../gui.py")
 
     # 2. Lees het gegenereerde bestand
-    gui_path = "gui.py"
+    gui_path = "../gui.py"
     if os.path.exists(gui_path):
         with open(gui_path, 'r') as f:
             content = f.read()
