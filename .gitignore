@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.log
+
+**/logs/
+**/sessions/
+**/exports/
+
+.env
+.venv/
+venv/
+.vscode/
+
+**/programmastructuur.config.json
