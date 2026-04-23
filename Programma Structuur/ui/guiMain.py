@@ -13,7 +13,7 @@ if not hasattr(QtCore.Qt, "QFrame"):
 if not hasattr(QtCore.Qt, "Qt"):
     QtCore.Qt.Qt = QtCore.Qt
 # ------------------------------------
-####iets raars om VS te testen
+
 class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super().__init__()
