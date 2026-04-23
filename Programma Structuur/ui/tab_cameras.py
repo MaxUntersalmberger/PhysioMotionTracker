@@ -156,6 +156,10 @@ class TabCameras:
             return
 
         self.cam_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        
+        # Zorg dat de MainWindow grootte niet verandert
+        self.window.setMinimumSize(self.window.size())
+        self.window.setMaximumSize(self.window.size())
 
         # Verwijder de oude statische elementen uit de UI (als ze nog bestaan)
         if hasattr(self.window, 'cam_container'): self.window.cam_container.deleteLater()
@@ -163,8 +167,8 @@ class TabCameras:
 
         # Maak de nieuwe dynamische 'Toevoegen' knop
         self.btn_add_cam = AspectButton("+ Camera Toevoegen")
-        self.btn_add_cam.setMinimumWidth(200)
-        self.btn_add_cam.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.btn_add_cam.setFixedWidth(200)
+        self.btn_add_cam.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.btn_add_cam.setStyleSheet("""
             QPushButton {
                 background-color: #252525;
