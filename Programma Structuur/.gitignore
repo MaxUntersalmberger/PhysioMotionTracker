@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+logs/
+sessions/
+exports/
+programmastructuur.config.json
+calibration/current_calibration.json
