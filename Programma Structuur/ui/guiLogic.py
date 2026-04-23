@@ -1,7 +1,7 @@
 from PyQt5 import QtCore, QtWidgets
 from tab_main import TabMain
 from tab_cameras import TabCameras
-from tab_settings import TabSettings
+from tab_process import TabProcess
 
 # --- DE KLASSE VOOR ORCHESTRATIE ---
 class Logic:
@@ -25,12 +25,12 @@ class Logic:
         # --- INITIALISEER TABS ---
         self.tab_main = TabMain(self)
         self.tab_cameras = TabCameras(self)
-        self.tab_settings = TabSettings(self)
+        self.tab_process = TabProcess(self)
 
         # Setup elke tab
         self.tab_main.setup()
         self.tab_cameras.setup()
-        self.tab_settings.setup()
+        self.tab_process.setup()
 
         self.switch_page(0)
 
