@@ -9,16 +9,17 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 from capture.backend import CaptureBatch
+from capture.profiles import CameraControlSettings, assess_batch_synchronization, build_camera_profiles
 from capture.sources import describe_sources, parse_sources_csv
 from calibration import CalibrationCaptureResult, CalibrationManager, CalibrationRepository
 from core.config import AppConfig
 from detectors import PoseDetector, create_detector, normalize_detector_name
 from models.types import CalibrationBundle, CameraProbeResult, CameraSourceConfig, PipelineResult, SessionManifest
 from pipeline.manager import MocapPipeline
-from session import SessionRepository, SessionState
-from workers import CalibrationAnalysisOutcome, CalibrationAnalysisWorker, CameraProbeWorker, CaptureWorker, PipelineWorker, StartupResult, StartupWorker
+from session import SessionPlaybackReader, SessionRecorder, SessionRecordingStats, SessionRepository, SessionState, load_session_calibration, process_recorded_batch
+from workers import CalibrationAnalysisOutcome, CalibrationAnalysisWorker, CameraProbeWorker, CaptureWorker, PipelineWorker, RecordingWorker, StartupResult, StartupWorker
 
-from .widgets import CalibrationPanelWidget, CameraGridWidget, CapturePanelWidget, FramePreviewWidget, PipelineStatusWidget, SessionPanelWidget
+from .widgets import CalibrationPanelWidget, CameraGridWidget, CapturePanelWidget, FramePreviewWidget, PipelineStatusWidget, SessionPanelWidget, SessionReviewWidget
 
 
 LOGGER = logging.getLogger(__name__)
@@ -52,6 +53,13 @@ class MainWindow(QMainWindow):
         self._last_calibration_quality_update_sec = 0.0
         self._last_calibration_history_count = 0
         self._session_state = SessionState()
+        self._recording_worker: RecordingWorker | None = None
+        self._latest_recording_stats: SessionRecordingStats | None = None
+        self._review_reader: SessionPlaybackReader | None = None
+        self._review_manifest_path: Path | None = None
+        self._review_current_batch_index = 0
+        self._review_calibration_bundle: CalibrationBundle | None = None
+        self._review_overlay_cache: dict[int, PipelineResult] = {}
         self._requested_detector_name = self._capture_panel.detector_name()
         self._active_detector_name = "initializing"
 
@@ -68,9 +76,11 @@ class MainWindow(QMainWindow):
         self._preview_panel = FramePreviewWidget()
         self._capture_preview_panel = FramePreviewWidget(show_source_picker=False, minimum_image_size=(520, 292))
         self._calibration_preview_panel = FramePreviewWidget(show_source_picker=False, minimum_image_size=(520, 292))
+        self._review_preview_panel = FramePreviewWidget(minimum_image_size=(720, 405))
         self._preview_widgets = [self._preview_panel, self._capture_preview_panel, self._calibration_preview_panel]
         self._camera_grid = CameraGridWidget()
         self._session_panel = SessionPanelWidget()
+        self._session_review_panel = SessionReviewWidget()
         self._status_panel = PipelineStatusWidget()
         self._startup_banner = QFrame()
         self._startup_banner.setObjectName("startupBanner")
@@ -121,6 +131,7 @@ class MainWindow(QMainWindow):
         self._tabs.setDocumentMode(True)
         self._tabs.addTab(self._build_capture_tab(), "Capture")
         self._tabs.addTab(self._build_session_tab(), "Session")
+        self._tabs.addTab(self._build_review_tab(), "Review")
         self._tabs.addTab(self._build_live_view_tab(), "Live View")
         self._tabs.addTab(self._build_calibration_tab(), "Calibration")
         self._tabs.addTab(self._build_diagnostics_tab(), "Diagnostics")
@@ -158,6 +169,17 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.addWidget(self._session_panel)
         layout.addStretch(1)
+        return page
+
+    def _build_review_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self._session_review_panel)
+        splitter.addWidget(self._review_preview_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, 1)
         return page
 
     def _build_calibration_tab(self) -> QWidget:
@@ -429,10 +451,10 @@ class MainWindow(QMainWindow):
             LOGGER.info("Using MediaPipe pose detector model at %s", model_path)
             return "mediapipe", detector
 
-        if normalized == "synthetic":
+        if normalized in {"synthetic", "none"}:
             detector = create_detector(normalized)
-            LOGGER.info("Using synthetic demo pose detector")
-            return "synthetic", detector
+            LOGGER.info("Using %s pose detector", normalized)
+            return normalized, detector
 
         raise ValueError(f"Unknown detector '{detector_name}'.")
 
@@ -449,8 +471,15 @@ class MainWindow(QMainWindow):
         self._calibration_panel.save_profile_requested.connect(self._on_save_calibration_profile)
         self._calibration_panel.reset_samples_requested.connect(self._on_reset_calibration_samples)
         self._session_panel.new_session_requested.connect(self._on_new_session_requested)
+        self._session_panel.start_recording_requested.connect(self._on_start_recording_requested)
+        self._session_panel.stop_recording_requested.connect(self._on_stop_recording_requested)
         self._session_panel.save_session_requested.connect(self._on_save_session_requested)
         self._session_panel.load_session_requested.connect(self._on_load_session_requested)
+        self._session_review_panel.load_loaded_session_requested.connect(self._on_review_load_loaded_session)
+        self._session_review_panel.open_manifest_requested.connect(self._on_review_open_manifest)
+        self._session_review_panel.frame_requested.connect(self._on_review_frame_requested)
+        self._session_review_panel.process_current_requested.connect(self._on_review_process_current_requested)
+        self._session_review_panel.clear_overlays_requested.connect(self._on_review_clear_overlays_requested)
         self._preview_panel.source_selected.connect(self._on_main_preview_source_selected)
         self._camera_grid.source_selected.connect(self._preview_panel.select_source)
 
@@ -468,6 +497,10 @@ class MainWindow(QMainWindow):
         self._camera_grid.clear()
 
     def _on_new_session_requested(self) -> None:
+        if self._is_recording_active():
+            QMessageBox.warning(self, "Session", "Stop the active recording before preparing a new session.")
+            return
+
         session_id = self._session_repo.create_session_id()
         self._session_panel.set_session_id(session_id)
         self._session_panel.set_notes([])
@@ -476,27 +509,123 @@ class MainWindow(QMainWindow):
         self._session_state.loaded_manifest = None
         self._session_state.recording_active = False
         self._session_state.playback_active = False
+        self._latest_recording_stats = None
         self._refresh_session_panel()
         self._session_panel.set_state(f"New session prepared: {session_id}")
         self._append_log(f"New session prepared: {session_id}")
 
     def _on_save_session_requested(self) -> None:
+        self._save_current_session_manifest("Session snapshot saved")
+
+    def _save_current_session_manifest(self, state_message: str) -> Path | None:
         manifest = self._build_session_manifest()
         if manifest is None:
-            return
+            return None
 
         session_dir = self._session_repo.session_dir(self._config.sessions_dir, manifest.session_id)
         manifest_path = self._session_repo.save(manifest, session_dir)
         self._session_state.active_session_dir = session_dir
         self._session_state.loaded_session_dir = session_dir
         self._session_state.loaded_manifest = manifest
-        self._session_state.recording_active = self._capture_worker is not None and self._capture_worker.isRunning()
-        self._session_panel.set_state(f"Session snapshot saved to {manifest_path}")
+        self._session_state.recording_active = self._is_recording_active()
+        self._session_panel.set_state(f"{state_message} to {manifest_path}")
         self._session_panel.set_active_session_dir(str(session_dir))
         self._session_panel.set_loaded_session_dir(str(session_dir))
         self._session_panel.set_manifest_path(str(manifest_path))
         self._session_panel.set_manifest(manifest)
-        self._append_log(f"Session snapshot saved: {manifest_path}")
+        self._append_log(f"{state_message}: {manifest_path}")
+        return manifest_path
+
+    def _on_start_recording_requested(self) -> None:
+        if self._is_recording_active():
+            self._session_panel.set_state("Recording is already active.")
+            return
+
+        source_csv = self._capture_panel.source_csv()
+        sources = self._parse_sources_or_warn(source_csv)
+        if not sources:
+            return
+
+        session_id = self._session_panel.session_id() or self._session_repo.create_session_id()
+        self._session_panel.set_session_id(session_id)
+        session_dir = self._session_repo.session_dir(self._config.sessions_dir, session_id)
+        recorder = SessionRecorder(
+            session_dir=session_dir,
+            sources=sources,
+            fps=self._capture_panel.target_fps(),
+        )
+        worker = RecordingWorker(recorder)
+        worker.stats_ready.connect(self._on_recording_stats_ready)
+        worker.state_changed.connect(self._on_recording_state_changed)
+        worker.error.connect(self._on_recording_error)
+        self._recording_worker = worker
+        self._session_state.active_session_dir = session_dir
+        self._session_state.loaded_session_dir = None
+        self._session_state.loaded_manifest = None
+        self._session_state.recording_active = True
+        self._session_panel.set_recording_active(True)
+        self._session_panel.set_state(f"Recording session: {session_id}")
+        self._append_log(f"Session recording started: {session_dir}")
+        worker.start()
+
+        if self._capture_worker is None or not self._capture_worker.isRunning():
+            self._start_capture_worker(source_csv, self._capture_panel.target_fps(), batch_limit=None)
+        else:
+            self._refresh_session_panel()
+
+    def _on_stop_recording_requested(self) -> None:
+        self._stop_recording_worker(save_manifest=True, state_message="Session recording saved")
+
+    def _on_recording_stats_ready(self, stats: object) -> None:
+        if not isinstance(stats, SessionRecordingStats):
+            return
+        self._latest_recording_stats = stats
+        self._refresh_session_panel()
+
+    def _on_recording_state_changed(self, state: str) -> None:
+        self._append_log(f"Recording: {state}")
+        if state == "recording_queue_full":
+            self._session_panel.set_state("Recording queue is full; frames may be dropped.")
+        elif state == "recording_stopped" and self._recording_worker is not None and not self._recording_worker.isRunning():
+            if self._recording_worker.latest_stats is not None:
+                self._latest_recording_stats = self._recording_worker.latest_stats
+            self._recording_worker = None
+            self._session_state.recording_active = False
+            self._session_panel.set_recording_active(False)
+            self._save_current_session_manifest("Session recording saved")
+
+    def _on_recording_error(self, message: str) -> None:
+        LOGGER.error("Recording error: %s", message)
+        self._append_log(f"Recording error: {message}")
+        self._session_panel.set_state(f"Recording error: {message}")
+        self.statusBar().showMessage(message)
+
+    def _is_recording_active(self) -> bool:
+        return self._recording_worker is not None
+
+    def _stop_recording_worker(self, save_manifest: bool, state_message: str = "Session recording saved") -> None:
+        worker = self._recording_worker
+        if worker is None:
+            self._session_state.recording_active = False
+            self._session_panel.set_recording_active(False)
+            return
+
+        self._recording_worker = None
+        worker.stop()
+        if not worker.wait(8000):
+            LOGGER.warning("Recording worker did not stop in time; forcing termination.")
+            worker.terminate()
+            worker.wait(1000)
+
+        if worker.latest_stats is not None:
+            self._latest_recording_stats = worker.latest_stats
+
+        self._session_state.recording_active = False
+        self._session_panel.set_recording_active(False)
+        if save_manifest:
+            self._save_current_session_manifest(state_message)
+        else:
+            self._refresh_session_panel()
 
     def _on_load_session_requested(self) -> None:
         start_dir = self._session_state.loaded_session_dir or self._session_state.active_session_dir or self._config.sessions_dir
@@ -515,10 +644,150 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Session", f"Could not load session manifest from {path}.")
             return
 
+        self._stop_recording_worker(save_manifest=True, state_message="Session recording saved before loading another session")
         self._stop_capture_worker()
         self._stop_probe_worker()
         self._apply_session_manifest(manifest, path)
+        self._load_review_session(path)
         self._append_log(f"Session loaded from {path}")
+
+    def _on_review_load_loaded_session(self) -> None:
+        manifest_path = self._current_session_manifest_path()
+        if manifest_path is None:
+            QMessageBox.warning(self, "Review", "No saved or loaded session manifest is available yet.")
+            return
+        self._load_review_session(manifest_path)
+
+    def _on_review_open_manifest(self) -> None:
+        start_dir = self._session_state.loaded_session_dir or self._session_state.active_session_dir or self._config.sessions_dir
+        filename, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Open session for review",
+            str(start_dir),
+            "Session manifests (*.json);;All files (*)",
+        )
+        if not filename:
+            return
+        self._load_review_session(Path(filename))
+
+    def _on_review_frame_requested(self, batch_index: int) -> None:
+        self._show_review_batch(batch_index)
+
+    def _on_review_process_current_requested(self) -> None:
+        self._process_review_batch(self._review_current_batch_index)
+
+    def _on_review_clear_overlays_requested(self) -> None:
+        self._review_overlay_cache.clear()
+        self._review_preview_panel.set_pipeline_result(None)
+        if self._review_reader is None or self._review_reader.batch_count <= 0:
+            self._session_review_panel.set_state("Review overlays cleared.")
+            return
+        self._session_review_panel.set_state(
+            f"Reviewing frame {self._review_current_batch_index + 1}/{self._review_reader.batch_count}. Overlay cleared."
+        )
+        self._append_log("Review overlays cleared")
+
+    def _load_review_session(self, manifest_path: Path) -> None:
+        try:
+            reader = SessionPlaybackReader(manifest_path)
+            info = reader.info()
+        except Exception as exc:
+            self._review_reader = None
+            self._review_manifest_path = None
+            self._review_calibration_bundle = None
+            self._review_overlay_cache.clear()
+            self._session_review_panel.clear_review(f"Could not load review session: {exc}")
+            self._review_preview_panel.clear_preview("Could not load review session.")
+            QMessageBox.warning(self, "Review", f"Could not load session for review: {exc}")
+            return
+
+        self._review_reader = reader
+        self._review_manifest_path = manifest_path
+        self._review_current_batch_index = 0
+        self._review_overlay_cache.clear()
+        self._review_calibration_bundle = load_session_calibration(info.manifest.calibration_file)
+        self._session_review_panel.set_loaded_session(info)
+        self._review_preview_panel.set_sources(info.manifest.sources, {})
+        if info.is_playable and reader.batch_count > 0:
+            self._show_review_batch(0)
+        else:
+            self._review_preview_panel.clear_preview("Session has no playable frames.")
+        self._tabs.setCurrentWidget(self._tabs.widget(2))
+        self._append_log(f"Session review loaded: {manifest_path}")
+
+    def _show_review_batch(self, batch_index: int) -> None:
+        if self._review_reader is None:
+            self._session_review_panel.set_state("No review session loaded.")
+            return
+
+        index = max(0, min(max(0, self._review_reader.batch_count - 1), int(batch_index)))
+        try:
+            batch = self._review_reader.read_batch_at(index)
+        except Exception as exc:
+            self._session_review_panel.set_state(f"Could not read frame: {exc}")
+            self._append_log(f"Review frame error: {exc}")
+            return
+
+        self._review_current_batch_index = index
+        self._session_review_panel.set_current_frame(index)
+        self._review_preview_panel.show_batch(batch, self._review_reader.manifest.sources, {})
+        review_result = self._review_overlay_cache.get(index)
+        self._review_preview_panel.set_pipeline_result(review_result)
+        if review_result is None:
+            self._session_review_panel.set_state(f"Reviewing frame {index + 1}/{self._review_reader.batch_count}. Overlay idle.")
+            return
+        self._session_review_panel.set_state(
+            f"Reviewing frame {index + 1}/{self._review_reader.batch_count}. "
+            f"Overlay ready via {review_result.debug.detector_name} ({review_result.debug.reconstruction_mode})."
+        )
+
+    def _process_review_batch(self, batch_index: int) -> None:
+        if self._review_reader is None:
+            self._session_review_panel.set_state("No review session loaded.")
+            return
+
+        index = max(0, min(max(0, self._review_reader.batch_count - 1), int(batch_index)))
+        cached_result = self._review_overlay_cache.get(index)
+        if cached_result is not None:
+            self._review_preview_panel.set_pipeline_result(cached_result)
+            self._session_review_panel.set_state(
+                f"Reviewing frame {index + 1}/{self._review_reader.batch_count}. "
+                f"Cached overlay via {cached_result.debug.detector_name} ({cached_result.debug.reconstruction_mode})."
+            )
+            return
+
+        try:
+            batch = self._review_reader.read_batch_at(index)
+            actual_name, detector = self._create_detector(self._capture_panel.detector_name())
+            result = process_recorded_batch(batch, detector, self._review_calibration_bundle)
+        except Exception as exc:
+            self._session_review_panel.set_state(f"Could not process review frame: {exc}")
+            self._append_log(f"Review processing error: {exc}")
+            return
+
+        self._review_current_batch_index = index
+        self._review_overlay_cache[index] = result
+        self._review_preview_panel.show_batch(batch, self._review_reader.manifest.sources, {})
+        self._review_preview_panel.set_pipeline_result(result)
+        self._session_review_panel.set_current_frame(index)
+        self._session_review_panel.set_state(
+            f"Reviewing frame {index + 1}/{self._review_reader.batch_count}. "
+            f"Processed with {actual_name} in {result.debug.pipeline_ms:.1f} ms ({result.debug.reconstruction_mode})."
+        )
+        self._append_log(
+            f"Review frame processed: frame={index + 1}/{self._review_reader.batch_count}, "
+            f"detector={actual_name}, mode={result.debug.reconstruction_mode}, pipeline={result.debug.pipeline_ms:.1f} ms"
+        )
+
+    def _current_session_manifest_path(self) -> Path | None:
+        if self._session_state.loaded_session_dir is not None:
+            return self._session_repo.manifest_path(self._session_state.loaded_session_dir)
+        if self._session_state.active_session_dir is not None:
+            return self._session_repo.manifest_path(self._session_state.active_session_dir)
+        session_id = self._session_panel.session_id()
+        if session_id:
+            return self._session_repo.manifest_path(self._config.sessions_dir / session_id)
+        return None
 
     def _refresh_session_panel(self) -> None:
         session_id = self._session_panel.session_id()
@@ -539,8 +808,12 @@ class MainWindow(QMainWindow):
         state_text = "Session snapshot ready."
         if self._session_state.loaded_manifest is not None:
             state_text = f"Loaded session: {self._session_state.loaded_manifest.session_id}"
-        elif self._session_state.recording_active:
-            state_text = "Live capture active; session snapshot will include the current capture state."
+        elif self._is_recording_active():
+            frame_count = self._latest_recording_stats.total_frames if self._latest_recording_stats is not None else 0
+            state_text = f"Recording active; {frame_count} frame(s) written."
+        elif self._capture_worker is not None and self._capture_worker.isRunning():
+            state_text = "Live capture active; recording is not running."
+        self._session_panel.set_recording_active(self._is_recording_active())
         self._session_panel.set_state(state_text)
 
     def _build_session_manifest(self, session_id: str | None = None) -> SessionManifest | None:
@@ -554,9 +827,10 @@ class MainWindow(QMainWindow):
         if not self._session_panel.session_id():
             self._session_panel.set_session_id(resolved_session_id)
 
-        total_frames = 0
+        recording_stats = self._latest_recording_stats
+        total_frames = recording_stats.total_frames if recording_stats is not None else 0
         if self._latest_batch is not None and self._latest_batch.frames:
-            total_frames = max(frame.frame_index for frame in self._latest_batch.frames.values())
+            total_frames = max(total_frames, max(frame.frame_index for frame in self._latest_batch.frames.values()))
 
         calibration_file = None
         if self._current_calibration_bundle is not None:
@@ -565,6 +839,7 @@ class MainWindow(QMainWindow):
         metadata: dict[str, object] = {
             "detector_name": self._active_detector_name,
             "capture_mode": "live" if self._capture_worker is not None and self._capture_worker.isRunning() else "idle",
+            "recording_active": self._is_recording_active(),
             "calibration_loaded": self._current_calibration_bundle is not None,
             "board_shape": list(self._calibration_panel.board_shape()),
             "square_size_m": self._calibration_panel.square_size_m(),
@@ -579,6 +854,72 @@ class MainWindow(QMainWindow):
                 for source_id, probe in self._probe_results.items()
             },
         }
+        profiles = build_camera_profiles(
+            sources,
+            self._probe_results,
+            requested=CameraControlSettings(
+                width=self._capture_panel.requested_width(),
+                height=self._capture_panel.requested_height(),
+                fps=self._capture_panel.target_fps(),
+                exposure=self._capture_panel.requested_exposure(),
+                gain=self._capture_panel.requested_gain(),
+                white_balance=self._capture_panel.requested_white_balance(),
+            ),
+        )
+        metadata["camera_profiles"] = {
+            source_id: {
+                "label": profile.label,
+                "kind": profile.kind,
+                "uri": profile.uri,
+                "requested": {
+                    "width": profile.requested.width,
+                    "height": profile.requested.height,
+                    "fps": profile.requested.fps,
+                    "exposure": profile.requested.exposure,
+                    "gain": profile.requested.gain,
+                    "white_balance": profile.requested.white_balance,
+                    "auto_exposure": profile.requested.auto_exposure,
+                },
+                "observed_width": profile.observed_width,
+                "observed_height": profile.observed_height,
+                "observed_fps": profile.observed_fps,
+                "backend": profile.backend,
+                "opened": profile.opened,
+                "notes": list(profile.notes),
+            }
+            for source_id, profile in profiles.items()
+        }
+        if self._latest_batch is not None:
+            sync = assess_batch_synchronization(self._latest_batch)
+            metadata["synchronization"] = {
+                "policy": "software_timestamp",
+                "status": sync.status,
+                "timestamp_spread_ms": sync.timestamp_spread_ms,
+                "frame_index_spread": sync.frame_index_spread,
+                "notes": list(sync.notes),
+            }
+        video_files: dict[str, str] = {}
+        if recording_stats is not None:
+            video_files = dict(recording_stats.video_files)
+            metadata["recording"] = {
+                "started_at_iso": recording_stats.started_at_iso,
+                "stopped_at_iso": recording_stats.stopped_at_iso,
+                "batches_written": recording_stats.batches_written,
+                "dropped_batches": recording_stats.dropped_batches,
+                "frames_written_by_source": dict(recording_stats.frames_written_by_source),
+                "dropped_sources": dict(recording_stats.dropped_sources),
+                "frame_log_file": recording_stats.frame_log_file,
+                "resource_snapshots": {
+                    label: {
+                        "disk_total_gb": snapshot.disk_total_gb,
+                        "disk_free_gb": snapshot.disk_free_gb,
+                        "disk_used_percent": snapshot.disk_used_percent,
+                        "memory_used_percent": snapshot.memory_used_percent,
+                        "notes": list(snapshot.notes),
+                    }
+                    for label, snapshot in recording_stats.resource_snapshots.items()
+                },
+            }
         if self._latest_calibration_result is not None:
             metadata["latest_calibration_sync_status"] = self._latest_calibration_result.sync_report.status if self._latest_calibration_result.sync_report is not None else "unknown"
 
@@ -590,6 +931,7 @@ class MainWindow(QMainWindow):
             calibration_file=calibration_file,
             notes=self._session_panel.notes(),
             metadata=metadata,
+            video_files=video_files,
         )
 
     def _apply_session_manifest(self, manifest: SessionManifest, manifest_path: Path) -> None:
@@ -601,6 +943,7 @@ class MainWindow(QMainWindow):
         self._session_state.playback_active = False
         self._latest_batch = None
         self._latest_calibration_result = None
+        self._latest_recording_stats = None
         self._probe_results = {}
         self._active_sources = list(manifest.sources)
 
@@ -610,6 +953,7 @@ class MainWindow(QMainWindow):
         self._session_panel.set_active_session_dir(str(session_dir))
         self._session_panel.set_manifest_path(str(manifest_path))
         self._session_panel.set_manifest(manifest)
+        self._session_panel.set_recording_active(False)
 
         self._capture_panel.set_source_csv(self._session_repo.sources_to_csv(manifest.sources))
         self._capture_panel.set_target_fps(manifest.fps)
@@ -642,7 +986,15 @@ class MainWindow(QMainWindow):
         self._camera_grid.set_sources(sources, self._probe_results)
         self._clear_preview_widgets("Probing sources...")
 
-        worker = CameraProbeWorker(sources)
+        worker = CameraProbeWorker(
+            sources,
+            requested_width=self._capture_panel.requested_width(),
+            requested_height=self._capture_panel.requested_height(),
+            requested_fps=self._capture_panel.target_fps(),
+            exposure=self._capture_panel.requested_exposure(),
+            gain=self._capture_panel.requested_gain(),
+            white_balance=self._capture_panel.requested_white_balance(),
+        )
         worker.result_ready.connect(self._on_probe_results)
         worker.state_changed.connect(lambda state: self._append_log(f"Probe: {state}"))
         worker.error.connect(self._on_worker_error)
@@ -781,6 +1133,8 @@ class MainWindow(QMainWindow):
         self._active_detector_name = actual_name
         self._pipeline_worker.update_detector(detector)
         self._set_preview_pipeline_result(None)
+        self._review_overlay_cache.clear()
+        self._review_preview_panel.set_pipeline_result(None)
         self._status_panel.set_idle()
         self._config.default_detector_name = actual_name
         try:
@@ -789,6 +1143,10 @@ class MainWindow(QMainWindow):
             LOGGER.warning("Failed to save detector preference: %s", exc)
         self._append_log(f"Detector switched to {actual_name}")
         self.statusBar().showMessage(f"Detector: {actual_name}")
+        if self._review_reader is not None:
+            self._session_review_panel.set_state(
+                f"Detector switched to {actual_name}. Review overlays were cleared for reproducible reprocessing."
+            )
 
         if self._capture_panel.detector_name() != actual_name:
             self._capture_panel.set_detector_name(actual_name)
@@ -814,6 +1172,12 @@ class MainWindow(QMainWindow):
             sources=sources,
             target_fps=target_fps,
             max_frame_width=1280,
+            requested_width=self._capture_panel.requested_width(),
+            requested_height=self._capture_panel.requested_height(),
+            requested_fps=target_fps,
+            exposure=self._capture_panel.requested_exposure(),
+            gain=self._capture_panel.requested_gain(),
+            white_balance=self._capture_panel.requested_white_balance(),
             batch_limit=batch_limit,
         )
         worker.probe_ready.connect(self._on_probe_results)
@@ -824,7 +1188,7 @@ class MainWindow(QMainWindow):
         self._capture_worker = worker
         self._capture_panel.set_running(True)
         self._capture_panel.set_state("Running capture...")
-        self._session_state.recording_active = True
+        self._session_state.recording_active = self._is_recording_active()
         self._refresh_session_panel()
         self.statusBar().showMessage("Capture running")
         self._current_capture_batch_limit = batch_limit
@@ -846,6 +1210,8 @@ class MainWindow(QMainWindow):
             self._last_capture_output_update_sec = now
         self._show_preview_batch(batch)
         self._camera_grid.update_batch(batch, self._active_sources, self._probe_results)
+        if self._recording_worker is not None:
+            self._recording_worker.submit_batch(batch)
         self._calibration_worker.submit_batch(batch, record_sample=capture_sample)
         if self._pipeline_worker.isRunning():
             self._pipeline_worker.submit_batch(batch)
@@ -1008,7 +1374,13 @@ class MainWindow(QMainWindow):
         for source_id, probe in results.items():
             label = next((source.label for source in self._active_sources if source.source_id == source_id), source_id)
             status = "opened" if probe.opened else "failed"
-            lines.append(f"- {source_id} ({label}): {status}, backend={probe.backend}, size={probe.width}x{probe.height}")
+            fps_text = f", fps={probe.fps:.1f}" if probe.fps > 0 else ""
+            controls = ", ".join(name for name, applied in probe.control_status.items() if applied)
+            control_text = f", controls={controls}" if controls else ""
+            lines.append(
+                f"- {source_id} ({label}): {status}, backend={probe.backend}, "
+                f"size={probe.width}x{probe.height}{fps_text}{control_text}"
+            )
         summary = "\n".join(lines)
         self._capture_panel.clear_output()
         self._capture_panel.append_output(summary)
@@ -1029,6 +1401,8 @@ class MainWindow(QMainWindow):
         self._capture_panel.set_probe_running(False)
 
     def _on_capture_finished(self) -> None:
+        if self._is_recording_active():
+            self._stop_recording_worker(save_manifest=True, state_message="Session recording saved")
         self._capture_worker = None
         self._capture_panel.set_running(False)
         self._session_state.recording_active = False
@@ -1043,6 +1417,8 @@ class MainWindow(QMainWindow):
     def _stop_capture_worker(self) -> None:
         if self._capture_worker is None:
             return
+        if self._is_recording_active():
+            self._stop_recording_worker(save_manifest=True, state_message="Session recording saved")
         self._capture_worker.stop()
         if not self._capture_worker.wait(3000):
             LOGGER.warning("Capture worker did not stop in time; forcing termination.")
@@ -1125,6 +1501,7 @@ class MainWindow(QMainWindow):
         self._capture_panel.set_state(message)
 
     def closeEvent(self, event) -> None:
+        self._stop_recording_worker(save_manifest=True, state_message="Session recording saved on shutdown")
         self._stop_startup_worker()
         self._stop_calibration_worker()
         self._stop_capture_worker()

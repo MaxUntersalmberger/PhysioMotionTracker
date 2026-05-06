@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from capture.backend import CaptureBatch
+from calibration.diagnostics import acceptance_report_to_metadata, evaluate_calibration_bundle
 from models.types import CalibrationBundle, CameraCalibration, FramePacket
 
 
@@ -132,6 +133,7 @@ class _CalibrationDetection:
     object_points: np.ndarray
     image_points: np.ndarray
     coverage_ratio: float
+    pattern_type: str = "chessboard"
 
 
 @dataclass(slots=True)
@@ -314,8 +316,10 @@ class CalibrationManager:
                     "intrinsics_solved_at_iso": datetime.now().isoformat(timespec="seconds"),
                     "sample_counts": self.sample_counts(),
                     "synchronized_samples": len(self._sync_samples),
+                    "calibration_version": _calibration_version(),
                 },
             )
+            bundle.metadata.update(acceptance_report_to_metadata(evaluate_calibration_bundle(bundle)))
             self._current_bundle = bundle
             return CalibrationSolveResult(
                 bundle=bundle,
@@ -453,8 +457,10 @@ class CalibrationManager:
                     "reference_source_id": reference_source_id,
                     "extrinsics_solved_at_iso": datetime.now().isoformat(timespec="seconds"),
                     "used_synchronized_samples": useable_sync_samples,
+                    "calibration_version": _calibration_version(),
                 },
             )
+            updated_bundle.metadata.update(acceptance_report_to_metadata(evaluate_calibration_bundle(updated_bundle)))
             self._current_bundle = updated_bundle
             return CalibrationSolveResult(
                 bundle=updated_bundle,
@@ -540,6 +546,10 @@ class CalibrationManager:
         pattern_size = self._board_shape
 
         try:
+            charuco_detection = self._detect_charuco_board(source_id, frame, gray)
+            if charuco_detection is not None:
+                return charuco_detection
+
             if hasattr(cv2, "findChessboardCornersSB"):
                 found, corners = cv2.findChessboardCornersSB(
                     gray,
@@ -580,6 +590,53 @@ class CalibrationManager:
             object_points=object_points,
             image_points=image_points,
             coverage_ratio=coverage_ratio,
+            pattern_type="chessboard",
+        )
+
+    def _detect_charuco_board(self, source_id: str, frame: FramePacket, gray: np.ndarray) -> _CalibrationDetection | None:
+        aruco = getattr(cv2, "aruco", None)
+        if aruco is None:
+            return None
+        required = ("getPredefinedDictionary", "detectMarkers", "interpolateCornersCharuco")
+        if not all(hasattr(aruco, name) for name in required):
+            return None
+
+        try:
+            dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+            board = _create_charuco_board(aruco, self._board_shape, self._square_size_m)
+            if board is None:
+                return None
+            marker_corners, marker_ids, _rejected = aruco.detectMarkers(gray, dictionary)
+            if marker_ids is None or len(marker_ids) == 0:
+                return None
+            _count, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
+                marker_corners,
+                marker_ids,
+                gray,
+                board,
+            )
+        except Exception:
+            return None
+
+        if charuco_corners is None or charuco_ids is None or len(charuco_corners) < 4:
+            return None
+
+        object_points = _charuco_object_points(board, charuco_ids)
+        if object_points is None or len(object_points) != len(charuco_corners):
+            return None
+
+        image_height, image_width = gray.shape[:2]
+        image_points = np.asarray(charuco_corners, dtype=np.float32).reshape(-1, 1, 2)
+        coverage_ratio = _estimate_coverage_ratio(image_points.reshape(-1, 2), image_width, image_height)
+        return _CalibrationDetection(
+            source_id=source_id,
+            frame_index=frame.frame_index,
+            timestamp_sec=frame.timestamp_sec,
+            image_size=(int(image_width), int(image_height)),
+            object_points=np.asarray(object_points, dtype=np.float32).reshape(-1, 3),
+            image_points=image_points,
+            coverage_ratio=coverage_ratio,
+            pattern_type="charuco",
         )
 
     def _solve_board_transform(
@@ -753,6 +810,39 @@ def _board_object_points(board_shape: tuple[int, int], square_size_m: float) -> 
     return object_points
 
 
+def _create_charuco_board(aruco, board_shape: tuple[int, int], square_size_m: float):
+    columns, rows = board_shape
+    marker_size = float(square_size_m) * 0.72
+    try:
+        if hasattr(aruco, "CharucoBoard"):
+            dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+            return aruco.CharucoBoard((columns + 1, rows + 1), float(square_size_m), marker_size, dictionary)
+        if hasattr(aruco, "CharucoBoard_create"):
+            dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+            return aruco.CharucoBoard_create(columns + 1, rows + 1, float(square_size_m), marker_size, dictionary)
+    except Exception:
+        return None
+    return None
+
+
+def _charuco_object_points(board, charuco_ids: np.ndarray) -> np.ndarray | None:
+    try:
+        corners = board.getChessboardCorners()
+    except Exception:
+        corners = getattr(board, "chessboardCorners", None)
+    if corners is None:
+        return None
+    all_corners = np.asarray(corners, dtype=np.float32).reshape(-1, 3)
+    ids = np.asarray(charuco_ids, dtype=np.int32).reshape(-1)
+    if ids.size == 0 or np.max(ids) >= len(all_corners):
+        return None
+    return all_corners[ids]
+
+
+def _calibration_version() -> str:
+    return datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+
+
 def _normalize_board_shape(board_shape: tuple[int, int]) -> tuple[int, int]:
     columns = max(2, int(board_shape[0]))
     rows = max(2, int(board_shape[1]))
@@ -782,7 +872,15 @@ def _quality_label(score: float) -> str:
 
 
 def _camera_has_intrinsics(camera: CameraCalibration) -> bool:
-    return camera.intrinsics is not None and camera.translation is not None and camera.rotation is not None
+    if camera.intrinsics is None:
+        return False
+
+    try:
+        matrix = np.asarray(camera.intrinsics, dtype=np.float64)
+    except (TypeError, ValueError):
+        return False
+
+    return matrix.shape == (3, 3)
 
 
 def _camera_matrix(camera: CameraCalibration, target_image_size: tuple[int, int]) -> np.ndarray | None:

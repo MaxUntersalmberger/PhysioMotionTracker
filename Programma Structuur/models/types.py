@@ -155,3 +155,8 @@ class CameraProbeResult:
     width: int = 0
     height: int = 0
     backend: str = ""
+    fps: float = 0.0
+    exposure: float | None = None
+    gain: float | None = None
+    white_balance: float | None = None
+    control_status: dict[str, bool] = field(default_factory=dict)

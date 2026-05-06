@@ -59,17 +59,23 @@ py run.py --smoke-test
 py run.py --demo-pipeline
 py run.py --capture-sample --sources 0
 py run.py --ui
+py run.py --session-summary sessions/session_YYYYMMDD_HHMMSS
+py run.py --reprocess-session sessions/session_YYYYMMDD_HHMMSS --detector synthetic --max-batches 0
 ```
 
 `--smoke-test` controleert alleen of de basis opstart.
 `--demo-pipeline` draait een synthetische capture/detectie/reconstructie-keten zonder echte camera.
 `--capture-sample` opent echte bronnen met OpenCV en leest één batch in.
 `--ui` start de Qt-shell met probe-, capture-, calibration-, live preview-, overlay-, camera-grid- en pipeline-koppeling.
+`--session-summary` controleert of een opgenomen sessie terugleesbaar is.
+`--reprocess-session` speelt een opgenomen sessie opnieuw door de pipeline; `--max-batches 0` verwerkt alles.
 
 De live UI gebruikt MediaPipe als 2D-pose-detector wanneer het modelbestand beschikbaar is.
-In het capture-paneel kun je wisselen tussen MediaPipe en de synthetische demo-detector.
+In het capture-paneel kun je wisselen tussen MediaPipe, de synthetische demo-detector en een detectie-uit stand.
 
 De gekozen detector wordt opgeslagen in `programmastructuur.config.json` en bij de volgende start hersteld.
+Het capture-paneel kan nu resolutie, FPS, exposure, gain en white balance aanvragen; OpenCV rapporteert per probe welke controls zijn toegepast.
+De camera grid toont per-camera health met FPS-indicatie en drop counts.
 
 De calibratie-workflow in de live UI werkt met chessboard-samples: capture samples, solve intrinsics, solve extrinsics, en sla de bundle op als `calibration/current_calibration.json`.
 Als dat bestand aanwezig is, wordt het bij opstart automatisch geladen.
@@ -77,7 +83,13 @@ Tijdens sample capture controleert de UI of de board in meerdere camera's zichtb
 De live preview tekent de gedetecteerde chessboard-corners per camera en de camera grid laat zien welke bronnen de board op dat moment zien.
 Wanneer een calibratiebundle met geldige intrinsics én extrinsics aanwezig is, schakelt de live reconstructie over naar echte multi-view triangulatie.
 Zonder zo'n bundle blijft reconstructie bewust unavailable in plaats van een nep-3D resultaat te tonen.
+Calibratiebundles krijgen nu acceptance metadata, epipolar pair readiness en versie-informatie; Charuco-detectie wordt gebruikt wanneer de OpenCV build `cv2.aruco` ondersteunt.
+
+De Session-tab ondersteunt nu een eerste echte recording lifecycle: start recording, stop recording, per-camera video-opslag, een `frames.jsonl` tijdlijn en manifest-metadata voor reproduceerbare offline verwerking. Opgenomen sessies kunnen headless worden teruggelezen en opnieuw door de pipeline worden verwerkt.
+De Review-tab kan een opgenomen sessie laden, met een frame-slider door de recorded batches stappen en de huidige recorded frame direct opnieuw door de pipeline halen voor 2D/3D overlays.
+Tijdens recording worden disk/resource snapshots opgeslagen in het session manifest.
 
 Zie [ARCHITECTURE.md](ARCHITECTURE.md) voor de concrete modulegrenzen en de aanbevolen eerste implementatiestappen.
+Zie [PROFESSIONAL_BACKLOG.md](PROFESSIONAL_BACKLOG.md) voor de volledige professionele product-backlog en status.
 
 Wijzigingen worden bijgehouden in [CHANGELOG.md](CHANGELOG.md).

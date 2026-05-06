@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from detectors.contracts import PoseDetector
+from detectors.policies import ConfidencePolicy, PoseQualityReport, apply_confidence_policy
 from models.types import CalibrationBundle, FramePacket, PipelineDebugInfo, PipelineResult, Pose2D, Pose2DKeypoint
 from reconstruction.calibrated_triangulation import CalibratedTriangulator
 from tracking.matcher import SemanticKeypointMatcher
@@ -18,11 +19,13 @@ class MocapPipeline:
         matcher: PoseMatcher | None = None,
         triangulator: PoseTriangulator | None = None,
         smoother: PoseSmoother | None = None,
+        confidence_policy: ConfidencePolicy | None = None,
     ) -> None:
         self._detector = detector
         self._matcher = matcher or SemanticKeypointMatcher()
         self._triangulator = triangulator or CalibratedTriangulator()
         self._smoother = smoother or ExponentialPoseSmoother()
+        self._confidence_policy = confidence_policy or ConfidencePolicy()
 
     @property
     def detector_name(self) -> str:
@@ -63,6 +66,7 @@ class MocapPipeline:
         processing_notes: list[str] = []
 
         poses_2d: dict[str, Pose2D] = {}
+        pose_quality_reports: dict[str, PoseQualityReport] = {}
         matched_keypoints: dict[str, dict[str, Pose2DKeypoint]] = {}
         tri_result = None
 
@@ -70,7 +74,10 @@ class MocapPipeline:
             detection_start = time.perf_counter()
             for source_id, frame in frames.items():
                 try:
-                    poses_2d[source_id] = self._detector.detect(frame)
+                    raw_pose = self._detector.detect(frame)
+                    filtered_pose, quality_report = apply_confidence_policy(raw_pose, self._confidence_policy)
+                    poses_2d[source_id] = filtered_pose
+                    pose_quality_reports[source_id] = quality_report
                 except Exception as exc:  # pragma: no cover - defensive pipeline surface
                     processing_notes.append(f"{source_id}: detector failed ({exc}).")
                     poses_2d[source_id] = self._empty_pose_from_frame(frame)
@@ -117,6 +124,11 @@ class MocapPipeline:
                 notes.append("Detector produced no visible 2D keypoints in this frame.")
         if len(frames) < 2:
             notes.append("Only one camera active: multi-view reconstruction unavailable.")
+        for source_id, report in pose_quality_reports.items():
+            if report.occlusion_status == "occluded":
+                notes.append(f"{source_id}: pose appears occluded ({len(report.missing_keypoints)} missing keypoints).")
+            elif report.low_confidence_keypoints:
+                notes.append(f"{source_id}: filtered {len(report.low_confidence_keypoints)} low-confidence keypoint(s).")
         if pose_3d is None:
             notes.append("No valid 3D pose reconstructed for this frame.")
         if self._detector.name == "synthetic_pose_detector":

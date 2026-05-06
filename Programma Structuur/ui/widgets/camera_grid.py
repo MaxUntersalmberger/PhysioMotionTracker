@@ -23,6 +23,7 @@ class _CameraCardWidget(QFrame):
         self._kind_label = QLabel()
         self._probe_label = QLabel()
         self._frame_label = QLabel()
+        self._health_label = QLabel()
         self._calibration_label = QLabel()
         self._status_label = QLabel()
         self._view_button = QPushButton("View")
@@ -32,6 +33,7 @@ class _CameraCardWidget(QFrame):
         self._kind_label.setObjectName("cameraCardKind")
         self._probe_label.setObjectName("cameraCardProbe")
         self._frame_label.setObjectName("cameraCardFrame")
+        self._health_label.setObjectName("cameraCardHealth")
         self._calibration_label.setObjectName("cameraCardCalibration")
         self._status_label.setObjectName("cameraCardStatus")
 
@@ -40,6 +42,7 @@ class _CameraCardWidget(QFrame):
         layout.addWidget(self._kind_label)
         layout.addWidget(self._probe_label)
         layout.addWidget(self._frame_label)
+        layout.addWidget(self._health_label)
         layout.addWidget(self._calibration_label)
         layout.addWidget(self._status_label)
         button_row = QHBoxLayout()
@@ -50,6 +53,7 @@ class _CameraCardWidget(QFrame):
         self.set_source(source)
         self.set_probe_result(None)
         self.set_frame_packet(None)
+        self.set_health(None, 0)
         self.set_calibration_detection(None)
         self.set_selected(False)
 
@@ -69,7 +73,8 @@ class _CameraCardWidget(QFrame):
             return
 
         status = "opened" if probe.opened else "failed"
-        self._probe_label.setText(f"Probe: {status} | backend={probe.backend} | {probe.width}x{probe.height}")
+        fps_text = f" | {probe.fps:.1f} fps" if probe.fps > 0 else ""
+        self._probe_label.setText(f"Probe: {status} | backend={probe.backend} | {probe.width}x{probe.height}{fps_text}")
         self._status_label.setText(f"Status: {status}")
 
     def set_frame_packet(self, frame: FramePacket | None) -> None:
@@ -77,6 +82,12 @@ class _CameraCardWidget(QFrame):
             self._frame_label.setText("Last frame: none")
             return
         self._frame_label.setText(f"Last frame: #{frame.frame_index} @ {frame.timestamp_sec:.3f}s")
+
+    def set_health(self, fps: float | None, dropped_count: int) -> None:
+        fps_text = f"{fps:.1f} fps" if fps is not None and fps > 0 else "fps n/a"
+        drop_text = f"drops={dropped_count}"
+        health = "good" if dropped_count == 0 else "degraded"
+        self._health_label.setText(f"Health: {health} | {fps_text} | {drop_text}")
 
     def set_calibration_detection(self, detection: CalibrationViewDetection | None) -> None:
         if detection is None:
@@ -104,6 +115,7 @@ class _CameraCardWidget(QFrame):
                 QLabel#cameraCardKind,
                 QLabel#cameraCardProbe,
                 QLabel#cameraCardFrame,
+                QLabel#cameraCardHealth,
                 QLabel#cameraCardCalibration,
                 QLabel#cameraCardStatus {
                     color: #27405a;
@@ -126,6 +138,7 @@ class _CameraCardWidget(QFrame):
                 QLabel#cameraCardKind,
                 QLabel#cameraCardProbe,
                 QLabel#cameraCardFrame,
+                QLabel#cameraCardHealth,
                 QLabel#cameraCardCalibration,
                 QLabel#cameraCardStatus {
                     color: #3a4f63;
@@ -145,6 +158,10 @@ class CameraGridWidget(QWidget):
         self._selected_source_id: str | None = None
         self._cards: dict[str, _CameraCardWidget] = {}
         self._last_capture_ms: float | None = None
+        self._last_frame_timestamp_by_source: dict[str, float] = {}
+        self._last_frame_index_by_source: dict[str, int] = {}
+        self._fps_by_source: dict[str, float] = {}
+        self._drop_counts_by_source: dict[str, int] = {}
         self._last_summary_text = ""
 
         self._summary_label = QLabel("No cameras configured.")
@@ -212,8 +229,25 @@ class CameraGridWidget(QWidget):
             self._probe_results = dict(probe_results)
 
         self._last_capture_ms = batch.capture_ms
+        for dropped_source in batch.dropped_sources:
+            self._drop_counts_by_source[dropped_source] = self._drop_counts_by_source.get(dropped_source, 0) + 1
+
         for source_id, card in self._cards.items():
-            card.set_frame_packet(batch.frames.get(source_id))
+            frame = batch.frames.get(source_id)
+            card.set_frame_packet(frame)
+            if frame is not None:
+                previous_time = self._last_frame_timestamp_by_source.get(source_id)
+                previous_index = self._last_frame_index_by_source.get(source_id)
+                if previous_time is not None and previous_index is not None:
+                    delta_time = frame.timestamp_sec - previous_time
+                    delta_index = frame.frame_index - previous_index
+                    if delta_time > 0 and delta_index > 0:
+                        instant_fps = delta_index / delta_time
+                        previous_fps = self._fps_by_source.get(source_id, instant_fps)
+                        self._fps_by_source[source_id] = (previous_fps * 0.85) + (instant_fps * 0.15)
+                self._last_frame_timestamp_by_source[source_id] = frame.timestamp_sec
+                self._last_frame_index_by_source[source_id] = frame.frame_index
+            card.set_health(self._fps_by_source.get(source_id), self._drop_counts_by_source.get(source_id, 0))
             if source_id in self._probe_results:
                 card.set_probe_result(self._probe_results[source_id])
             card.set_calibration_detection(self._calibration_detections.get(source_id))
@@ -231,6 +265,10 @@ class CameraGridWidget(QWidget):
         self._calibration_detections = {}
         self._selected_source_id = None
         self._last_capture_ms = None
+        self._last_frame_timestamp_by_source = {}
+        self._last_frame_index_by_source = {}
+        self._fps_by_source = {}
+        self._drop_counts_by_source = {}
         self._cards.clear()
         self._last_summary_text = ""
         self._clear_layout()
@@ -251,6 +289,7 @@ class CameraGridWidget(QWidget):
             card.select_requested.connect(self._on_card_selected)
             card.set_probe_result(self._probe_results.get(source.source_id))
             card.set_frame_packet(None)
+            card.set_health(self._fps_by_source.get(source.source_id), self._drop_counts_by_source.get(source.source_id, 0))
             card.set_calibration_detection(self._calibration_detections.get(source.source_id))
             card.set_selected(source.source_id == self._selected_source_id)
             self._cards[source.source_id] = card

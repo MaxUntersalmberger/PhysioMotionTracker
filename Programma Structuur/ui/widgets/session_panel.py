@@ -21,6 +21,8 @@ class SessionPanelWidget(QWidget):
     new_session_requested = Signal()
     save_session_requested = Signal()
     load_session_requested = Signal()
+    start_recording_requested = Signal()
+    stop_recording_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -42,8 +44,11 @@ class SessionPanelWidget(QWidget):
         self._notes_edit.setObjectName("sessionNotesInput")
 
         self._new_button = QPushButton("New Session")
+        self._start_recording_button = QPushButton("Start Recording")
+        self._stop_recording_button = QPushButton("Stop Recording")
         self._save_button = QPushButton("Save Snapshot")
         self._load_button = QPushButton("Load Session")
+        self._stop_recording_button.setEnabled(False)
 
         controls_box = QGroupBox("Session Controls")
         controls_layout = QVBoxLayout(controls_box)
@@ -53,6 +58,8 @@ class SessionPanelWidget(QWidget):
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._new_button)
+        button_row.addWidget(self._start_recording_button)
+        button_row.addWidget(self._stop_recording_button)
         button_row.addWidget(self._save_button)
         button_row.addWidget(self._load_button)
         controls_layout.addLayout(button_row)
@@ -75,6 +82,8 @@ class SessionPanelWidget(QWidget):
         root.addWidget(summary_box, 1)
 
         self._new_button.clicked.connect(self.new_session_requested.emit)
+        self._start_recording_button.clicked.connect(self.start_recording_requested.emit)
+        self._stop_recording_button.clicked.connect(self.stop_recording_requested.emit)
         self._save_button.clicked.connect(self.save_session_requested.emit)
         self._load_button.clicked.connect(self.load_session_requested.emit)
 
@@ -92,6 +101,12 @@ class SessionPanelWidget(QWidget):
 
     def set_state(self, text: str) -> None:
         self._state_label.setText(text)
+
+    def set_recording_active(self, active: bool) -> None:
+        self._start_recording_button.setEnabled(not active)
+        self._stop_recording_button.setEnabled(active)
+        self._save_button.setEnabled(not active)
+        self._load_button.setEnabled(not active)
 
     def set_active_session_dir(self, path_text: str | None) -> None:
         self._active_dir_label.setText(f"Active session: {path_text}" if path_text else "Active session: none")
@@ -121,10 +136,17 @@ class SessionPanelWidget(QWidget):
             f"Sources: {len(manifest.sources)}",
             f"Total frames: {manifest.total_frames}",
         ]
+        if manifest.video_files:
+            lines.append(f"Video files: {len(manifest.video_files)}")
         if manifest.calibration_file:
             lines.append(f"Calibration: {manifest.calibration_file}")
         if manifest.pose_file:
             lines.append(f"Pose file: {manifest.pose_file}")
+        recording = manifest.metadata.get("recording")
+        if isinstance(recording, dict):
+            batches_written = recording.get("batches_written", 0)
+            dropped_batches = recording.get("dropped_batches", 0)
+            lines.append(f"Recording batches: {batches_written} | dropped: {dropped_batches}")
         if manifest.notes:
             lines.append("Notes: " + " | ".join(manifest.notes[:3]))
         self.set_summary_lines(lines)

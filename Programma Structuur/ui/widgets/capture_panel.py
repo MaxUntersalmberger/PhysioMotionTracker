@@ -52,6 +52,39 @@ class CapturePanelWidget(QWidget):
         self._fps_spin.setValue(float(default_fps))
         self._fps_spin.setSuffix(" fps")
 
+        self._width_spin = QDoubleSpinBox()
+        self._width_spin.setRange(0.0, 7680.0)
+        self._width_spin.setDecimals(0)
+        self._width_spin.setSingleStep(160.0)
+        self._width_spin.setSpecialValueText("Auto")
+        self._width_spin.setSuffix(" px")
+
+        self._height_spin = QDoubleSpinBox()
+        self._height_spin.setRange(0.0, 4320.0)
+        self._height_spin.setDecimals(0)
+        self._height_spin.setSingleStep(90.0)
+        self._height_spin.setSpecialValueText("Auto")
+        self._height_spin.setSuffix(" px")
+
+        self._exposure_spin = QDoubleSpinBox()
+        self._exposure_spin.setRange(-20.0, 10000.0)
+        self._exposure_spin.setDecimals(2)
+        self._exposure_spin.setSingleStep(1.0)
+        self._exposure_spin.setSpecialValueText("Auto")
+
+        self._gain_spin = QDoubleSpinBox()
+        self._gain_spin.setRange(0.0, 10000.0)
+        self._gain_spin.setDecimals(2)
+        self._gain_spin.setSingleStep(1.0)
+        self._gain_spin.setSpecialValueText("Auto")
+
+        self._white_balance_spin = QDoubleSpinBox()
+        self._white_balance_spin.setRange(0.0, 12000.0)
+        self._white_balance_spin.setDecimals(0)
+        self._white_balance_spin.setSingleStep(100.0)
+        self._white_balance_spin.setSpecialValueText("Auto")
+        self._white_balance_spin.setSuffix(" K")
+
         self._probe_button = QPushButton("Probe Sources")
         self._sample_button = QPushButton("Capture Sample")
         self._live_button = QPushButton("Start Live")
@@ -68,6 +101,11 @@ class CapturePanelWidget(QWidget):
         form.addRow("Sources", self._source_edit)
         form.addRow("Detector", self._detector_combo)
         form.addRow("Target FPS", self._fps_spin)
+        form.addRow("Width", self._width_spin)
+        form.addRow("Height", self._height_spin)
+        form.addRow("Exposure", self._exposure_spin)
+        form.addRow("Gain", self._gain_spin)
+        form.addRow("White balance", self._white_balance_spin)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._probe_button)
@@ -127,12 +165,32 @@ class CapturePanelWidget(QWidget):
     def set_target_fps(self, target_fps: float) -> None:
         self._fps_spin.setValue(float(target_fps))
 
+    def requested_width(self) -> int:
+        return int(self._width_spin.value())
+
+    def requested_height(self) -> int:
+        return int(self._height_spin.value())
+
+    def requested_exposure(self) -> float | None:
+        return _optional_spin_value(self._exposure_spin)
+
+    def requested_gain(self) -> float | None:
+        return _optional_spin_value(self._gain_spin)
+
+    def requested_white_balance(self) -> float | None:
+        return _optional_spin_value(self._white_balance_spin)
+
     def set_state(self, text: str) -> None:
         self._state_label.setText(text)
 
     def set_running(self, running: bool) -> None:
         self._source_edit.setEnabled(not running)
         self._fps_spin.setEnabled(not running)
+        self._width_spin.setEnabled(not running)
+        self._height_spin.setEnabled(not running)
+        self._exposure_spin.setEnabled(not running)
+        self._gain_spin.setEnabled(not running)
+        self._white_balance_spin.setEnabled(not running)
         self._probe_button.setEnabled(not running)
         self._sample_button.setEnabled(not running)
         self._live_button.setEnabled(not running)
@@ -141,6 +199,11 @@ class CapturePanelWidget(QWidget):
     def set_probe_running(self, running: bool) -> None:
         self._source_edit.setEnabled(not running)
         self._fps_spin.setEnabled(not running)
+        self._width_spin.setEnabled(not running)
+        self._height_spin.setEnabled(not running)
+        self._exposure_spin.setEnabled(not running)
+        self._gain_spin.setEnabled(not running)
+        self._white_balance_spin.setEnabled(not running)
         self._probe_button.setEnabled(not running)
         self._sample_button.setEnabled(not running)
         self._live_button.setEnabled(not running)
@@ -153,3 +216,10 @@ class CapturePanelWidget(QWidget):
 
     def clear_output(self) -> None:
         self._output.clear()
+
+
+def _optional_spin_value(spin: QDoubleSpinBox) -> float | None:
+    value = float(spin.value())
+    if value <= float(spin.minimum()):
+        return None
+    return value

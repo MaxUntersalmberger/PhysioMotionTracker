@@ -11,6 +11,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency guard
     cv2 = None  # type: ignore[assignment]
 
+from capture.profiles import CameraControlSettings, apply_camera_controls
 from models.types import CameraProbeResult, CameraSourceConfig, FramePacket
 
 
@@ -31,15 +32,28 @@ class OpenCVCaptureSession:
         max_frame_width: int = 0,
         requested_width: int = 0,
         requested_height: int = 0,
+        requested_fps: float = 0.0,
+        exposure: float | None = None,
+        gain: float | None = None,
+        white_balance: float | None = None,
+        auto_exposure: float | None = None,
         loop_video: bool = False,
     ) -> None:
         self._sources = [source for source in sources if source.enabled]
         self._target_fps = max(1.0, float(target_fps))
         self._max_frame_width = max(0, int(max_frame_width))
-        self._requested_width = max(0, int(requested_width))
-        self._requested_height = max(0, int(requested_height))
+        self._control_settings = CameraControlSettings(
+            width=max(0, int(requested_width)),
+            height=max(0, int(requested_height)),
+            fps=max(0.0, float(requested_fps or target_fps or 0.0)),
+            exposure=exposure,
+            gain=gain,
+            white_balance=white_balance,
+            auto_exposure=auto_exposure,
+        )
         self._loop_video = bool(loop_video)
         self._captures: dict[str, Any] = {}
+        self._control_status: dict[str, dict[str, bool]] = {}
         self._frame_indices: dict[str, int] = {source.source_id: 0 for source in self._sources}
         self._probe_results: dict[str, CameraProbeResult] = {}
 
@@ -139,23 +153,20 @@ class OpenCVCaptureSession:
                 else cv2_module.VideoCapture(uri)
             )
             if capture.isOpened():
-                self._apply_capture_settings(capture, cv2_module)
-                return capture, self._build_probe_result(index, capture, backend_name, True, cv2_module)
+                self._apply_capture_settings(source.source_id, capture, cv2_module)
+                return capture, self._build_probe_result(source.source_id, index, capture, backend_name, True, cv2_module)
             capture.release()
 
         fallback = cv2_module.VideoCapture(uri)
-        probe = self._build_probe_result(index, fallback, "unavailable", fallback.isOpened(), cv2_module)
+        probe = self._build_probe_result(source.source_id, index, fallback, "unavailable", fallback.isOpened(), cv2_module)
         return fallback, probe
 
-    def _apply_capture_settings(self, capture: Any, cv2_module: Any) -> None:
-        capture.set(cv2_module.CAP_PROP_BUFFERSIZE, 1)
-        if self._requested_width > 0:
-            capture.set(cv2_module.CAP_PROP_FRAME_WIDTH, float(self._requested_width))
-        if self._requested_height > 0:
-            capture.set(cv2_module.CAP_PROP_FRAME_HEIGHT, float(self._requested_height))
+    def _apply_capture_settings(self, source_id: str, capture: Any, cv2_module: Any) -> None:
+        self._control_status[source_id] = apply_camera_controls(capture, cv2_module, self._control_settings)
 
     def _build_probe_result(
         self,
+        source_id: str,
         index: int,
         capture: Any,
         backend_name: str,
@@ -165,10 +176,29 @@ class OpenCVCaptureSession:
         if opened:
             width = int(capture.get(cv2_module.CAP_PROP_FRAME_WIDTH))
             height = int(capture.get(cv2_module.CAP_PROP_FRAME_HEIGHT))
+            fps = float(capture.get(cv2_module.CAP_PROP_FPS)) if hasattr(cv2_module, "CAP_PROP_FPS") else 0.0
+            exposure = _read_capture_property(capture, cv2_module, "CAP_PROP_EXPOSURE")
+            gain = _read_capture_property(capture, cv2_module, "CAP_PROP_GAIN")
+            white_balance = _read_capture_property(capture, cv2_module, "CAP_PROP_WB_TEMPERATURE")
         else:
             width = 0
             height = 0
-        return CameraProbeResult(index=index, opened=opened, width=width, height=height, backend=backend_name)
+            fps = 0.0
+            exposure = None
+            gain = None
+            white_balance = None
+        return CameraProbeResult(
+            index=index,
+            opened=opened,
+            width=width,
+            height=height,
+            backend=backend_name,
+            fps=fps,
+            exposure=exposure,
+            gain=gain,
+            white_balance=white_balance,
+            control_status=dict(self._control_status.get(source_id, {})),
+        )
 
     def _resize_frame(self, frame: Any) -> Any:
         if self._max_frame_width <= 0:
@@ -234,8 +264,9 @@ def describe_capture_batch(batch: CaptureBatch, sources: Sequence[CameraSourceCo
             source = source_lookup.get(source_id)
             label = source.label if source and source.label else source_id
             status = "opened" if probe.opened else "failed"
+            fps_text = f", fps={probe.fps:.1f}" if probe.fps > 0 else ""
             lines.append(
-                f"- {source_id} ({label}): {status}, backend={probe.backend}, size={probe.width}x{probe.height}"
+                f"- {source_id} ({label}): {status}, backend={probe.backend}, size={probe.width}x{probe.height}{fps_text}"
             )
 
     if batch.frames:
@@ -253,3 +284,13 @@ def describe_capture_batch(batch: CaptureBatch, sources: Sequence[CameraSourceCo
             )
 
     return "\n".join(lines)
+
+
+def _read_capture_property(capture: Any, cv2_module: Any, property_name: str) -> float | None:
+    if not hasattr(cv2_module, property_name):
+        return None
+    try:
+        value = float(capture.get(getattr(cv2_module, property_name)))
+    except Exception:
+        return None
+    return value

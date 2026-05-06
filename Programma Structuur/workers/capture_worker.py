@@ -34,6 +34,11 @@ class CaptureWorker(QThread):
         max_frame_width: int = 0,
         requested_width: int = 0,
         requested_height: int = 0,
+        requested_fps: float = 0.0,
+        exposure: float | None = None,
+        gain: float | None = None,
+        white_balance: float | None = None,
+        auto_exposure: float | None = None,
         loop_video: bool = False,
         batch_limit: int | None = None,
     ) -> None:
@@ -46,6 +51,11 @@ class CaptureWorker(QThread):
         self._max_frame_width = max(0, int(max_frame_width))
         self._requested_width = max(0, int(requested_width))
         self._requested_height = max(0, int(requested_height))
+        self._requested_fps = max(0.0, float(requested_fps))
+        self._exposure = exposure
+        self._gain = gain
+        self._white_balance = white_balance
+        self._auto_exposure = auto_exposure
         self._loop_video = bool(loop_video)
         self._batch_limit = None if batch_limit is None else max(1, int(batch_limit))
         self._stop_event = threading.Event()
@@ -107,5 +117,10 @@ class CaptureWorker(QThread):
             max_frame_width=self._max_frame_width,
             requested_width=self._requested_width,
             requested_height=self._requested_height,
+            requested_fps=self._requested_fps,
+            exposure=self._exposure,
+            gain=self._gain,
+            white_balance=self._white_balance,
+            auto_exposure=self._auto_exposure,
             loop_video=self._loop_video,
         )

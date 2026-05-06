@@ -14,6 +14,10 @@ _DETECTOR_NAME_ALIASES = {
     "synthetic_demo": "synthetic",
     "synthetic_pose_detector": "synthetic",
     "demo": "synthetic",
+    "none": "none",
+    "null": "none",
+    "disabled": "none",
+    "null_pose_detector": "none",
 }
 
 
@@ -114,6 +118,6 @@ class AppConfig:
 
 def _normalize_detector_name(detector_name: str) -> str:
     normalized = detector_name.strip().lower().replace(" ", "_")
-    if normalized in {"mediapipe", "synthetic"}:
+    if normalized in {"mediapipe", "synthetic", "none"}:
         return normalized
     return _DETECTOR_NAME_ALIASES.get(normalized, DEFAULT_DETECTOR_NAME)

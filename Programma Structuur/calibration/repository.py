@@ -8,7 +8,7 @@ from typing import Any
 from models.types import CalibrationBundle, CameraCalibration
 
 
-CALIBRATION_SCHEMA_VERSION = 1
+CALIBRATION_SCHEMA_VERSION = 2
 
 
 class CalibrationRepository:
@@ -40,6 +40,13 @@ class CalibrationRepository:
             },
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+
+    def save_versioned(self, bundle: CalibrationBundle, directory: Path, setup_name: str = "default") -> Path:
+        version = str(bundle.metadata.get("calibration_version") or datetime.now().strftime("%Y%m%d_%H%M%S"))
+        safe_setup_name = _safe_filename(setup_name)
+        path = directory / f"{safe_setup_name}_{version}.json"
+        self.save(bundle, path)
+        return path
 
     def load(self, path: Path) -> CalibrationBundle | None:
         if not path.exists():
@@ -146,3 +153,9 @@ def _parse_string_list(value: Any) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = [character if character.isalnum() or character in {"-", "_"} else "_" for character in value]
+    filename = "".join(cleaned).strip("._")
+    return filename or "calibration"

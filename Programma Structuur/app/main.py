@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from app.bootstrap import build_context
 from app.demo import format_demo_result, run_pipeline_demo
@@ -8,6 +9,7 @@ from app.ui import run_ui
 from capture.backend import OpenCVCaptureSession, describe_capture_batch
 from capture.sources import parse_sources_csv
 from core.logging import configure_logging
+from session import format_reprocess_report, reprocess_session, summarize_session_playback
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -33,6 +35,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Launch the Qt shell and connect the capture/pipeline workers.",
     )
+    mode.add_argument(
+        "--session-summary",
+        metavar="PATH",
+        help="Load a recorded session manifest/directory and print playback diagnostics.",
+    )
+    mode.add_argument(
+        "--reprocess-session",
+        metavar="PATH",
+        help="Replay a recorded session through the mocap pipeline and print diagnostics.",
+    )
     parser.add_argument(
         "--sources",
         default=None,
@@ -43,6 +55,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=24,
         help="Synthetic frame index to use for the demo pipeline.",
+    )
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=3,
+        help="Maximum recorded batches to preview/process for session commands. Use 0 for all.",
+    )
+    parser.add_argument(
+        "--detector",
+        default="synthetic",
+        help="Detector to use for reprocess-session: synthetic, mediapipe, or none.",
     )
     return parser.parse_args(argv)
 
@@ -86,9 +109,37 @@ def run(argv: list[str] | None = None) -> int:
     if args.ui:
         return run_ui(context.config, argv=argv)
 
+    if args.session_summary:
+        try:
+            print(summarize_session_playback(Path(args.session_summary), max_batches=_batch_limit(args.max_batches)))
+        except Exception as exc:
+            print(f"Session summary failed: {exc}")
+            return 1
+        return 0
+
+    if args.reprocess_session:
+        try:
+            report = reprocess_session(
+                Path(args.reprocess_session),
+                detector_name=args.detector,
+                max_batches=_batch_limit(args.max_batches),
+            )
+            print(format_reprocess_report(report))
+        except Exception as exc:
+            print(f"Session reprocess failed: {exc}")
+            return 1
+        return 0
+
     print(f"{context.config.app_name} initialized")
     print(f"Root: {context.config.app_root}")
     print(f"Sessions: {context.config.sessions_dir}")
     print(f"Calibration: {context.config.calibration_dir}")
     print(f"Logs: {log_path}")
     return 0
+
+
+def _batch_limit(value: int) -> int | None:
+    limit = int(value)
+    if limit <= 0:
+        return None
+    return limit

@@ -2,6 +2,27 @@
 
 Dit bestand houdt de aanpassingen aan Programma Structuur bij.
 
+## 2026-04-23
+
+- Extrinsics-calibratie gefixt: camera's met opgeloste intrinsics worden nu correct meegenomen bij het oplossen van rotation/translation.
+- Regressietest toegevoegd voor intrinsics-only calibration bundles in `tests/test_calibration_manager.py`.
+- Session recording toegevoegd: live capture kan nu per camera naar video schrijven met een `frames.jsonl` tijdlijn en manifest-metadata.
+- Recording-worker toegevoegd zodat video-opslag buiten de UI-thread gebeurt.
+- Regressietest toegevoegd voor session recording zonder echte camera.
+- Session playback toegevoegd: manifest + recorded videos + `frames.jsonl` kunnen terug naar `CaptureBatch` worden gelezen.
+- CLI toegevoegd voor `--session-summary` en `--reprocess-session`.
+- Regressietest toegevoegd voor playback en offline re-processing.
+- Camera controls toegevoegd voor resolutie, FPS, exposure, gain en white balance waar OpenCV/backend dit ondersteunt.
+- Camera profiles, sync assessment, camera health en resource snapshots toegevoegd.
+- Calibratie acceptance score, epipolar readiness diagnostics en version metadata toegevoegd.
+- Charuco-detectiepad toegevoegd wanneer `cv2.aruco` beschikbaar is.
+- Detector registry, detector capabilities, confidence policy, null detector en occlusion reporting toegevoegd.
+- Regressietest toegevoegd voor camera/calibration/detector foundation.
+- Review-tab toegevoegd voor opgenomen sessies met frame-slider en recorded frame preview.
+- Random-access playback toegevoegd aan de session playback reader.
+- Review-tab kan nu de huidige recorded frame opnieuw door de pipeline halen en keypoint/reprojection overlays cachen per frame.
+- Stateless review batch helper toegevoegd zodat recorded review geen smoothing-state uit de live pipeline overneemt.
+
 ## 2026-04-14
 
 - Nieuwe projectbasis opgezet in Programma Structuur.
