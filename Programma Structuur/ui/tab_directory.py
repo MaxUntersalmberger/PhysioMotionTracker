@@ -55,10 +55,10 @@ class TabDirectory:
         browse_btn.clicked.connect(self.browse_directory)
         toolbar_layout.addWidget(browse_btn)
         
-        # Knop om standaard locatie in te stellen
-        set_default_btn = QPushButton("Als standaard instellen")
-        set_default_btn.clicked.connect(self.set_as_default)
-        toolbar_layout.addWidget(set_default_btn)
+        # # Knop om standaard locatie in te stellen
+        # set_default_btn = QPushButton("Als standaard instellen")
+        # set_default_btn.clicked.connect(self.set_as_default)
+        # toolbar_layout.addWidget(set_default_btn)
         
         frame_layout.addLayout(toolbar_layout)
         

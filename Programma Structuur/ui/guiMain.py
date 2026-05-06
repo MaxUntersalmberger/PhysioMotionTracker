@@ -9,12 +9,35 @@ from gui import Ui_MainWindow
 from guiLogic import Logic
 from guiStyle import apply_styles
 import sys
+import io
+
+# --- CONSOLE STREAM REDIRECTOR ---
+class ConsoleStream(io.StringIO):
+    """Stream class that redirects output to the console widget"""
+    def __init__(self, console_widget):
+        super().__init__()
+        self.console_widget = console_widget
+    
+    def write(self, text):
+        """Schrijft tekst naar de console widget"""
+        if text.strip():  # Alleen niet-lege tekst schrijven
+            self.console_widget.appendPlainText(text.rstrip())
+        return len(text)
+    
+    def flush(self):
+        """Flush operatie (geen-op voor GUI)"""
+        pass
 
 class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super().__init__()
         self.setupUi(self)
         apply_styles(self)
+        
+        # Redirect stdout en stderr naar de console widget
+        sys.stdout = ConsoleStream(self.plaintextedit_console)
+        sys.stderr = ConsoleStream(self.plaintextedit_console)
+        
         self.logic = Logic(self)
 
 if __name__ == "__main__":

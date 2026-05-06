@@ -96,6 +96,8 @@ class Logic:
             self.switch_page(1)  # Schakel naar tab_camera (index 1)
             self.tab_directory.load_directory(project_path)
             
+            print(f"Nieuw project aangemaakt: {project_path}")
+
             # # Toon succes bericht
             # QtWidgets.QMessageBox.information(
             #     self.window,
@@ -108,6 +110,7 @@ class Logic:
                 "Fout",
                 f"Kon project niet aanmaken:\n{str(e)}"
             )
+            print(f"Fout bij aanmaken project: {str(e)}") 
 
     def load_project(self):
         """Opent een bestaand projectfolder via bestandsverkenner"""
@@ -135,7 +138,10 @@ class Logic:
                 # Navigeer naar de camera's tab
                 self.switch_page(1)
                 self.tab_directory.load_directory(project_path)
-                
+
+                print(f"Project geladen: {project_path}")
+                # # Toon succes bericht               
+
                 # QtWidgets.QMessageBox.information(
                 #     self.window,
                 #     "Project geladen",
@@ -147,6 +153,7 @@ class Logic:
                 "Fout",
                 f"Kon project niet openen:\n{str(e)}"
             )
+            print(f"Fout bij laden project: {str(e)}") 
 
     def quit_application(self):
         """Sluit de applicatie af"""
@@ -154,3 +161,4 @@ class Logic:
 
     def open_documentation(self):
         webbrowser.open('https://github.com/MaxUntersalmberger/PhysioMotionTracker')  # Go to example.com
+        print("Documentation opened in web browser.")
