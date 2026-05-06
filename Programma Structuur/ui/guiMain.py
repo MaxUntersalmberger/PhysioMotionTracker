@@ -10,6 +10,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "imagesGUI"))
 
 import resources_rc
 
+#pyrcc5 resources.qrc -o resources_rc.py om het resources_rc.py bestand te genereren vanuit de resources.qrc
+
+
 # Patch: fix voor QtCore.Qt.QFrame references in de gegenereerde gui.py
 if not hasattr(QtCore.Qt, 'QFrame'):
     QtCore.Qt.QFrame = QtWidgets.QFrame
