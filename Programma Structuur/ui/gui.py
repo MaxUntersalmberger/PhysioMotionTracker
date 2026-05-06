@@ -18,6 +18,9 @@ class Ui_MainWindow(object):
         MainWindow.resize(988, 720)
         MainWindow.setMinimumSize(QtCore.QSize(0, 0))
         MainWindow.setMaximumSize(QtCore.QSize(16777215, 16777215))
+        icon = QtGui.QIcon()
+        icon.addPixmap(QtGui.QPixmap(":/HU_Logo.png"), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        MainWindow.setWindowIcon(icon)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setMaximumSize(QtCore.QSize(16777215, 16777215))
         self.centralwidget.setObjectName("centralwidget")
@@ -250,3 +253,4 @@ class Ui_MainWindow(object):
         self.actionOpen_project.setText(_translate("MainWindow", "Open project"))
         self.actionQuit.setText(_translate("MainWindow", "Quit"))
         self.actionOpen_documentation.setText(_translate("MainWindow", "Open documentation"))
+import resources_rc

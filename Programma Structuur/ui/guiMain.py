@@ -1,5 +1,14 @@
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtGui import QIcon
+from pathlib import Path
+import sys
+import os
+
+# Relatief pad vanuit guiMain.py naar de imagesGUI map
+sys.path.append(os.path.join(os.path.dirname(__file__), "imagesGUI"))
+
+import resources_rc
 
 # Patch: fix voor QtCore.Qt.QFrame references in de gegenereerde gui.py
 if not hasattr(QtCore.Qt, 'QFrame'):
