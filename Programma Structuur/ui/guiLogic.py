@@ -7,6 +7,7 @@ from tab_results import TabResults
 from pathlib import Path
 from datetime import datetime
 import sys
+import webbrowser
 
 # Voeg parent directory toe aan path zodat core module gevonden wordt
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -52,6 +53,8 @@ class Logic:
         # --- MENU ACTION CONNECTIONS ---
         self.window.actionNew_project.triggered.connect(self.create_new_project)
         self.window.actionOpen_project.triggered.connect(self.load_project)
+        self.window.actionQuit.triggered.connect(self.quit_application)
+        self.window.actionOpen_documentation.triggered.connect(self.open_documentation)
 
         self.switch_page(0)
 
@@ -144,3 +147,10 @@ class Logic:
                 "Fout",
                 f"Kon project niet openen:\n{str(e)}"
             )
+
+    def quit_application(self):
+        """Sluit de applicatie af"""
+        self.window.close()
+
+    def open_documentation(self):
+        webbrowser.open('https://github.com/MaxUntersalmberger/PhysioMotionTracker')  # Go to example.com
