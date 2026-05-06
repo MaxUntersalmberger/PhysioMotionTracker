@@ -4,6 +4,10 @@ from PyQt5.QtCore import Qt
 from pathlib import Path
 
 
+# Configuratie: maximale diepte voor mappenstructuur in de tree
+MAX_TREE_DEPTH = 10
+
+
 class TabDirectory:
     def __init__(self, logic_instance):
         self.logic = logic_instance
@@ -95,12 +99,12 @@ class TabDirectory:
         root_item.setData(0, Qt.UserRole, str(directory_path))
         
         # Populate tree recursively
-        self._populate_tree_item(root_item, directory_path)
+        self._populate_tree_item(root_item, directory_path, MAX_TREE_DEPTH)
         
         # Expand root
         root_item.setExpanded(True)
     
-    def _populate_tree_item(self, parent_item, directory_path, max_depth=3, current_depth=0):
+    def _populate_tree_item(self, parent_item, directory_path, max_depth, current_depth=0):
         """Recursief vullen van tree items"""
         if current_depth >= max_depth:
             return

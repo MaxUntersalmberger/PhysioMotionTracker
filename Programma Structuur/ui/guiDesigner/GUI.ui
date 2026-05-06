@@ -428,6 +428,10 @@
     <property name="title">
      <string>&amp;File</string>
     </property>
+    <addaction name="separator"/>
+    <addaction name="actionNew_project"/>
+    <addaction name="actionOpen_project"/>
+    <addaction name="actionQuit"/>
    </widget>
    <widget class="QMenu" name="menuRun">
     <property name="title">
@@ -438,6 +442,7 @@
     <property name="title">
      <string>Help</string>
     </property>
+    <addaction name="actionOpen_documentation"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuRun"/>
@@ -446,6 +451,26 @@
   <action name="actionRun">
    <property name="text">
     <string>Run</string>
+   </property>
+  </action>
+  <action name="actionNew_project">
+   <property name="text">
+    <string>New project</string>
+   </property>
+  </action>
+  <action name="actionOpen_project">
+   <property name="text">
+    <string>Open project</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>Quit</string>
+   </property>
+  </action>
+  <action name="actionOpen_documentation">
+   <property name="text">
+    <string>Open documentation</string>
    </property>
   </action>
  </widget>
