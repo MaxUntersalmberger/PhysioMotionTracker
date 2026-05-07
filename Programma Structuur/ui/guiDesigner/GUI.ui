@@ -28,6 +28,10 @@
   <property name="windowTitle">
    <string>MainWindow</string>
   </property>
+  <property name="windowIcon">
+   <iconset resource="../imagesGUI/resources.qrc">
+    <normaloff>:/HU_Logo.png</normaloff>:/HU_Logo.png</iconset>
+  </property>
   <widget class="QWidget" name="centralwidget">
    <property name="maximumSize">
     <size>
@@ -402,6 +406,9 @@
        </item>
        <item>
         <spacer name="verticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
          <property name="sizeHint" stdset="0">
           <size>
            <width>20</width>
@@ -428,6 +435,10 @@
     <property name="title">
      <string>&amp;File</string>
     </property>
+    <addaction name="separator"/>
+    <addaction name="actionNew_project"/>
+    <addaction name="actionOpen_project"/>
+    <addaction name="actionQuit"/>
    </widget>
    <widget class="QMenu" name="menuRun">
     <property name="title">
@@ -438,6 +449,7 @@
     <property name="title">
      <string>Help</string>
     </property>
+    <addaction name="actionOpen_documentation"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuRun"/>
@@ -448,7 +460,29 @@
     <string>Run</string>
    </property>
   </action>
+  <action name="actionNew_project">
+   <property name="text">
+    <string>New project</string>
+   </property>
+  </action>
+  <action name="actionOpen_project">
+   <property name="text">
+    <string>Open project</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>Quit</string>
+   </property>
+  </action>
+  <action name="actionOpen_documentation">
+   <property name="text">
+    <string>Open documentation</string>
+   </property>
+  </action>
  </widget>
- <resources/>
+ <resources>
+  <include location="../imagesGUI/resources.qrc"/>
+ </resources>
  <connections/>
 </ui>
