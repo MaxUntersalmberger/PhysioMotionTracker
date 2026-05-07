@@ -35,6 +35,7 @@ class AppConfig:
     default_capture_fps: float = 20.0
     default_preview_fps: float = 30.0
     default_detector_name: str = DEFAULT_DETECTOR_NAME
+    default_sessions_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.config_path is None:
@@ -49,6 +50,8 @@ class AppConfig:
             self.exports_dir = self.app_root / "exports"
         if self.models_dir is None:
             self.models_dir = self.app_root / "models"
+        if self.default_sessions_dir is None:
+            self.default_sessions_dir = self.sessions_dir
         self.default_detector_name = _normalize_detector_name(self.default_detector_name)
 
     @classmethod
@@ -86,6 +89,12 @@ class AppConfig:
         if isinstance(preview_fps, (int, float)):
             self.default_preview_fps = float(preview_fps)
 
+        default_sessions_dir = raw_data.get("default_sessions_dir")
+        if isinstance(default_sessions_dir, str) and default_sessions_dir.strip():
+            dir_path = Path(default_sessions_dir)
+            if dir_path.exists() and dir_path.is_dir():
+                self.default_sessions_dir = dir_path
+
     def save(self) -> None:
         path = self.config_path
         if path is None:
@@ -97,6 +106,7 @@ class AppConfig:
             "default_sources_csv": self.default_sources_csv,
             "default_capture_fps": self.default_capture_fps,
             "default_preview_fps": self.default_preview_fps,
+            "default_sessions_dir": str(self.default_sessions_dir) if self.default_sessions_dir else None,
         }
         path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 

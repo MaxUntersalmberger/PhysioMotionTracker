@@ -6,3 +6,5 @@ class TabHome:
     def setup(self):
         """Initialiseert de home tab - momenteel geen specifieke logica nodig"""
         pass
+
+    
