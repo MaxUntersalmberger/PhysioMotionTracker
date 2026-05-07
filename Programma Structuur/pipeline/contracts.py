@@ -11,6 +11,10 @@ class TriangulationResult:
     pose_3d: Pose3D | None
     reprojected_points_px: dict[str, dict[str, tuple[float, float]]] = field(default_factory=dict)
     per_joint_error_px: dict[str, float] = field(default_factory=dict)
+    per_joint_view_count: dict[str, int] = field(default_factory=dict)
+    per_joint_confidence: dict[str, float] = field(default_factory=dict)
+    trust_score: float = 0.0
+    trust_state: str = "unavailable"
     mode: str = "unavailable"
     reconstructed_joints: int = 0
     notes: list[str] = field(default_factory=list)

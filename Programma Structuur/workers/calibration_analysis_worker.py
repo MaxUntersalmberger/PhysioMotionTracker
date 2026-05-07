@@ -17,6 +17,7 @@ LOGGER = logging.getLogger(__name__)
 class _CalibrationAnalysisJob:
     batch: CaptureBatch
     record_sample: bool
+    capture_mode: str
 
 
 @dataclass(slots=True)
@@ -24,6 +25,7 @@ class CalibrationAnalysisOutcome:
     result: CalibrationCaptureResult
     record_sample: bool
     frame_index: int
+    capture_mode: str
 
 
 class CalibrationAnalysisWorker(QThread):
@@ -44,11 +46,11 @@ class CalibrationAnalysisWorker(QThread):
         with self._condition:
             self._condition.notify_all()
 
-    def submit_batch(self, batch: CaptureBatch, record_sample: bool = False) -> None:
+    def submit_batch(self, batch: CaptureBatch, record_sample: bool = False, capture_mode: str = "intrinsics") -> None:
         if not batch.frames:
             return
 
-        job = _CalibrationAnalysisJob(batch=batch, record_sample=record_sample)
+        job = _CalibrationAnalysisJob(batch=batch, record_sample=record_sample, capture_mode=capture_mode)
         with self._condition:
             if record_sample:
                 self._priority_job = job
@@ -75,13 +77,18 @@ class CalibrationAnalysisWorker(QThread):
                     continue
 
                 try:
-                    result = self._calibration_manager.capture_frames(job.batch.frames, record_sample=job.record_sample)
+                    result = self._calibration_manager.capture_frames(
+                        job.batch.frames,
+                        record_sample=job.record_sample,
+                        capture_mode=job.capture_mode,
+                    )
                     frame_index = max((frame.frame_index for frame in job.batch.frames.values()), default=0)
                     self.result_ready.emit(
                         CalibrationAnalysisOutcome(
                             result=result,
                             record_sample=job.record_sample,
                             frame_index=frame_index,
+                            capture_mode=job.capture_mode,
                         )
                     )
                 except Exception as exc:  # pragma: no cover - UI surface area

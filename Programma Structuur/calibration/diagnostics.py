@@ -122,10 +122,6 @@ def acceptance_report_to_metadata(report: CalibrationAcceptanceReport) -> dict[s
             }
             for pair in report.pair_diagnostics
         ],
-        "bundle_adjustment_status": "not_run",
-        "bundle_adjustment_notes": [
-            "Non-linear bundle adjustment is not implemented yet; extrinsics currently use solvePnP plus transform averaging."
-        ],
     }
 
 

@@ -8,18 +8,21 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
+from biomechanics import JointAngleRepository, analyze_motion_take_joint_angles
 from capture.backend import CaptureBatch
 from capture.profiles import CameraControlSettings, assess_batch_synchronization, build_camera_profiles
 from capture.sources import describe_sources, parse_sources_csv
 from calibration import CalibrationCaptureResult, CalibrationManager, CalibrationRepository
 from core.config import AppConfig
 from detectors import PoseDetector, create_detector, normalize_detector_name
+from exporters import PoseExportReport, format_pose_export_report
+from motion import MotionTake, MotionTakeReport, MotionTakeRepository, format_motion_take_report
 from models.types import CalibrationBundle, CameraProbeResult, CameraSourceConfig, PipelineResult, SessionManifest
 from pipeline.manager import MocapPipeline
 from session import SessionPlaybackReader, SessionRecorder, SessionRecordingStats, SessionRepository, SessionState, load_session_calibration, process_recorded_batch
-from workers import CalibrationAnalysisOutcome, CalibrationAnalysisWorker, CameraProbeWorker, CaptureWorker, PipelineWorker, RecordingWorker, StartupResult, StartupWorker
+from workers import CalibrationAnalysisOutcome, CalibrationAnalysisWorker, CameraProbeWorker, CaptureWorker, MotionTakeWorker, PipelineWorker, PoseExportWorker, RecordingWorker, StartupResult, StartupWorker
 
-from .widgets import CalibrationPanelWidget, CameraGridWidget, CapturePanelWidget, FramePreviewWidget, PipelineStatusWidget, SessionPanelWidget, SessionReviewWidget
+from .widgets import CalibrationPanelWidget, CameraGridWidget, CapturePanelWidget, FramePreviewWidget, MotionAnalysisWidget, PipelineStatusWidget, SessionPanelWidget, SessionReviewWidget
 
 
 LOGGER = logging.getLogger(__name__)
@@ -52,6 +55,8 @@ class MainWindow(QMainWindow):
         self._last_pipeline_note_update_sec = 0.0
         self._last_calibration_quality_update_sec = 0.0
         self._last_calibration_history_count = 0
+        self._last_auto_calibration_capture_sec = 0.0
+        self._auto_calibration_capture_pending = False
         self._session_state = SessionState()
         self._recording_worker: RecordingWorker | None = None
         self._latest_recording_stats: SessionRecordingStats | None = None
@@ -60,6 +65,10 @@ class MainWindow(QMainWindow):
         self._review_current_batch_index = 0
         self._review_calibration_bundle: CalibrationBundle | None = None
         self._review_overlay_cache: dict[int, PipelineResult] = {}
+        self._current_motion_take: MotionTake | None = None
+        self._current_motion_take_path: Path | None = None
+        self._motion_take_worker: MotionTakeWorker | None = None
+        self._pose_export_worker: PoseExportWorker | None = None
         self._requested_detector_name = self._capture_panel.detector_name()
         self._active_detector_name = "initializing"
 
@@ -76,12 +85,14 @@ class MainWindow(QMainWindow):
         self._preview_panel = FramePreviewWidget()
         self._capture_preview_panel = FramePreviewWidget(show_source_picker=False, minimum_image_size=(520, 292))
         self._calibration_preview_panel = FramePreviewWidget(show_source_picker=False, minimum_image_size=(520, 292))
-        self._review_preview_panel = FramePreviewWidget(minimum_image_size=(720, 405))
+        self._review_preview_panel = FramePreviewWidget(minimum_image_size=(520, 292))
         self._preview_widgets = [self._preview_panel, self._capture_preview_panel, self._calibration_preview_panel]
         self._camera_grid = CameraGridWidget()
         self._session_panel = SessionPanelWidget()
         self._session_review_panel = SessionReviewWidget()
+        self._motion_analysis_panel = MotionAnalysisWidget()
         self._status_panel = PipelineStatusWidget()
+        self._analysis_tab_page: QWidget | None = None
         self._startup_banner = QFrame()
         self._startup_banner.setObjectName("startupBanner")
         self._startup_banner_label = QLabel("Loading detector and calibration...")
@@ -103,6 +114,7 @@ class MainWindow(QMainWindow):
 
         self._begin_startup_sequence()
         self._status_panel.set_idle()
+        self._update_calibration_readiness_panel()
 
         self.setWindowTitle(self._config.app_name)
         self.resize(1460, 920)
@@ -132,6 +144,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._build_capture_tab(), "Capture")
         self._tabs.addTab(self._build_session_tab(), "Session")
         self._tabs.addTab(self._build_review_tab(), "Review")
+        self._tabs.addTab(self._build_analysis_tab(), "Analysis")
         self._tabs.addTab(self._build_live_view_tab(), "Live View")
         self._tabs.addTab(self._build_calibration_tab(), "Calibration")
         self._tabs.addTab(self._build_diagnostics_tab(), "Diagnostics")
@@ -180,6 +193,13 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, 1)
+        return page
+
+    def _build_analysis_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._motion_analysis_panel)
+        self._analysis_tab_page = page
         return page
 
     def _build_calibration_tab(self) -> QWidget:
@@ -479,7 +499,12 @@ class MainWindow(QMainWindow):
         self._session_review_panel.open_manifest_requested.connect(self._on_review_open_manifest)
         self._session_review_panel.frame_requested.connect(self._on_review_frame_requested)
         self._session_review_panel.process_current_requested.connect(self._on_review_process_current_requested)
+        self._session_review_panel.process_session_requested.connect(self._on_review_process_session_requested)
         self._session_review_panel.clear_overlays_requested.connect(self._on_review_clear_overlays_requested)
+        self._session_review_panel.export_requested.connect(self._on_review_export_requested)
+        self._motion_analysis_panel.load_review_take_requested.connect(self._on_analysis_load_review_take)
+        self._motion_analysis_panel.open_take_requested.connect(self._on_analysis_open_take)
+        self._motion_analysis_panel.analyze_joint_angles_requested.connect(self._on_analysis_joint_angles_requested)
         self._preview_panel.source_selected.connect(self._on_main_preview_source_selected)
         self._camera_grid.source_selected.connect(self._preview_panel.select_source)
 
@@ -686,6 +711,172 @@ class MainWindow(QMainWindow):
             f"Reviewing frame {self._review_current_batch_index + 1}/{self._review_reader.batch_count}. Overlay cleared."
         )
         self._append_log("Review overlays cleared")
+
+    def _on_review_process_session_requested(self) -> None:
+        if self._motion_take_worker is not None and self._motion_take_worker.isRunning():
+            self._session_review_panel.set_state("Session processing is already running.")
+            return
+        if self._review_reader is None or self._review_manifest_path is None:
+            QMessageBox.warning(self, "Process Session", "Load a recorded session in Review before processing it.")
+            return
+        if self._review_reader.batch_count <= 0:
+            self._session_review_panel.set_state("Loaded review session has no frames to process.")
+            return
+
+        output_path = self._review_reader.session_dir / "processed" / "motion_take.json"
+        detector_name = self._capture_panel.detector_name()
+        worker = MotionTakeWorker(
+            session_path=self._review_manifest_path,
+            detector_name=detector_name,
+            output_path=output_path,
+        )
+        worker.result_ready.connect(self._on_motion_take_ready)
+        worker.error.connect(self._on_motion_take_error)
+        worker.state_changed.connect(lambda state: self._append_log(f"Motion take: {state}"))
+        worker.finished.connect(self._on_motion_take_finished)
+        self._motion_take_worker = worker
+        self._session_review_panel.set_session_processing_running(True)
+        self._session_review_panel.set_state(f"Processing recorded session into a motion take with {detector_name}...")
+        self._append_log(f"Motion take processing started: {self._review_manifest_path} -> {output_path}")
+        worker.start()
+
+    def _on_motion_take_ready(self, report: object) -> None:
+        if not isinstance(report, MotionTakeReport):
+            self._session_review_panel.set_state("Session processing finished with an unexpected report.")
+            return
+        summary = format_motion_take_report(report)
+        self._session_review_panel.append_summary(summary)
+        self._load_motion_take(report.output_path, activate=True)
+        self._session_review_panel.set_state(
+            f"Motion take ready: {report.take.summary.frame_count} frame(s) at {report.output_path}."
+        )
+        self.statusBar().showMessage(f"Motion take ready: {report.output_path}")
+        self._append_log(
+            f"Motion take ready: session={report.take.session_id}, frames={report.take.summary.frame_count}, "
+            f"2d_keypoints={report.take.summary.pose2d_keypoints}, 3d_keypoints={report.take.summary.pose3d_keypoints}"
+        )
+
+    def _on_motion_take_error(self, message: str) -> None:
+        self._session_review_panel.set_state(f"Session processing failed: {message}")
+        self._append_log(f"Motion take error: {message}")
+        self.statusBar().showMessage(f"Session processing failed: {message}")
+
+    def _on_motion_take_finished(self) -> None:
+        self._session_review_panel.set_session_processing_running(False)
+        self._motion_take_worker = None
+
+    def _on_analysis_load_review_take(self) -> None:
+        if self._review_reader is None:
+            QMessageBox.warning(self, "Analysis", "Load a recorded session in Review before loading its processed take.")
+            return
+        take_path = self._review_reader.session_dir / "processed" / "motion_take.json"
+        if not take_path.exists():
+            self._motion_analysis_panel.set_state(f"No processed take found at {take_path}.")
+            return
+        self._load_motion_take(take_path, activate=True)
+
+    def _on_analysis_open_take(self) -> None:
+        start_dir = self._current_motion_take_path.parent if self._current_motion_take_path is not None else self._config.sessions_dir
+        filename, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Open processed motion take",
+            str(start_dir),
+            "Motion takes (*.json);;All files (*)",
+        )
+        if not filename:
+            return
+        self._load_motion_take(Path(filename), activate=True)
+
+    def _on_analysis_joint_angles_requested(self) -> None:
+        if self._current_motion_take is None or self._current_motion_take_path is None:
+            self._motion_analysis_panel.set_state("Load a processed motion take before analyzing joint angles.")
+            return
+
+        output_path = JointAngleRepository().default_path(self._current_motion_take_path)
+        try:
+            report = analyze_motion_take_joint_angles(
+                self._current_motion_take,
+                source_take_path=self._current_motion_take_path,
+                output_path=output_path,
+            )
+        except Exception as exc:
+            self._motion_analysis_panel.set_state(f"Joint-angle analysis failed: {exc}")
+            self._append_log(f"Joint-angle analysis error: {exc}")
+            return
+
+        self._motion_analysis_panel.set_joint_angle_report(report)
+        self._append_log(
+            f"Joint-angle analysis complete: session={report.analysis.session_id}, "
+            f"samples={len(report.analysis.samples)}, output={report.output_path}"
+        )
+
+    def _load_motion_take(self, path: Path, activate: bool = False) -> None:
+        try:
+            take = MotionTakeRepository().load(path)
+        except Exception as exc:
+            self._motion_analysis_panel.set_state(f"Could not load motion take: {exc}")
+            self._append_log(f"Motion take load error: {exc}")
+            return
+
+        self._current_motion_take = take
+        self._current_motion_take_path = path
+        self._motion_analysis_panel.set_motion_take(take, path)
+        self._append_log(f"Motion take loaded: {path}")
+        if activate and self._analysis_tab_page is not None:
+            self._tabs.setCurrentWidget(self._analysis_tab_page)
+
+    def _on_review_export_requested(self) -> None:
+        if self._pose_export_worker is not None and self._pose_export_worker.isRunning():
+            self._session_review_panel.set_state("Pose export is already running.")
+            return
+        if self._review_reader is None or self._review_manifest_path is None:
+            QMessageBox.warning(self, "Export", "Load a recorded session in Review before exporting poses.")
+            return
+        if self._review_reader.batch_count <= 0:
+            self._session_review_panel.set_state("Loaded review session has no frames to export.")
+            return
+
+        output_dir = self._review_reader.session_dir / "exports"
+        detector_name = self._capture_panel.detector_name()
+        worker = PoseExportWorker(
+            session_path=self._review_manifest_path,
+            detector_name=detector_name,
+            output_dir=output_dir,
+            formats=["json", "csv"],
+        )
+        worker.result_ready.connect(self._on_pose_export_ready)
+        worker.error.connect(self._on_pose_export_error)
+        worker.state_changed.connect(lambda state: self._append_log(f"Pose export: {state}"))
+        worker.finished.connect(self._on_pose_export_finished)
+        self._pose_export_worker = worker
+        self._session_review_panel.set_export_running(True)
+        self._session_review_panel.set_state(f"Exporting recorded poses with {detector_name}...")
+        self._append_log(f"Pose export started: {self._review_manifest_path} -> {output_dir}")
+        worker.start()
+
+    def _on_pose_export_ready(self, report: object) -> None:
+        if not isinstance(report, PoseExportReport):
+            self._session_review_panel.set_state("Pose export finished with an unexpected report.")
+            return
+        summary = format_pose_export_report(report)
+        self._session_review_panel.append_summary(summary)
+        self._session_review_panel.set_state(
+            f"Pose export complete: {report.batches_processed} batch(es) to {report.output_dir}."
+        )
+        self.statusBar().showMessage(f"Pose export complete: {report.output_dir}")
+        self._append_log(
+            f"Pose export complete: session={report.session_id}, batches={report.batches_processed}, "
+            f"2d_rows={report.pose2d_rows}, 3d_rows={report.pose3d_rows}"
+        )
+
+    def _on_pose_export_error(self, message: str) -> None:
+        self._session_review_panel.set_state(f"Pose export failed: {message}")
+        self._append_log(f"Pose export error: {message}")
+        self.statusBar().showMessage(f"Pose export failed: {message}")
+
+    def _on_pose_export_finished(self) -> None:
+        self._session_review_panel.set_export_running(False)
+        self._pose_export_worker = None
 
     def _load_review_session(self, manifest_path: Path) -> None:
         try:
@@ -1010,8 +1201,13 @@ class MainWindow(QMainWindow):
 
     def _on_capture_calibration_requested(self) -> None:
         self._sync_calibration_geometry()
+        capture_mode = self._calibration_panel.capture_mode()
         if self._capture_worker is not None and self._capture_worker.isRunning() and self._latest_batch is not None and self._latest_batch.frames:
-            result = self._calibration_manager.capture_frames(self._latest_batch.frames, record_sample=True)
+            result = self._calibration_manager.capture_frames(
+                self._latest_batch.frames,
+                record_sample=True,
+                capture_mode=capture_mode,
+            )
             self._apply_calibration_capture_result(result)
             return
 
@@ -1027,6 +1223,14 @@ class MainWindow(QMainWindow):
 
     def _on_solve_calibration_intrinsics(self) -> None:
         self._sync_calibration_geometry()
+        readiness = self._calibration_manager.workflow_readiness()
+        self._calibration_panel.set_workflow_readiness(readiness)
+        if not readiness.can_solve_intrinsics:
+            message = "Intrinsics are not ready to solve yet. " + " ".join(readiness.notes[:3])
+            self._calibration_panel.set_state(message)
+            self._calibration_panel.append_output(message)
+            return
+
         result = self._calibration_manager.solve_intrinsics()
         if result.solved_sources:
             self._apply_calibration_bundle(result.bundle, self._calibration_profile_path)
@@ -1040,10 +1244,19 @@ class MainWindow(QMainWindow):
         self._calibration_panel.set_sample_counts(result.bundle.metadata.get("sample_counts", self._calibration_manager.sample_counts()), self._calibration_manager.synchronized_sample_count)
         for note in result.notes:
             self._calibration_panel.append_output(note)
+        self._update_calibration_readiness_panel()
         self._append_log(f"Calibration intrinsics solve finished: {len(result.solved_sources)} camera(s) solved")
 
     def _on_solve_calibration_extrinsics(self) -> None:
         self._sync_calibration_geometry()
+        readiness = self._calibration_manager.workflow_readiness()
+        self._calibration_panel.set_workflow_readiness(readiness)
+        if not readiness.can_solve_extrinsics:
+            message = "Extrinsics are not ready to solve yet. " + " ".join(readiness.notes[:3])
+            self._calibration_panel.set_state(message)
+            self._calibration_panel.append_output(message)
+            return
+
         try:
             result = self._calibration_manager.solve_extrinsics()
         except RuntimeError as exc:
@@ -1065,6 +1278,7 @@ class MainWindow(QMainWindow):
         )
         for note in result.notes:
             self._calibration_panel.append_output(note)
+        self._update_calibration_readiness_panel()
         self._append_log(f"Calibration extrinsics solve finished: {len(result.solved_sources)} camera(s) solved")
 
     def _on_load_calibration_profile(self) -> None:
@@ -1113,7 +1327,11 @@ class MainWindow(QMainWindow):
         self._calibration_panel.set_sample_history(self._calibration_manager.sample_history)
         self._last_calibration_quality_update_sec = 0.0
         self._last_calibration_history_count = 0
+        self._last_auto_calibration_capture_sec = 0.0
+        self._auto_calibration_capture_pending = False
+        self._calibration_panel.set_auto_capture_status("Auto capture off.")
         self._calibration_panel.set_sync_status("Camera sync: waiting for the next sample.")
+        self._update_calibration_readiness_panel()
         self._calibration_panel.set_state("Calibration samples reset.")
         self._calibration_panel.append_output("Calibration sample history cleared.")
         self._append_log("Calibration samples reset")
@@ -1212,7 +1430,11 @@ class MainWindow(QMainWindow):
         self._camera_grid.update_batch(batch, self._active_sources, self._probe_results)
         if self._recording_worker is not None:
             self._recording_worker.submit_batch(batch)
-        self._calibration_worker.submit_batch(batch, record_sample=capture_sample)
+        self._calibration_worker.submit_batch(
+            batch,
+            record_sample=capture_sample,
+            capture_mode=self._calibration_panel.capture_mode(),
+        )
         if self._pipeline_worker.isRunning():
             self._pipeline_worker.submit_batch(batch)
 
@@ -1224,12 +1446,14 @@ class MainWindow(QMainWindow):
         self._latest_calibration_result = result
         if outcome.record_sample:
             self._calibration_capture_pending = False
+            self._auto_calibration_capture_pending = False
             self._apply_calibration_capture_result(result)
             self._pending_calibration_sample_frame_index = None
             self._refresh_session_panel()
             return
 
         self._update_calibration_live_visuals(result)
+        self._maybe_auto_capture_calibration_sample(result)
 
     def _update_calibration_live_visuals(self, result: CalibrationCaptureResult) -> None:
         now = time.monotonic()
@@ -1240,6 +1464,75 @@ class MainWindow(QMainWindow):
             self._calibration_panel.set_camera_quality_scores(result.camera_quality_scores)
             self._last_calibration_quality_update_sec = now
 
+    def _maybe_auto_capture_calibration_sample(self, result: CalibrationCaptureResult) -> None:
+        if not self._calibration_panel.auto_capture_enabled():
+            self._calibration_panel.set_auto_capture_status("Auto capture off.")
+            return
+        if self._calibration_capture_pending:
+            self._calibration_panel.set_auto_capture_status("Auto capture waiting for queued sample.")
+            return
+        if self._auto_calibration_capture_pending:
+            self._calibration_panel.set_auto_capture_status("Auto capture writing accepted sample.")
+            return
+        if self._latest_batch is None or not self._latest_batch.frames:
+            self._calibration_panel.set_auto_capture_status("Auto capture waiting for live frames.")
+            return
+
+        now = time.monotonic()
+        cooldown = self._calibration_panel.auto_capture_cooldown_sec()
+        elapsed = now - self._last_auto_calibration_capture_sec
+        if elapsed < cooldown:
+            self._calibration_panel.set_auto_capture_status(
+                f"Auto capture cooling down ({cooldown - elapsed:.1f}s)."
+            )
+            return
+
+        capture_mode = self._calibration_panel.capture_mode()
+        ready, reason = self._auto_calibration_ready(result, capture_mode)
+        if not ready:
+            self._calibration_panel.set_auto_capture_status(f"Auto waiting: {reason}")
+            return
+
+        self._auto_calibration_capture_pending = True
+        self._pending_calibration_sample_frame_index = max(
+            (frame.frame_index for frame in self._latest_batch.frames.values()),
+            default=0,
+        )
+        self._last_auto_calibration_capture_sec = now
+        self._calibration_worker.submit_batch(
+            self._latest_batch,
+            record_sample=True,
+            capture_mode=capture_mode,
+        )
+        label = "extrinsics sync set" if capture_mode == "sync_extrinsics" else "intrinsics sample"
+        self._calibration_panel.set_auto_capture_status(f"Auto queued {label}.")
+        self._append_log(f"Auto calibration capture queued: {label}")
+
+    def _auto_calibration_ready(self, result: CalibrationCaptureResult, capture_mode: str) -> tuple[bool, str]:
+        visible_qualities = [quality for quality in result.camera_quality_scores.values() if quality.visible]
+        if capture_mode == "sync_extrinsics":
+            sync_report = result.sync_report
+            if sync_report is None:
+                return False, "camera sync is unavailable."
+            if sync_report.status != "ready":
+                return False, "show the board in at least two synchronized cameras."
+            detected_qualities = [
+                result.camera_quality_scores[source_id]
+                for source_id in sync_report.detected_sources
+                if source_id in result.camera_quality_scores and result.camera_quality_scores[source_id].visible
+            ]
+            if len(detected_qualities) < 2:
+                return False, "need two visible board detections."
+            weakest_score = min(quality.score for quality in detected_qualities)
+            if weakest_score < 55.0:
+                return False, f"sync quality too low ({weakest_score:.0f}/100)."
+            return True, "sync set is ready."
+
+        strong_qualities = [quality for quality in visible_qualities if quality.score >= 70.0]
+        if not strong_qualities:
+            return False, "intrinsics needs at least one camera with board quality >= 70/100."
+        return True, f"{len(strong_qualities)} camera(s) have strong intrinsics samples."
+
     def _apply_calibration_capture_result(self, result: CalibrationCaptureResult) -> None:
         self._update_calibration_live_visuals(result)
         self._calibration_panel.set_sample_counts(result.sample_counts, result.synchronized_samples)
@@ -1247,6 +1540,7 @@ class MainWindow(QMainWindow):
         if result.history_entry is not None or current_history_count != self._last_calibration_history_count:
             self._calibration_panel.set_sample_history(self._calibration_manager.sample_history)
             self._last_calibration_history_count = current_history_count
+        self._update_calibration_readiness_panel()
         self._calibration_panel.set_state(self._format_capture_state(result))
         for note in result.notes:
             self._calibration_panel.append_output(note)
@@ -1273,17 +1567,25 @@ class MainWindow(QMainWindow):
 
         detected = len(sync_report.detected_sources)
         total = sync_report.total_sources
+        if result.capture_mode == "intrinsics":
+            if detected:
+                return f"Intrinsics sample stored for {detected}/{total} visible camera(s)."
+            return "Intrinsics sample not stored: no calibration board visible."
+
         if sync_report.status == "ready":
-            return f"Calibration sample ready: {detected}/{total} cameras saw the board in sync."
+            return f"Extrinsics sync set ready: {detected}/{total} cameras saw the board in sync."
         if sync_report.status == "partial":
-            return f"Calibration sample stored with partial sync: {detected}/{total} cameras saw the board."
-        return "Calibration sample not ready yet: show the chessboard in at least two cameras."
+            return f"Extrinsics candidate partial: {detected}/{total} cameras saw the board."
+        return "Extrinsics sample not ready yet: show the chessboard in at least two cameras."
 
     def _sync_calibration_geometry(self) -> None:
         self._calibration_manager.set_board_geometry(
             self._calibration_panel.board_shape(),
             self._calibration_panel.square_size_m(),
         )
+
+    def _update_calibration_readiness_panel(self) -> None:
+        self._calibration_panel.set_workflow_readiness(self._calibration_manager.workflow_readiness())
 
     def _apply_calibration_bundle(self, bundle: CalibrationBundle | None, profile_path: Path | None = None) -> None:
         self._current_calibration_bundle = bundle
@@ -1299,6 +1601,7 @@ class MainWindow(QMainWindow):
             self._calibration_panel.set_sample_history(self._calibration_manager.sample_history)
             self._calibration_panel.set_profile_path(None)
             self._calibration_panel.set_sync_status("Camera sync: unavailable")
+            self._update_calibration_readiness_panel()
             self._calibration_panel.set_state("No calibration profile loaded. Reconstruction is unavailable.")
             self._refresh_session_panel()
             return
@@ -1324,6 +1627,7 @@ class MainWindow(QMainWindow):
         self._calibration_panel.set_state(
             f"Calibration loaded: {len(bundle.cameras)} camera(s), sync={synchronized_samples}."
         )
+        self._update_calibration_readiness_panel()
         self._refresh_session_panel()
 
     def _persist_calibration_bundle(self, bundle: CalibrationBundle, path: Path | None) -> None:
@@ -1408,6 +1712,7 @@ class MainWindow(QMainWindow):
         self._session_state.recording_active = False
         self._current_capture_batch_limit = None
         self._calibration_capture_pending = False
+        self._auto_calibration_capture_pending = False
         self._pending_calibration_sample_frame_index = None
         self._refresh_session_panel()
         if self._capture_panel.source_csv():
@@ -1429,6 +1734,7 @@ class MainWindow(QMainWindow):
         self._session_state.recording_active = False
         self._current_capture_batch_limit = None
         self._calibration_capture_pending = False
+        self._auto_calibration_capture_pending = False
         self._pending_calibration_sample_frame_index = None
         self._refresh_session_panel()
 
@@ -1460,6 +1766,26 @@ class MainWindow(QMainWindow):
             self._startup_worker.terminate()
             self._startup_worker.wait(1000)
         self._startup_worker = None
+
+    def _stop_motion_take_worker(self) -> None:
+        if self._motion_take_worker is None:
+            return
+        if not self._motion_take_worker.wait(1000):
+            LOGGER.warning("Motion take worker did not stop in time; forcing termination.")
+            self._motion_take_worker.terminate()
+            self._motion_take_worker.wait(1000)
+        self._motion_take_worker = None
+        self._session_review_panel.set_session_processing_running(False)
+
+    def _stop_pose_export_worker(self) -> None:
+        if self._pose_export_worker is None:
+            return
+        if not self._pose_export_worker.wait(1000):
+            LOGGER.warning("Pose export worker did not stop in time; forcing termination.")
+            self._pose_export_worker.terminate()
+            self._pose_export_worker.wait(1000)
+        self._pose_export_worker = None
+        self._session_review_panel.set_export_running(False)
 
     def _parse_sources_or_warn(self, source_csv: str) -> list[CameraSourceConfig]:
         try:
@@ -1502,6 +1828,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_recording_worker(save_manifest=True, state_message="Session recording saved on shutdown")
+        self._stop_motion_take_worker()
+        self._stop_pose_export_worker()
         self._stop_startup_worker()
         self._stop_calibration_worker()
         self._stop_capture_worker()

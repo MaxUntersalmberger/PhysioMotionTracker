@@ -2,6 +2,43 @@
 
 Dit bestand houdt de aanpassingen aan Programma Structuur bij.
 
+## 2026-05-07
+
+- Calibratie-readiness toegevoegd: intrinsics en extrinsics solve-acties melden nu wanneer samples, intrinsics of sync-sets nog ontbreken.
+- Extrinsics-solve verfijnt opgeloste camera-paren nu met OpenCV `stereoCalibrate` en vaste intrinsics.
+- Calibratiebundles krijgen bundle-adjustment metadata met status, methode, pair-RMS en refinement-notes.
+- Calibratie-tab opgeschoond naar compacte capture-status plus readiness.
+- Regressietests toegevoegd voor workflow-readiness en refinement metadata.
+- Review-tab uitgebreid met `Export Poses`, zodat loaded recorded sessions vanuit de UI naar JSON/CSV kunnen worden geschreven.
+- Pose-export draait via een achtergrondworker en schrijft standaard naar de `exports` map van de sessie.
+- Interne motion-take laag toegevoegd: recorded sessions kunnen nu naar `processed/motion_take.json` worden verwerkt.
+- Review-tab uitgebreid met `Process Session`, bedoeld als hoofdflow voor verdere analyse, inverse kinematics en latere exports.
+- CLI-optie `--process-session` toegevoegd voor dezelfde interne processed-session stap.
+- Regressietest toegevoegd voor motion-take roundtrip opslag.
+- Analysis-tab toegevoegd voor processed motion takes.
+- Eerste joint-angle analyse toegevoegd voor knie, heup, elleboog en schouder vanuit 3D keypoints.
+- CLI-optie `--analyze-take` toegevoegd voor joint-angle analyse naar `processed/analysis/joint_angles.json`.
+- Regressietest toegevoegd voor joint-angle berekening en opslag.
+- Calibrated 3D reconstructie robuuster gemaakt met confidence-weighted DLT over meerdere views.
+- Per-joint outlier rejection, missing-joint notes, view counts, confidence en reconstruction trust-score toegevoegd.
+- Pipeline Status toont nu de 3D trust-state.
+- Regressietest toegevoegd voor outlier rejection in calibrated triangulation.
+- Analysis-tab toont nu ook detailwaarden uit `motion_take.json`: per-frame trust/error en per-joint xyz/confidence/view-count/reprojection-error.
+- Joint-angle analyse toont nu naast summaries ook de onderliggende angle samples in de UI.
+- Review- en Analysis-controls responsiever gemaakt: knoppen staan nu in grids en lange paden/statusregels staan in scrollbare tekstvakken.
+
+## 2026-05-06
+
+- Eerste headless pose-export toegevoegd:
+  - `exporters/pose_export.py`
+  - `--export-session` CLI met JSON/CSV-output
+  - `pose_export.json`, `pose_2d.csv`, `pose_3d.csv` en `export_manifest.json`
+- Regressietest toegevoegd voor recorded session export naar JSON/CSV.
+- Backlog bijgewerkt: CSV/JSON pose export staat nu als eerste exportstap op done.
+- Calibratie-capture gesplitst in `Intrinsics` en `Sync / Extrinsics`.
+- Auto-capture toegevoegd voor calibratieframes die live voldoende kwaliteit/synchronisatie halen.
+- Regressietest toegevoegd die controleert dat intrinsics samples en extrinsics sync-sets gescheiden worden opgeslagen.
+
 ## 2026-04-23
 
 - Extrinsics-calibratie gefixt: camera's met opgeloste intrinsics worden nu correct meegenomen bij het oplossen van rotation/translation.

@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from calibration.manager import CalibrationManager, _CalibrationDetection, _CalibrationSyncSample
-from models.types import CalibrationBundle, CameraCalibration
+from models.types import CalibrationBundle, CameraCalibration, FramePacket
 
 
 class CalibrationManagerExtrinsicsTests(unittest.TestCase):
@@ -43,6 +43,58 @@ class CalibrationManagerExtrinsicsTests(unittest.TestCase):
         self.assertIsNotNone(result.bundle.cameras["cam1"].translation)
         self.assertAlmostEqual(result.bundle.cameras["cam1"].translation[0], 1.0)
         self.assertEqual(result.bundle.metadata["used_synchronized_samples"], 2)
+        self.assertIn(result.bundle.metadata["bundle_adjustment_status"], {"refined", "skipped"})
+        self.assertEqual(result.bundle.metadata["bundle_adjustment_method"], "opencv_stereoCalibrate_fixed_intrinsics")
+
+
+class CalibrationManagerCaptureModeTests(unittest.TestCase):
+    def test_intrinsics_and_extrinsics_capture_modes_store_separate_sample_sets(self) -> None:
+        manager = CalibrationManager()
+
+        def detect(source_id: str, frame: FramePacket) -> _CalibrationDetection:
+            return _detection(source_id, frame.frame_index)
+
+        manager._detect_calibration_board = detect  # type: ignore[method-assign]
+        frames = {
+            "cam0": _frame("cam0", 1),
+            "cam1": _frame("cam1", 1),
+        }
+
+        intrinsics_result = manager.capture_frames(frames, record_sample=True, capture_mode="intrinsics")
+        extrinsics_result = manager.capture_frames(frames, record_sample=True, capture_mode="sync_extrinsics")
+
+        self.assertEqual(intrinsics_result.capture_mode, "intrinsics")
+        self.assertEqual(extrinsics_result.capture_mode, "sync_extrinsics")
+        self.assertEqual(intrinsics_result.sample_counts, {"cam0": 1, "cam1": 1})
+        self.assertEqual(extrinsics_result.sample_counts, {"cam0": 1, "cam1": 1})
+        self.assertEqual(intrinsics_result.synchronized_samples, 0)
+        self.assertEqual(extrinsics_result.synchronized_samples, 1)
+        self.assertEqual([entry.capture_mode for entry in manager.sample_history], ["intrinsics", "sync_extrinsics"])
+
+    def test_workflow_readiness_reports_missing_intrinsics_and_sync_sets(self) -> None:
+        manager = CalibrationManager(min_samples_per_camera=2, min_synchronized_samples=2)
+
+        def detect(source_id: str, frame: FramePacket) -> _CalibrationDetection:
+            return _detection(source_id, frame.frame_index)
+
+        manager._detect_calibration_board = detect  # type: ignore[method-assign]
+        frames = {
+            "cam0": _frame("cam0", 1),
+            "cam1": _frame("cam1", 1),
+        }
+
+        initial = manager.workflow_readiness()
+        manager.capture_frames(frames, record_sample=True, capture_mode="intrinsics")
+        partial = manager.workflow_readiness()
+        manager.capture_frames(frames, record_sample=True, capture_mode="intrinsics")
+        ready = manager.workflow_readiness()
+
+        self.assertFalse(initial.can_solve_intrinsics)
+        self.assertFalse(partial.can_solve_intrinsics)
+        self.assertTrue(ready.can_solve_intrinsics)
+        self.assertEqual(set(ready.intrinsics_ready_sources), {"cam0", "cam1"})
+        self.assertFalse(ready.can_solve_extrinsics)
+        self.assertTrue(any("Solve intrinsics" in note for note in ready.notes))
 
 
 def _intrinsics_only_camera(source_id: str) -> CameraCalibration:
@@ -59,6 +111,15 @@ def _intrinsics_only_camera(source_id: str) -> CameraCalibration:
         translation=None,
         image_size=(640, 480),
         num_samples=6,
+    )
+
+
+def _frame(source_id: str, frame_index: int) -> FramePacket:
+    return FramePacket(
+        source_id=source_id,
+        frame_index=frame_index,
+        timestamp_sec=float(frame_index),
+        frame_data=np.zeros((480, 640, 3), dtype=np.uint8),
     )
 
 

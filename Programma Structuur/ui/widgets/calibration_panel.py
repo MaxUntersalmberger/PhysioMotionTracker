@@ -5,6 +5,8 @@ from collections.abc import Sequence
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -19,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from calibration import CalibrationCameraQuality, CalibrationSampleHistoryEntry
+from calibration import CalibrationCameraQuality, CalibrationSampleHistoryEntry, CalibrationWorkflowReadiness
 
 
 class _CalibrationQualityRowWidget(QFrame):
@@ -85,17 +87,23 @@ class CalibrationPanelWidget(QWidget):
         self._square_size_spin.setValue(0.024)
         self._square_size_spin.setSuffix(" m")
 
-        self._guidance_label = QLabel(
-            "Guidance: probe 2+ cameras, watch the per-camera quality bars, keep the chessboard visible in every view, then capture a sample when sync is ready."
-        )
-        self._guidance_label.setWordWrap(True)
-        self._guidance_label.setObjectName("calibrationGuidanceLabel")
+        self._workflow_mode_combo = QComboBox()
+        self._workflow_mode_combo.addItem("Intrinsics", "intrinsics")
+        self._workflow_mode_combo.addItem("Sync / Extrinsics", "sync_extrinsics")
 
-        self._workflow_label = QLabel(
-            "Wizard flow: probe sources -> align the board -> capture sample -> review history -> solve intrinsics -> solve extrinsics."
-        )
-        self._workflow_label.setWordWrap(True)
-        self._workflow_label.setObjectName("calibrationWorkflowLabel")
+        self._auto_capture_checkbox = QCheckBox("Auto Capture Valid Frames")
+        self._auto_capture_checkbox.setChecked(False)
+
+        self._auto_capture_cooldown_spin = QDoubleSpinBox()
+        self._auto_capture_cooldown_spin.setRange(0.5, 10.0)
+        self._auto_capture_cooldown_spin.setDecimals(1)
+        self._auto_capture_cooldown_spin.setSingleStep(0.5)
+        self._auto_capture_cooldown_spin.setValue(1.5)
+        self._auto_capture_cooldown_spin.setSuffix(" s")
+
+        self._auto_status_label = QLabel("Auto capture off.")
+        self._auto_status_label.setWordWrap(True)
+        self._auto_status_label.setObjectName("calibrationAutoStatusLabel")
 
         self._sync_label = QLabel("Camera sync: waiting for the next sample.")
         self._sync_label.setWordWrap(True)
@@ -104,6 +112,9 @@ class CalibrationPanelWidget(QWidget):
         self._state_label = QLabel("No calibration profile loaded.")
         self._state_label.setObjectName("calibrationStateLabel")
         self._sample_counts_label = QLabel("Samples: none")
+        self._readiness_label = QLabel("Readiness: capture intrinsics samples to begin.")
+        self._readiness_label.setWordWrap(True)
+        self._readiness_label.setObjectName("calibrationReadinessLabel")
         self._profile_label = QLabel("Profile: not loaded")
 
         self._quality_summary_label = QLabel("Quality scores will appear after the first live batch.")
@@ -141,9 +152,16 @@ class CalibrationPanelWidget(QWidget):
         self._output.setMinimumHeight(120)
 
         form = QFormLayout()
+        form.addRow("Calibration step", self._workflow_mode_combo)
         form.addRow("Board columns", self._columns_spin)
         form.addRow("Board rows", self._rows_spin)
         form.addRow("Square size", self._square_size_spin)
+
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(self._auto_capture_checkbox)
+        auto_row.addWidget(QLabel("Cooldown"))
+        auto_row.addWidget(self._auto_capture_cooldown_spin)
+        auto_row.addStretch(1)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self._capture_button)
@@ -155,23 +173,24 @@ class CalibrationPanelWidget(QWidget):
         file_row.addWidget(self._save_button)
         file_row.addWidget(self._reset_button)
 
-        instruction_box = QGroupBox("Instructions")
-        instruction_layout = QVBoxLayout(instruction_box)
-        instruction_layout.addWidget(self._guidance_label)
-        instruction_layout.addWidget(self._workflow_label)
-        instruction_layout.addWidget(self._sync_label)
+        status_box = QGroupBox("Capture Status")
+        status_layout = QVBoxLayout(status_box)
+        status_layout.addWidget(self._auto_status_label)
+        status_layout.addWidget(self._sync_label)
 
         settings_box = QGroupBox("Capture Settings")
         settings_layout = QVBoxLayout(settings_box)
         settings_layout.addLayout(form)
+        settings_layout.addLayout(auto_row)
         settings_layout.addLayout(button_row)
         settings_layout.addLayout(file_row)
         settings_layout.addWidget(self._state_label)
         settings_layout.addWidget(self._sample_counts_label)
+        settings_layout.addWidget(self._readiness_label)
         settings_layout.addWidget(self._profile_label)
 
         top_row = QHBoxLayout()
-        top_row.addWidget(instruction_box, 2)
+        top_row.addWidget(status_box, 2)
         top_row.addWidget(settings_box, 3)
 
         quality_box = QGroupBox("Per-Camera Quality")
@@ -200,12 +219,30 @@ class CalibrationPanelWidget(QWidget):
         self._load_button.clicked.connect(self.load_profile_requested.emit)
         self._save_button.clicked.connect(self.save_profile_requested.emit)
         self._reset_button.clicked.connect(self.reset_samples_requested.emit)
+        self._workflow_mode_combo.currentIndexChanged.connect(self._apply_workflow_mode_ui)
+        self._apply_workflow_mode_ui()
 
     def board_shape(self) -> tuple[int, int]:
         return int(self._columns_spin.value()), int(self._rows_spin.value())
 
     def square_size_m(self) -> float:
         return float(self._square_size_spin.value())
+
+    def capture_mode(self) -> str:
+        data = self._workflow_mode_combo.currentData()
+        mode = str(data if data is not None else "intrinsics")
+        if mode == "sync_extrinsics":
+            return "sync_extrinsics"
+        return "intrinsics"
+
+    def auto_capture_enabled(self) -> bool:
+        return self._auto_capture_checkbox.isChecked()
+
+    def auto_capture_cooldown_sec(self) -> float:
+        return float(self._auto_capture_cooldown_spin.value())
+
+    def set_auto_capture_status(self, text: str) -> None:
+        self._auto_status_label.setText(text)
 
     def set_board_shape(self, board_shape: tuple[int, int]) -> None:
         columns, rows = board_shape
@@ -228,6 +265,27 @@ class CalibrationPanelWidget(QWidget):
         parts = [f"{source_id}={count}" for source_id, count in sorted(sample_counts.items())]
         parts.append(f"sync={synchronized_samples}")
         self._sample_counts_label.setText("Samples: " + ", ".join(parts))
+
+    def set_workflow_readiness(self, readiness: CalibrationWorkflowReadiness) -> None:
+        intrinsics_text = (
+            "ready: " + ", ".join(readiness.intrinsics_ready_sources)
+            if readiness.intrinsics_ready_sources
+            else "not ready"
+        )
+        extrinsics_text = (
+            "ready: " + ", ".join(readiness.extrinsics_ready_sources)
+            if readiness.extrinsics_ready_sources
+            else "not ready"
+        )
+        solve_text = (
+            f"Intrinsics solve {'ready' if readiness.can_solve_intrinsics else 'waiting'} | "
+            f"Extrinsics solve {'ready' if readiness.can_solve_extrinsics else 'waiting'}"
+        )
+        note_text = " | ".join(readiness.notes[:3]) if readiness.notes else "All current calibration gates look ready."
+        self._readiness_label.setText(
+            f"Readiness: {solve_text}. Intrinsics {intrinsics_text}; extrinsics {extrinsics_text}; "
+            f"sync sets={readiness.synchronized_samples}. {note_text}"
+        )
 
     def set_camera_quality_scores(self, quality_scores: dict[str, CalibrationCameraQuality]) -> None:
         self._clear_layout(self._quality_rows_layout)
@@ -277,3 +335,16 @@ class CalibrationPanelWidget(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
+
+    def _apply_workflow_mode_ui(self, *_args: object) -> None:
+        if self.capture_mode() == "sync_extrinsics":
+            self._capture_button.setText("Capture Extrinsics Sync Set")
+            self._solve_intrinsics_button.setEnabled(True)
+            self._solve_extrinsics_button.setEnabled(True)
+            self._sync_label.setText("Camera sync: align the board so at least two calibrated cameras see it together.")
+            return
+
+        self._capture_button.setText("Capture Intrinsics Sample")
+        self._solve_intrinsics_button.setEnabled(True)
+        self._solve_extrinsics_button.setEnabled(True)
+        self._sync_label.setText("Camera sync: optional during intrinsics; samples are stored per camera.")

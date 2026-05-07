@@ -6,9 +6,12 @@ from pathlib import Path
 from app.bootstrap import build_context
 from app.demo import format_demo_result, run_pipeline_demo
 from app.ui import run_ui
+from biomechanics import JointAngleRepository, analyze_motion_take_joint_angles, format_joint_angle_report
 from capture.backend import OpenCVCaptureSession, describe_capture_batch
 from capture.sources import parse_sources_csv
 from core.logging import configure_logging
+from exporters import export_session_poses, format_pose_export_report
+from motion import MotionTakeRepository, format_motion_take_report, process_session_to_motion_take
 from session import format_reprocess_report, reprocess_session, summarize_session_playback
 
 
@@ -45,6 +48,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="Replay a recorded session through the mocap pipeline and print diagnostics.",
     )
+    mode.add_argument(
+        "--process-session",
+        metavar="PATH",
+        help="Replay a recorded session and save an internal processed motion take.",
+    )
+    mode.add_argument(
+        "--analyze-take",
+        metavar="PATH",
+        help="Analyze an internal processed motion take and save joint-angle results.",
+    )
+    mode.add_argument(
+        "--export-session",
+        metavar="PATH",
+        help="Replay a recorded session and export 2D/3D pose data.",
+    )
     parser.add_argument(
         "--sources",
         default=None,
@@ -65,7 +83,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--detector",
         default="synthetic",
-        help="Detector to use for reprocess-session: synthetic, mediapipe, or none.",
+        help="Detector to use for reprocess/process/export commands: synthetic, mediapipe, or none.",
+    )
+    parser.add_argument(
+        "--export-formats",
+        default="json,csv",
+        help="Comma-separated export formats for --export-session. Supported: json,csv.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory for session processing/export commands.",
     )
     return parser.parse_args(argv)
 
@@ -130,6 +158,54 @@ def run(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
+    if args.process_session:
+        try:
+            output_path = None
+            if args.output_dir:
+                output_path = Path(args.output_dir) / "motion_take.json"
+            report = process_session_to_motion_take(
+                Path(args.process_session),
+                detector_name=args.detector,
+                output_path=output_path,
+                max_batches=_batch_limit(args.max_batches),
+            )
+            print(format_motion_take_report(report))
+        except Exception as exc:
+            print(f"Session processing failed: {exc}")
+            return 1
+        return 0
+
+    if args.analyze_take:
+        try:
+            take_path = Path(args.analyze_take)
+            take = MotionTakeRepository().load(take_path)
+            output_path = Path(args.output_dir) / "joint_angles.json" if args.output_dir else None
+            report = analyze_motion_take_joint_angles(
+                take,
+                source_take_path=take_path,
+                output_path=output_path or JointAngleRepository().default_path(take_path),
+            )
+            print(format_joint_angle_report(report))
+        except Exception as exc:
+            print(f"Motion take analysis failed: {exc}")
+            return 1
+        return 0
+
+    if args.export_session:
+        try:
+            report = export_session_poses(
+                Path(args.export_session),
+                detector_name=args.detector,
+                output_dir=Path(args.output_dir) if args.output_dir else None,
+                formats=_parse_export_formats(args.export_formats),
+                max_batches=_batch_limit(args.max_batches),
+            )
+            print(format_pose_export_report(report))
+        except Exception as exc:
+            print(f"Session export failed: {exc}")
+            return 1
+        return 0
+
     print(f"{context.config.app_name} initialized")
     print(f"Root: {context.config.app_root}")
     print(f"Sessions: {context.config.sessions_dir}")
@@ -143,3 +219,7 @@ def _batch_limit(value: int) -> int | None:
     if limit <= 0:
         return None
     return limit
+
+
+def _parse_export_formats(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]

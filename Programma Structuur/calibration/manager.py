@@ -11,11 +11,15 @@ from capture.backend import CaptureBatch
 from calibration.diagnostics import acceptance_report_to_metadata, evaluate_calibration_bundle
 from models.types import CalibrationBundle, CameraCalibration, FramePacket
 
+CALIBRATION_MODE_INTRINSICS = "intrinsics"
+CALIBRATION_MODE_EXTRINSICS = "sync_extrinsics"
+
 
 @dataclass(slots=True)
 class CalibrationCaptureResult:
     sample_counts: dict[str, int]
     synchronized_samples: int
+    capture_mode: str = CALIBRATION_MODE_INTRINSICS
     sync_report: "CalibrationSyncReport" | None = None
     detections: dict[str, "CalibrationViewDetection"] = field(default_factory=dict)
     camera_quality_scores: dict[str, CalibrationCameraQuality] = field(default_factory=dict)
@@ -28,6 +32,17 @@ class CalibrationSolveResult:
     bundle: CalibrationBundle
     solved_sources: list[str]
     failed_sources: list[str]
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CalibrationWorkflowReadiness:
+    sample_counts: dict[str, int]
+    synchronized_samples: int
+    intrinsics_ready_sources: list[str]
+    extrinsics_ready_sources: list[str]
+    can_solve_intrinsics: bool
+    can_solve_extrinsics: bool
     notes: list[str] = field(default_factory=list)
 
 
@@ -62,6 +77,7 @@ class CalibrationSampleHistoryEntry:
     recorded_at_iso: str
     frame_index: int
     timestamp_sec: float
+    capture_mode: str
     sync_status: str
     detected_sources: list[str]
     missing_sources: list[str]
@@ -92,7 +108,7 @@ class CalibrationSampleHistoryEntry:
             f"{source_id} {quality.score:.0f}" for source_id, quality in sorted(self.camera_scores.items())
         )
         return (
-            f"#{self.sample_index:02d} {self.recorded_at_iso} | {self.sync_status} | "
+            f"#{self.sample_index:02d} {self.recorded_at_iso} | {self.capture_mode} | {self.sync_status} | "
             f"score={self.overall_score:.0f}/100 | seen={detected_text} | missing={missing_text} | {camera_text}"
         )
 
@@ -192,6 +208,48 @@ class CalibrationManager:
         with self._state_lock:
             return {source_id: len(samples) for source_id, samples in self._samples_by_source.items()}
 
+    def workflow_readiness(self) -> CalibrationWorkflowReadiness:
+        with self._state_lock:
+            sample_counts = self.sample_counts()
+            intrinsics_ready_sources = [
+                source_id
+                for source_id, count in sorted(sample_counts.items())
+                if count >= self._min_samples_per_camera
+            ]
+
+            bundle = self._current_bundle
+            extrinsics_ready_sources: list[str] = []
+            if bundle is not None:
+                extrinsics_ready_sources = [
+                    source_id
+                    for source_id, camera in sorted(bundle.cameras.items())
+                    if _camera_has_intrinsics(camera)
+                ]
+
+            notes: list[str] = []
+            if not sample_counts:
+                notes.append("Capture intrinsics samples before solving.")
+            for source_id, count in sorted(sample_counts.items()):
+                remaining = max(0, self._min_samples_per_camera - count)
+                if remaining:
+                    notes.append(f"{source_id}: capture {remaining} more intrinsics sample(s).")
+            if len(extrinsics_ready_sources) < 2:
+                notes.append("Solve intrinsics for at least two cameras before extrinsics.")
+            sync_remaining = max(0, self._min_synchronized_samples - len(self._sync_samples))
+            if sync_remaining:
+                notes.append(f"Capture {sync_remaining} more synchronized extrinsics set(s).")
+
+            return CalibrationWorkflowReadiness(
+                sample_counts=sample_counts,
+                synchronized_samples=len(self._sync_samples),
+                intrinsics_ready_sources=intrinsics_ready_sources,
+                extrinsics_ready_sources=extrinsics_ready_sources,
+                can_solve_intrinsics=bool(intrinsics_ready_sources),
+                can_solve_extrinsics=len(extrinsics_ready_sources) >= 2
+                and len(self._sync_samples) >= self._min_synchronized_samples,
+                notes=notes,
+            )
+
     def set_board_geometry(self, board_shape: tuple[int, int], square_size_m: float | None = None) -> None:
         with self._state_lock:
             normalized_shape = _normalize_board_shape(board_shape)
@@ -211,14 +269,20 @@ class CalibrationManager:
             self._sync_samples.clear()
             self._history_entries.clear()
 
-    def capture_sample(self, batch: CaptureBatch) -> CalibrationCaptureResult:
-        return self.capture_frames(batch.frames, record_sample=True)
+    def capture_sample(self, batch: CaptureBatch, capture_mode: str = CALIBRATION_MODE_INTRINSICS) -> CalibrationCaptureResult:
+        return self.capture_frames(batch.frames, record_sample=True, capture_mode=capture_mode)
 
     def inspect_frames(self, frames: dict[str, FramePacket]) -> CalibrationCaptureResult:
         return self.capture_frames(frames, record_sample=False)
 
-    def capture_frames(self, frames: dict[str, FramePacket], record_sample: bool = True) -> CalibrationCaptureResult:
+    def capture_frames(
+        self,
+        frames: dict[str, FramePacket],
+        record_sample: bool = True,
+        capture_mode: str = CALIBRATION_MODE_INTRINSICS,
+    ) -> CalibrationCaptureResult:
         with self._state_lock:
+            normalized_mode = _normalize_calibration_mode(capture_mode)
             notes: list[str] = []
             synchronized: dict[str, _CalibrationDetection] = {}
             public_detections: dict[str, CalibrationViewDetection] = {}
@@ -231,9 +295,14 @@ class CalibrationManager:
 
                 synchronized[source_id] = detection
                 public_detections[source_id] = self._to_public_detection(detection)
-                if record_sample:
+                if record_sample and normalized_mode == CALIBRATION_MODE_INTRINSICS:
                     self._samples_by_source.setdefault(source_id, []).append(detection)
-                action_text = "stored sample" if record_sample else "detected board"
+                if not record_sample:
+                    action_text = "detected board"
+                elif normalized_mode == CALIBRATION_MODE_INTRINSICS:
+                    action_text = "stored intrinsics sample"
+                else:
+                    action_text = "detected extrinsics candidate"
                 notes.append(
                     f"{source_id}: {action_text} with {detection.image_points.shape[0]} corners "
                     f"({detection.coverage_ratio:.0%} coverage)."
@@ -250,6 +319,7 @@ class CalibrationManager:
                     recorded_at_iso=datetime.now().isoformat(timespec="seconds"),
                     frame_index=max((frame.frame_index for frame in frames.values()), default=0),
                     timestamp_sec=max((frame.timestamp_sec for frame in frames.values()), default=0.0),
+                    capture_mode=normalized_mode,
                     sync_status=sync_report.status,
                     detected_sources=list(sync_report.detected_sources),
                     missing_sources=list(sync_report.missing_sources),
@@ -258,7 +328,7 @@ class CalibrationManager:
                 )
                 self._history_entries.append(history_entry)
 
-            if record_sample and len(synchronized) >= 2:
+            if record_sample and normalized_mode == CALIBRATION_MODE_EXTRINSICS and len(synchronized) >= 2:
                 first_detection = next(iter(synchronized.values()))
                 self._sync_samples.append(
                     _CalibrationSyncSample(
@@ -267,13 +337,16 @@ class CalibrationManager:
                         detections=dict(synchronized),
                     )
                 )
-                notes.append(f"Stored synchronized calibration sample for {len(synchronized)} cameras.")
-            elif record_sample and synchronized:
-                notes.append("Need at least two cameras seeing the board to solve extrinsics.")
+                notes.append(f"Stored synchronized extrinsics sample for {len(synchronized)} cameras.")
+            elif record_sample and normalized_mode == CALIBRATION_MODE_EXTRINSICS and synchronized:
+                notes.append("Need at least two cameras seeing the board to store an extrinsics sample.")
+            elif record_sample and normalized_mode == CALIBRATION_MODE_INTRINSICS and synchronized:
+                notes.append("Stored intrinsics samples only; switch to Sync / Extrinsics for synchronized sets.")
 
             return CalibrationCaptureResult(
                 sample_counts=self.sample_counts(),
                 synchronized_samples=len(self._sync_samples),
+                capture_mode=normalized_mode,
                 sync_report=sync_report,
                 detections=public_detections,
                 camera_quality_scores=camera_quality_scores,
@@ -317,6 +390,8 @@ class CalibrationManager:
                     "sample_counts": self.sample_counts(),
                     "synchronized_samples": len(self._sync_samples),
                     "calibration_version": _calibration_version(),
+                    "bundle_adjustment_status": "not_run",
+                    "bundle_adjustment_notes": ["Bundle adjustment runs after synchronized extrinsics are solved."],
                 },
             )
             bundle.metadata.update(acceptance_report_to_metadata(evaluate_calibration_bundle(bundle)))
@@ -460,6 +535,11 @@ class CalibrationManager:
                     "calibration_version": _calibration_version(),
                 },
             )
+            updated_bundle = self._refine_extrinsics_with_stereo_calibration(
+                updated_bundle,
+                reference_source_id,
+                solved_sources,
+            )
             updated_bundle.metadata.update(acceptance_report_to_metadata(evaluate_calibration_bundle(updated_bundle)))
             self._current_bundle = updated_bundle
             return CalibrationSolveResult(
@@ -468,6 +548,159 @@ class CalibrationManager:
                 failed_sources=failed_sources,
                 notes=notes,
             )
+
+    def _refine_extrinsics_with_stereo_calibration(
+        self,
+        bundle: CalibrationBundle,
+        reference_source_id: str,
+        solved_sources: list[str],
+    ) -> CalibrationBundle:
+        reference_camera = bundle.cameras.get(reference_source_id)
+        if reference_camera is None or not _camera_has_intrinsics(reference_camera):
+            return _bundle_with_adjustment_metadata(
+                bundle,
+                status="skipped",
+                notes=["Bundle refinement skipped because the reference camera has no intrinsics."],
+                pair_errors={},
+            )
+
+        updated_cameras = dict(bundle.cameras)
+        adjustment_notes: list[str] = []
+        pair_errors: dict[str, float] = {}
+
+        for source_id in sorted(set(solved_sources)):
+            if source_id == reference_source_id:
+                continue
+            camera = updated_cameras.get(source_id)
+            if camera is None or not _camera_has_intrinsics(camera):
+                adjustment_notes.append(f"{source_id}: skipped refinement because intrinsics are incomplete.")
+                continue
+            if camera.rotation is None or camera.translation is None:
+                adjustment_notes.append(f"{source_id}: skipped refinement because initial extrinsics are missing.")
+                continue
+
+            observations = self._stereo_observations_for_pair(reference_source_id, source_id)
+            if len(observations) < self._min_synchronized_samples:
+                adjustment_notes.append(
+                    f"{source_id}: skipped refinement; {len(observations)} usable stereo observation(s) available."
+                )
+                continue
+
+            refined = self._run_pairwise_stereo_refinement(
+                reference_camera=reference_camera,
+                source_camera=camera,
+                observations=observations,
+            )
+            if refined is None:
+                adjustment_notes.append(f"{source_id}: OpenCV stereo refinement failed.")
+                continue
+
+            rms, rotation_matrix, translation_vector = refined
+            pair_key = f"{reference_source_id}->{source_id}"
+            pair_errors[pair_key] = rms
+            updated_cameras[source_id] = CameraCalibration(
+                source_id=source_id,
+                status="solved",
+                num_samples=camera.num_samples,
+                image_size=camera.image_size,
+                intrinsics=camera.intrinsics,
+                distortion=camera.distortion,
+                rotation=rotation_matrix.reshape(-1).tolist(),
+                translation=translation_vector.reshape(-1).tolist(),
+                reprojection_error_px=camera.reprojection_error_px,
+                diagnostics=list(camera.diagnostics)
+                + [f"Extrinsics refined with fixed-intrinsics stereo calibration; RMS={rms:.4f}px."],
+                calibrated_at_iso=datetime.now().isoformat(timespec="seconds"),
+            )
+            adjustment_notes.append(f"{source_id}: refined against {reference_source_id}; RMS={rms:.4f}px.")
+
+        status = "refined" if pair_errors else "skipped"
+        if not adjustment_notes:
+            adjustment_notes.append("No non-reference cameras were available for bundle refinement.")
+
+        return _bundle_with_adjustment_metadata(
+            CalibrationBundle(
+                cameras=updated_cameras,
+                notes=list(bundle.notes) + adjustment_notes,
+                metadata=dict(bundle.metadata),
+            ),
+            status=status,
+            notes=adjustment_notes,
+            pair_errors=pair_errors,
+        )
+
+    def _stereo_observations_for_pair(
+        self,
+        reference_source_id: str,
+        source_id: str,
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]]]:
+        observations: list[tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]]] = []
+        for sync_sample in self._sync_samples:
+            reference_detection = sync_sample.detections.get(reference_source_id)
+            source_detection = sync_sample.detections.get(source_id)
+            if reference_detection is None or source_detection is None:
+                continue
+            if reference_detection.image_size != source_detection.image_size:
+                continue
+            if reference_detection.object_points.shape != source_detection.object_points.shape:
+                continue
+            if not np.allclose(reference_detection.object_points, source_detection.object_points, atol=1e-6):
+                continue
+
+            observations.append(
+                (
+                    reference_detection.object_points.astype(np.float32).reshape(-1, 3),
+                    reference_detection.image_points.astype(np.float32).reshape(-1, 1, 2),
+                    source_detection.image_points.astype(np.float32).reshape(-1, 1, 2),
+                    reference_detection.image_size,
+                )
+            )
+        return observations
+
+    def _run_pairwise_stereo_refinement(
+        self,
+        reference_camera: CameraCalibration,
+        source_camera: CameraCalibration,
+        observations: list[tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]]],
+    ) -> tuple[float, np.ndarray, np.ndarray] | None:
+        object_points = [item[0] for item in observations]
+        reference_points = [item[1] for item in observations]
+        source_points = [item[2] for item in observations]
+        image_size = observations[0][3]
+
+        reference_matrix = _camera_matrix(reference_camera, image_size)
+        source_matrix = _camera_matrix(source_camera, image_size)
+        if reference_matrix is None or source_matrix is None:
+            return None
+
+        initial_rotation = _rotation_matrix_from_values(source_camera.rotation)
+        initial_translation = _translation_vector_from_values(source_camera.translation)
+        if initial_rotation is None or initial_translation is None:
+            return None
+
+        flags = cv2.CALIB_FIX_INTRINSIC
+        if hasattr(cv2, "CALIB_USE_EXTRINSIC_GUESS"):
+            flags |= cv2.CALIB_USE_EXTRINSIC_GUESS
+
+        try:
+            rms, _cm1, _dc1, _cm2, _dc2, rotation, translation, _essential, _fundamental = cv2.stereoCalibrate(
+                object_points,
+                reference_points,
+                source_points,
+                reference_matrix,
+                _distortion_array(reference_camera),
+                source_matrix,
+                _distortion_array(source_camera),
+                image_size,
+                initial_rotation,
+                initial_translation.reshape(3, 1),
+                flags=flags,
+                criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 80, 1e-6),
+            )
+        except Exception:
+            return None
+
+        return float(rms), np.asarray(rotation, dtype=np.float64).reshape(3, 3), np.asarray(translation, dtype=np.float64).reshape(3)
 
     def _solve_camera_intrinsics(
         self,
@@ -849,6 +1082,13 @@ def _normalize_board_shape(board_shape: tuple[int, int]) -> tuple[int, int]:
     return columns, rows
 
 
+def _normalize_calibration_mode(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"extrinsics", "sync", "sync_extrinsics", "synchronized", "synchronised"}:
+        return CALIBRATION_MODE_EXTRINSICS
+    return CALIBRATION_MODE_INTRINSICS
+
+
 def _estimate_coverage_ratio(corners: np.ndarray, image_width: int, image_height: int) -> float:
     if image_width <= 0 or image_height <= 0 or corners.size == 0:
         return 0.0
@@ -909,6 +1149,52 @@ def _distortion_array(camera: CameraCalibration) -> np.ndarray:
     if camera.distortion is None:
         return np.zeros((5, 1), dtype=np.float64)
     return np.asarray(camera.distortion, dtype=np.float64).reshape(-1, 1)
+
+
+def _rotation_matrix_from_values(values: list[float] | None) -> np.ndarray | None:
+    if values is None:
+        return None
+    try:
+        array = np.asarray(values, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if array.size == 9:
+        return array.reshape(3, 3)
+    if array.size == 3:
+        rotation, _jacobian = cv2.Rodrigues(array.reshape(3, 1))
+        return rotation
+    return None
+
+
+def _translation_vector_from_values(values: list[float] | None) -> np.ndarray | None:
+    if values is None:
+        return None
+    try:
+        array = np.asarray(values, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if array.size != 3:
+        return None
+    return array
+
+
+def _bundle_with_adjustment_metadata(
+    bundle: CalibrationBundle,
+    status: str,
+    notes: list[str],
+    pair_errors: dict[str, float],
+) -> CalibrationBundle:
+    metadata = dict(bundle.metadata)
+    metadata.update(
+        {
+            "bundle_adjustment_status": status,
+            "bundle_adjustment_method": "opencv_stereoCalibrate_fixed_intrinsics",
+            "bundle_adjustment_pair_rms_px": dict(pair_errors),
+            "bundle_adjustment_notes": list(notes),
+            "bundle_adjustment_updated_at_iso": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    return CalibrationBundle(cameras=dict(bundle.cameras), notes=list(bundle.notes), metadata=metadata)
 
 
 def _average_transforms(transforms: list[np.ndarray]) -> np.ndarray:

@@ -61,6 +61,9 @@ py run.py --capture-sample --sources 0
 py run.py --ui
 py run.py --session-summary sessions/session_YYYYMMDD_HHMMSS
 py run.py --reprocess-session sessions/session_YYYYMMDD_HHMMSS --detector synthetic --max-batches 0
+py run.py --process-session sessions/session_YYYYMMDD_HHMMSS --detector synthetic --max-batches 0
+py run.py --analyze-take sessions/session_YYYYMMDD_HHMMSS/processed/motion_take.json
+py run.py --export-session sessions/session_YYYYMMDD_HHMMSS --detector synthetic --export-formats json,csv --max-batches 0
 ```
 
 `--smoke-test` controleert alleen of de basis opstart.
@@ -69,6 +72,9 @@ py run.py --reprocess-session sessions/session_YYYYMMDD_HHMMSS --detector synthe
 `--ui` start de Qt-shell met probe-, capture-, calibration-, live preview-, overlay-, camera-grid- en pipeline-koppeling.
 `--session-summary` controleert of een opgenomen sessie terugleesbaar is.
 `--reprocess-session` speelt een opgenomen sessie opnieuw door de pipeline; `--max-batches 0` verwerkt alles.
+`--process-session` verwerkt een opgenomen sessie naar een interne `processed/motion_take.json`, bedoeld als werkobject voor review, analyse, IK en latere exports.
+`--analyze-take` berekent de eerste interne joint-angle analyse vanuit een processed motion take en schrijft `processed/analysis/joint_angles.json`.
+`--export-session` speelt een opgenomen sessie opnieuw door de pipeline en schrijft pose-data naar JSON en CSV.
 
 De live UI gebruikt MediaPipe als 2D-pose-detector wanneer het modelbestand beschikbaar is.
 In het capture-paneel kun je wisselen tussen MediaPipe, de synthetische demo-detector en een detectie-uit stand.
@@ -81,13 +87,21 @@ De calibratie-workflow in de live UI werkt met chessboard-samples: capture sampl
 Als dat bestand aanwezig is, wordt het bij opstart automatisch geladen.
 Tijdens sample capture controleert de UI of de board in meerdere camera's zichtbaar is en of de batch synchroon genoeg is om als calibratiesample te gebruiken.
 De live preview tekent de gedetecteerde chessboard-corners per camera en de camera grid laat zien welke bronnen de board op dat moment zien.
+De calibratie-tab splitst de workflow nu expliciet in `Intrinsics` en `Sync / Extrinsics`: intrinsics slaat per-camera lenssamples op, extrinsics slaat alleen gesynchroniseerde multi-camera board-sets op.
+Auto-capture kan geldige frames automatisch opslaan wanneer de live kwaliteit en synchronisatie voldoende zijn, met een instelbare cooldown.
+De solve-acties gebruiken readiness gates: intrinsics vraagt genoeg per-camera samples, extrinsics vraagt opgeloste intrinsics plus genoeg gesynchroniseerde sets.
+Na het oplossen van extrinsics verfijnt OpenCV `stereoCalibrate` de camera-paren met vaste intrinsics en schrijft pair-RMS en bundle-adjustment metadata in de calibratiebundle.
 Wanneer een calibratiebundle met geldige intrinsics én extrinsics aanwezig is, schakelt de live reconstructie over naar echte multi-view triangulatie.
 Zonder zo'n bundle blijft reconstructie bewust unavailable in plaats van een nep-3D resultaat te tonen.
+De calibrated triangulator gebruikt nu confidence-weighted multi-view DLT, per-joint outlier rejection, missing-joint rapportage en een 3D trust-score voor de pipeline status.
 Calibratiebundles krijgen nu acceptance metadata, epipolar pair readiness en versie-informatie; Charuco-detectie wordt gebruikt wanneer de OpenCV build `cv2.aruco` ondersteunt.
 
 De Session-tab ondersteunt nu een eerste echte recording lifecycle: start recording, stop recording, per-camera video-opslag, een `frames.jsonl` tijdlijn en manifest-metadata voor reproduceerbare offline verwerking. Opgenomen sessies kunnen headless worden teruggelezen en opnieuw door de pipeline worden verwerkt.
-De Review-tab kan een opgenomen sessie laden, met een frame-slider door de recorded batches stappen en de huidige recorded frame direct opnieuw door de pipeline halen voor 2D/3D overlays.
+De Review-tab kan een opgenomen sessie laden, met een frame-slider door de recorded batches stappen, de huidige recorded frame direct opnieuw door de pipeline halen voor 2D/3D overlays en de volledige sessie verwerken naar een interne motion take.
 Tijdens recording worden disk/resource snapshots opgeslagen in het session manifest.
+Verwerkte sessies worden opgeslagen als `processed/motion_take.json`; dat bestand bevat 2D pose, 3D pose wanneer calibratie beschikbaar is, pipeline metadata en placeholders voor inverse kinematics en joint angles.
+De Analysis-tab kan een processed take laden, per-frame/per-joint reconstructiewaarden tonen en joint-angle curves samenvatten voor knieën, heupen, ellebogen en schouders wanneer 3D keypoints beschikbaar zijn.
+Opgenomen sessies kunnen via CLI of Review-tab worden geexporteerd naar `pose_export.json`, `pose_2d.csv`, `pose_3d.csv` en een `export_manifest.json`.
 
 Zie [ARCHITECTURE.md](ARCHITECTURE.md) voor de concrete modulegrenzen en de aanbevolen eerste implementatiestappen.
 Zie [PROFESSIONAL_BACKLOG.md](PROFESSIONAL_BACKLOG.md) voor de volledige professionele product-backlog en status.

@@ -17,6 +17,7 @@ class PipelineStatusWidget(QWidget):
         self._active_cameras_value = QLabel("-")
         self._matched_value = QLabel("-")
         self._joints_value = QLabel("-")
+        self._trust_value = QLabel("-")
         self._error_value = QLabel("-")
         self._capture_latency_value = QLabel("-")
         self._pipeline_latency_value = QLabel("-")
@@ -31,6 +32,7 @@ class PipelineStatusWidget(QWidget):
         form.addRow("Active cameras", self._active_cameras_value)
         form.addRow("Matched keypoints", self._matched_value)
         form.addRow("Reconstructed joints", self._joints_value)
+        form.addRow("3D trust", self._trust_value)
         form.addRow("Mean reprojection error", self._error_value)
         form.addRow("Capture latency", self._capture_latency_value)
         form.addRow("Pipeline latency", self._pipeline_latency_value)
@@ -60,6 +62,7 @@ class PipelineStatusWidget(QWidget):
         self._active_cameras_value.setText("-")
         self._matched_value.setText("-")
         self._joints_value.setText("-")
+        self._trust_value.setText("-")
         self._error_value.setText("-")
         self._capture_latency_value.setText("-")
         self._pipeline_latency_value.setText("-")
@@ -76,6 +79,7 @@ class PipelineStatusWidget(QWidget):
         self._active_cameras_value.setText(str(debug.active_cameras))
         self._matched_value.setText(str(debug.matched_keypoints))
         self._joints_value.setText(str(debug.reconstructed_keypoints))
+        self._trust_value.setText(f"{debug.reconstruction_trust_state} ({debug.reconstruction_trust_score:.0f}/100)")
         self._error_value.setText(
             f"{debug.mean_reprojection_error_px:.3f}px" if debug.mean_reprojection_error_px is not None else "n/a"
         )

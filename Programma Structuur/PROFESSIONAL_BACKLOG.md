@@ -10,7 +10,14 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 - Done: camera controls, camera profiles, camera health inputs, resource snapshots, calibration acceptance diagnostics en detector policy/registry basis.
 - Done: UI-playback review-tab met random-access frame stepping.
 - Done: review-tab kan recorded frames nu opnieuw door de pipeline halen met cached overlays.
-- Next: export workflow, plus echte bundle adjustment en uitgebreidere detector backends.
+- Done: eerste headless CSV/JSON pose export voor recorded sessions.
+- Done: calibratie-workflow gesplitst in intrinsics samples en synchronized extrinsics sets met auto-capture gating.
+- Done: eerste echte fixed-intrinsics stereo refinement na extrinsics solve.
+- Done: Review-tab exporteert recorded sessions naar JSON/CSV.
+- Done: interne `motion_take.json` als processed session werkobject voor review/analyse/IK.
+- Done: eerste Analysis-tab met joint-angle analyse vanuit processed motion takes.
+- Done: robuustere calibrated 3D reconstructie met weighted DLT, outlier rejection en trust-score.
+- Next: inverse kinematics, globale multi-camera bundle adjustment, uitgebreidere detector backends en exportformaten.
 
 ## 1. Professionele Camera-Inname
 
@@ -28,15 +35,17 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 ## 2. Robuuste Calibratie
 
 - [x] Chessboard sample capture.
+- [x] Gesplitste intrinsics/extrinsics capture workflow.
+- [x] Auto-capture voor geldige calibratieframes met live overlay/quality gating.
 - [x] Intrinsics en extrinsics solve basis.
 - [x] Fix voor extrinsics vanuit intrinsics-only bundles.
 - [x] Charuco-detectiepad wanneer `cv2.aruco` beschikbaar is.
 - [ ] AprilTag support.
-- [ ] Bundle adjustment / non-linear refinement.
+- [x] Fixed-intrinsics pairwise stereo refinement via OpenCV `stereoCalibrate`.
 - [x] Reprojection en epipolar diagnostics.
 - [x] Calibration acceptance score.
 - [x] Calibration profile versioning metadata.
-- [ ] Echte non-linear bundle adjustment solver.
+- [ ] Globale multi-camera bundle adjustment solver.
 
 ## 3. 2D Detectie
 
@@ -62,10 +71,10 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 
 - [x] Calibrated triangulation basis.
 - [x] Reprojection error gating per joint.
-- [ ] Confidence-weighted triangulatie.
+- [x] Confidence-weighted triangulatie.
 - [ ] Epipolar matching.
-- [ ] Missing-joint handling.
-- [ ] Trust-state scoring per frame.
+- [x] Missing-joint handling.
+- [x] Trust-state scoring per frame.
 
 ## 6. Skeleton Fitting
 
@@ -77,7 +86,8 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 
 ## 7. Biomechanica En Analyse
 
-- [ ] Joint angles.
+- [x] Intern processed motion-take bestand als analyse-ingang.
+- [x] Eerste 3D joint-angle analyse voor knie/heup/elleboog/schouder.
 - [ ] Velocity en acceleration.
 - [ ] Range of motion.
 - [ ] Asymmetrie-metrieken.
@@ -91,13 +101,15 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 - [x] Per-camera video files gekoppeld aan manifest.
 - [x] Session playback.
 - [x] Offline re-processing.
+- [x] Processed motion take opslag onder recorded session.
 - [x] UI review-tab voor opgenomen sessies.
 - [ ] Subject metadata.
 - [ ] Session browser.
 
 ## 9. Exports
 
-- [ ] CSV/JSON pose export.
+- [x] CSV/JSON pose export.
+- [x] UI-koppeling voor CSV/JSON pose export vanuit Review.
 - [ ] BVH export.
 - [ ] C3D export.
 - [ ] glTF/FBX route.
@@ -108,10 +120,12 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 - [x] Capture, Session, Live View, Calibration en Diagnostics tabs.
 - [x] Review-tab met frame slider en recorded session preview.
 - [x] Review-overlay processing voor de huidige recorded frame.
+- [x] Review-tab kan een volledige session verwerken naar interne motion take.
+- [x] Analysis-tab voor processed motion takes en joint-angle summaries.
 - [ ] Setup wizard.
 - [ ] Camera health panel.
 - [ ] Calibration acceptance checklist.
-- [ ] Volledige record-review-export operator flow.
+- [x] Eerste record-review-export operator flow.
 
 ## 11. Performance En Betrouwbaarheid
 
@@ -130,9 +144,11 @@ Dit document houdt de product-backlog bij voor het doel: een professioneel motio
 - [x] Session recorder regressietest.
 - [x] Session playback/reprocess regressietest.
 - [x] Professional foundations regressietest voor camera/calibration/detector basis.
+- [x] Export roundtrip test voor recorded session naar JSON/CSV.
+- [x] Motion-take roundtrip test voor processed recorded session.
+- [x] Joint-angle analyse regressietest.
 - [ ] Synthetic fixture dataset.
 - [ ] Reconstruction benchmarks.
-- [ ] Export roundtrip tests.
 - [ ] UI smoke tests.
 
 ## 13. Packaging

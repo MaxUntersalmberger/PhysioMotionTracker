@@ -124,6 +124,10 @@ class PipelineDebugInfo:
     reconstructed_keypoints: int = 0
     mean_reprojection_error_px: float | None = None
     per_joint_reprojection_error_px: dict[str, float] = field(default_factory=dict)
+    per_joint_view_count: dict[str, int] = field(default_factory=dict)
+    per_joint_confidence: dict[str, float] = field(default_factory=dict)
+    reconstruction_trust_score: float = 0.0
+    reconstruction_trust_state: str = "unavailable"
     capture_latency_ms: float | None = None
     detection_ms: float = 0.0
     matching_ms: float = 0.0
