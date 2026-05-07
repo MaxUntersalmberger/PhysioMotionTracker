@@ -1,3 +1,6 @@
+import ctypes
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("HU.PhysioMotionTracker.1")
+
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtGui import QIcon
@@ -10,7 +13,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "imagesGUI"))
 
 import resources_rc
 
-#pyrcc5 resources.qrc -o resources_rc.py om het resources_rc.py bestand te genereren vanuit de resources.qrc
+#pyrcc5 resources.qrc -o resources_rc.py 
 
 
 # Patch: fix voor QtCore.Qt.QFrame references in de gegenereerde gui.py
@@ -54,6 +57,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(":/HU_Logo.png"))
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
