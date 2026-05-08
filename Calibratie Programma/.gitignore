@@ -1,0 +1,6 @@
+calibratie.config.json
+logs/
+projects/
+exports/
+__pycache__/
+*.py[cod]
