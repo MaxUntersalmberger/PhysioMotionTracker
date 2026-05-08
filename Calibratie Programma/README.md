@@ -22,8 +22,11 @@ De bestaande map `Programma Structuur` wordt niet aangepast door deze app. Voor 
    - Acceptatiescore bekijken.
    - Versioned export maken.
 
+<<<<<<< HEAD
 Voor de Qt Designer-koppeling staat er een kort overzicht in [GUI_KOPPELING.md](GUI_KOPPELING.md).
 
+=======
+>>>>>>> 83e68c4 (Add standalone calibration program)
 ## Run
 
 ```bash
