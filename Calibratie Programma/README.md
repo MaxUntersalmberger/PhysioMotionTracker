@@ -22,6 +22,8 @@ De bestaande map `Programma Structuur` wordt niet aangepast door deze app. Voor 
    - Acceptatiescore bekijken.
    - Versioned export maken.
 
+Voor de Qt Designer-koppeling staat er een kort overzicht in [GUI_KOPPELING.md](GUI_KOPPELING.md).
+
 ## Run
 
 ```bash
