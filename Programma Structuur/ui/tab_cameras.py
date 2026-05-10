@@ -1,87 +1,168 @@
+import cv2
+import time
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+class CameraThread(QtCore.QThread):
+    """Thread die beelden ophaalt en instellingen live toepast."""
+    change_pixmap_signal = QtCore.pyqtSignal(QtGui.QImage)
+
+    def __init__(self, camera_index=0, fps=30, width=640, height=480):
+        super().__init__()
+        self.camera_index = camera_index
+        self.fps = fps
+        self.width = width
+        self.height = height
+        self._run_flag = True
+
+    def run(self):
+        # Gebruik CAP_DSHOW op Windows voor snellere initialisatie
+        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        
+        # Initialiseer resolutie
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+
+        while self._run_flag:
+            start_time = time.time()
+            
+            # Update resolutie als deze tussentijds is veranderd
+            if cap.get(cv2.CAP_PROP_FRAME_WIDTH) != self.width:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+
+            ret, frame = cap.read()
+            if ret:
+                # Conversie naar Qt formaat
+                rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_image.shape
+                bytes_per_line = ch * w
+                qt_img = QtGui.QImage(rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
+                
+                # .copy() is cruciaal om geheugencrashes te voorkomen
+                self.change_pixmap_signal.emit(qt_img.copy())
+
+            # FPS timing: wacht precies lang genoeg
+            sleep_time = max(1/self.fps - (time.time() - start_time), 0.001)
+            time.sleep(sleep_time)
+
+        cap.release()
+
+    def update_params(self, fps, res_str):
+        """Update de parameters die in de loop worden gebruikt."""
+        self.fps = fps
+        w, h = map(int, res_str.split('x'))
+        self.width, self.height = w, h
+
+    def stop(self):
+        self._run_flag = False
+        self.wait()
+
 class CameraFrame(QtWidgets.QFrame):
-    """Een camera-frame met dropdowns, instellingen en een stacked view (Live/Settings)."""
     def __init__(self, on_delete_callback):
         super().__init__()
         self.on_delete_callback = on_delete_callback
+        self.thread = None
         
-        # Basis styling
         self.setFrameShape(QtWidgets.QFrame.Box)
         self.setMinimumSize(250, 200)
         
-        # Hoofdlayout (Verticaal)
+        # Layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(5, 5, 5, 5)
-        self.main_layout.setSpacing(2)
 
-        # --- 1. Bovenste Balk (Controls) ---
+        # --- Controls (Bovenbalk) ---
         self.controls_layout = QtWidgets.QHBoxLayout()
         
-        # Dropdown voor camera selectie
         self.combo_select_cam = QtWidgets.QComboBox()
-        self.combo_select_cam.addItems(["Selecteer Camera...", "Camera 1", "Camera 2", "Camera 3"])
-        self.controls_layout.addWidget(self.combo_select_cam, 1) # Stretch factor 1
-
-        # Drie puntjes menu (Settings toggle)
+        self.combo_select_cam.addItems(["Geen Camera", "0", "1", "2"])
+        self.combo_select_cam.currentIndexChanged.connect(self.manage_thread)
+        
         self.btn_settings = QtWidgets.QPushButton("⋮")
         self.btn_settings.setFixedSize(30, 30)
         self.btn_settings.setCheckable(True)
         self.btn_settings.clicked.connect(self.toggle_view)
-        self.controls_layout.addWidget(self.btn_settings)
 
-        # Verwijder knop (X)
         self.btn_delete = QtWidgets.QPushButton("X")
         self.btn_delete.setFixedSize(30, 30)
-        self.btn_delete.setStyleSheet("background-color: #ff4d4d; color: white; font-weight: bold;")
-        self.btn_delete.clicked.connect(lambda: self.on_delete_callback(self))
-        self.controls_layout.addWidget(self.btn_delete)
+        self.btn_delete.setStyleSheet("background-color: #ff4d4d; color: white;")
+        self.btn_delete.clicked.connect(self.full_cleanup)
 
+        self.controls_layout.addWidget(self.combo_select_cam, 1)
+        self.controls_layout.addWidget(self.btn_settings)
+        self.controls_layout.addWidget(self.btn_delete)
         self.main_layout.addLayout(self.controls_layout)
 
-        # --- 2. Stacked Widget (Inhoud) ---
-        self.stacked_view = QtWidgets.QStackedWidget()
+        # --- Inhoud (Stack) ---
+        self.stacked = QtWidgets.QStackedWidget()
         
-        # Pagina 1: Live View Frame
-        self.live_view_frame = QtWidgets.QFrame()
-        self.live_view_frame.setStyleSheet("background-color: black;") # Placeholder voor video
-        self.live_label = QtWidgets.QLabel("LIVE VIEW", self.live_view_frame)
-        self.live_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.live_label.setStyleSheet("color: white;")
-        layout_live = QtWidgets.QVBoxLayout(self.live_view_frame)
-        layout_live.addWidget(self.live_label)
+        # Pagina 0: Live View
+        self.video_label = QtWidgets.QLabel("Selecteer een camera")
+        self.video_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.video_label.setStyleSheet("background-color: black; color: white;")
         
-        # Pagina 2: Settings Frame
+        # Pagina 1: Settings
         self.settings_frame = QtWidgets.QFrame()
         self.settings_layout = QtWidgets.QFormLayout(self.settings_frame)
         
         self.spin_fps = QtWidgets.QSpinBox()
-        self.spin_fps.setRange(1, 120)
+        self.spin_fps.setRange(1, 60)
         self.spin_fps.setValue(30)
+        self.spin_fps.valueChanged.connect(self.apply_settings)
         
         self.combo_res = QtWidgets.QComboBox()
-        self.combo_res.addItems(["1920x1080", "1280x720", "640x480"])
+        self.combo_res.addItems(["640x480", "1280x720", "1920x1080"])
+        self.combo_res.currentIndexChanged.connect(self.apply_settings)
         
-        self.settings_layout.addRow("FPS:", self.spin_fps)
+        self.settings_layout.addRow("Preview FPS:", self.spin_fps)
         self.settings_layout.addRow("Resolutie:", self.combo_res)
         
-        # Toevoegen aan stack
-        self.stacked_view.addWidget(self.live_view_frame) # Index 0
-        self.stacked_view.addWidget(self.settings_frame)  # Index 1
-        
-        self.main_layout.addWidget(self.stacked_view)
+        self.stacked.addWidget(self.video_label)
+        self.stacked.addWidget(self.settings_frame)
+        self.main_layout.addWidget(self.stacked)
+
+    def manage_thread(self, index):
+        """Start of stopt de camera thread."""
+        if self.thread:
+            self.thread.stop()
+            self.thread = None
+
+        if index > 0:
+            cam_idx = int(self.combo_select_cam.currentText())
+            self.thread = CameraThread(
+                camera_index=cam_idx, 
+                fps=self.spin_fps.value(),
+                width=int(self.combo_res.currentText().split('x')[0]),
+                height=int(self.combo_res.currentText().split('x')[1])
+            )
+            self.thread.change_pixmap_signal.connect(self.update_frame)
+            self.thread.start()
+        else:
+            self.video_label.clear()
+            self.video_label.setText("Selecteer een camera")
+
+    def apply_settings(self):
+        """Geef instellingen direct door aan de thread."""
+        if self.thread:
+            self.thread.update_params(self.spin_fps.value(), self.combo_res.currentText())
+
+    def update_frame(self, img):
+        """Toon het beeld op de QLabel (behalve als we in settings zitten)."""
+        if not self.btn_settings.isChecked():
+            pixmap = QtGui.QPixmap.fromImage(img)
+            self.video_label.setPixmap(pixmap.scaled(
+                self.video_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            ))
 
     def toggle_view(self):
-        """Wisselt tussen Live View en Settings."""
-        if self.btn_settings.isChecked():
-            self.stacked_view.setCurrentIndex(1)
-        else:
-            self.stacked_view.setCurrentIndex(0)
+        self.stacked.setCurrentIndex(1 if self.btn_settings.isChecked() else 0)
+
+    def full_cleanup(self):
+        if self.thread:
+            self.thread.stop()
+        self.on_delete_callback(self)
 
     def resizeEvent(self, event):
-        # 4:3 Verhouding forceren
-        new_height = int((self.width() / 4) * 3)
-        self.setFixedHeight(new_height)
+        self.setFixedHeight(int(self.width() * 0.75))
         super().resizeEvent(event)
 
 class TabCameras:
@@ -92,21 +173,16 @@ class TabCameras:
 
     def setup(self):
         self.main_layout = self.ui.gridLayout_6
-        
         self.scroll_area = QtWidgets.QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
-        
         self.scroll_content = QtWidgets.QWidget()
         self.grid_layout = QtWidgets.QGridLayout(self.scroll_content)
         self.grid_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
         
-        for i in range(3):
-            self.grid_layout.setColumnStretch(i, 1)
+        for i in range(3): self.grid_layout.setColumnStretch(i, 1)
         
         self.scroll_area.setWidget(self.scroll_content)
         self.main_layout.addWidget(self.scroll_area)
-
         self.setup_add_button()
 
     def setup_add_button(self):
@@ -133,18 +209,7 @@ class TabCameras:
     def update_grid(self):
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.setParent(None)
-
-        for index, frame in enumerate(self.camera_frames):
-            row, col = divmod(index, 3)
-            self.grid_layout.addWidget(frame, row, col)
-
-        row, col = divmod(len(self.camera_frames), 3)
-        self.grid_layout.addWidget(self.add_frame, row, col)
-        
-        if self.camera_frames:
-            self.add_frame.setFixedHeight(self.camera_frames[0].sizeHint().height())
-        else:
-            self.add_frame.setFixedHeight(200)
+            if item.widget(): item.widget().setParent(None)
+        for i, frame in enumerate(self.camera_frames):
+            self.grid_layout.addWidget(frame, i // 3, i % 3)
+        self.grid_layout.addWidget(self.add_frame, len(self.camera_frames) // 3, len(self.camera_frames) % 3)
