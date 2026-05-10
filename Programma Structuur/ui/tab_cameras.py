@@ -1,19 +1,31 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-class AspectRatioFrame(QtWidgets.QFrame):
-    """Een QFrame dat altijd een 3:4 (breedte:hoogte) verhouding aanhoudt."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
+class CameraFrame(QtWidgets.QFrame):
+    """Een camera-frame met een verwijder-knop linksboven (4:3 verhouding)."""
+    def __init__(self, on_delete_callback):
+        super().__init__()
+        self.on_delete_callback = on_delete_callback
+        
+        # Basis styling
         self.setFrameShape(QtWidgets.QFrame.Box)
-        self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #333; border-radius: 5px;")
+        self.setMinimumSize(200, 150)
         
+        # Layout voor de knop
+        self.layout = QtWidgets.QGridLayout(self)
+        self.layout.setContentsMargins(5, 5, 5, 5)
+
+        # 1. Verwijder knop (X) linksboven
+        self.btn_delete = QtWidgets.QPushButton("X", self) # 'self' toevoegen als parent helpt bij events
+        self.btn_delete.setFixedSize(30, 30)
+        self.btn_delete.clicked.connect(lambda: self.on_delete_callback(self))
+        
+        # Zorg dat de knop altijd bovenop ligt
+        self.btn_delete.raise_()
+        self.layout.addWidget(self.btn_delete, 0, 0, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
+
     def resizeEvent(self, event):
-        # Bereken de nieuwe hoogte op basis van de breedte (verhouding 4:3)
-        # Formule: Hoogte = (Breedte / 4) * 3
-        new_width = self.width()
-        new_height = int((new_width / 4) * 3)
-        
-        # Forceer de hoogte
+        # 4:3 Verhouding (Breedte / 4 * 3)
+        new_height = int((self.width() / 4) * 3)
         self.setFixedHeight(new_height)
         super().resizeEvent(event)
 
@@ -24,53 +36,75 @@ class TabCameras:
         self.camera_frames = []
 
     def setup(self):
-        """Initialiseert de Cameras tab"""
+        """Initialiseert de Cameras tab binnen gridLayout_6 van frame_cam."""
         self.main_layout = self.ui.gridLayout_6
         
-        # 1. Knoppen
-        self.button_layout = QtWidgets.QHBoxLayout()
-        self.btn_add_cam = QtWidgets.QPushButton("Camera Toevoegen")
-        self.btn_add_cam.clicked.connect(self.add_camera_frame)
-        self.btn_remove_cam = QtWidgets.QPushButton("Laatste Verwijderen")
-        self.btn_remove_cam.clicked.connect(self.remove_last_camera_frame)
-        
-        self.button_layout.addWidget(self.btn_add_cam)
-        self.button_layout.addWidget(self.btn_remove_cam)
-        self.button_layout.addStretch()
-        self.main_layout.addLayout(self.button_layout, 0, 0)
-
-        # 2. Scroll Area
         self.scroll_area = QtWidgets.QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
         
         self.scroll_content = QtWidgets.QWidget()
         self.grid_layout = QtWidgets.QGridLayout(self.scroll_content)
-        self.grid_layout.setAlignment(QtCore.Qt.AlignTop)
+        self.grid_layout.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
         
-        # Zorg dat kolommen gelijkmatig verdelen
+        # Grid kolom stretch instellen voor 3 kolommen
         for i in range(3):
             self.grid_layout.setColumnStretch(i, 1)
         
         self.scroll_area.setWidget(self.scroll_content)
-        self.main_layout.addWidget(self.scroll_area, 1, 0)
+        self.main_layout.addWidget(self.scroll_area)
 
-    def add_camera_frame(self):
-        """Voegt een frame toe met de AspectRatioFrame klasse"""
-        # Gebruik de nieuwe klasse in plaats van QFrame
-        new_frame = AspectRatioFrame()
-        
-        # Grid positie
-        index = len(self.camera_frames)
-        row = index // 3
-        col = index % 3
-        
-        self.grid_layout.addWidget(new_frame, row, col)
-        self.camera_frames.append(new_frame)
+        self.setup_add_button()
 
-    def remove_last_camera_frame(self):
-        if self.camera_frames:
-            frame_to_remove = self.camera_frames.pop()
-            self.grid_layout.removeWidget(frame_to_remove)
+    def setup_add_button(self):
+        """Maakt de grote '+' box aan het einde van het grid."""
+        self.add_frame = QtWidgets.QFrame()
+        
+        layout = QtWidgets.QVBoxLayout(self.add_frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.btn_plus = QtWidgets.QPushButton("+ Camera Toevoegen")
+        self.btn_plus.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.btn_plus.clicked.connect(self.add_new_camera)
+        
+        layout.addWidget(self.btn_plus)
+        self.update_grid()
+
+    def add_new_camera(self):
+        """Voegt een nieuw frame toe zonder tekst."""
+        # CORRECTIE: CameraFrame verwacht nu alleen de callback
+        new_cam = CameraFrame(self.remove_camera)
+        self.camera_frames.append(new_cam)
+        self.update_grid()
+
+    def remove_camera(self, frame_to_remove):
+        """Verwijdert het geselecteerde frame."""
+        if frame_to_remove in self.camera_frames:
+            self.camera_frames.remove(frame_to_remove)
             frame_to_remove.setParent(None)
             frame_to_remove.deleteLater()
+            self.update_grid()
+
+    def update_grid(self):
+        """Ververst de posities van alle frames en de toevoeg-knop."""
+        # Haal alles veilig uit de layout
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+
+        # Voeg camera frames toe
+        for index, frame in enumerate(self.camera_frames):
+            row, col = divmod(index, 3)
+            self.grid_layout.addWidget(frame, row, col)
+
+        # Plaats de 'Toevoegen' knop op de volgende positie
+        row, col = divmod(len(self.camera_frames), 3)
+        self.grid_layout.addWidget(self.add_frame, row, col)
+        
+        # Hoogte synchronisatie
+        if self.camera_frames:
+            self.add_frame.setFixedHeight(self.camera_frames[0].height())
+        else:
+            self.add_frame.setFixedHeight(150)
