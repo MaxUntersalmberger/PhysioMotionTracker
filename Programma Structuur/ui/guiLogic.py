@@ -99,7 +99,7 @@ class Logic:
             
             # Navigeer naar de camera's tab en open deze folder
             self.switch_page(1)  # Schakel naar tab_camera (index 1)
-            self.tab_directory.load_directory(project_path)
+            self.tab_directory.load_root_directory(project_path)
             
             print(f"Nieuw project aangemaakt: {project_path}")
 
@@ -142,7 +142,7 @@ class Logic:
                 
                 # Navigeer naar de camera's tab
                 self.switch_page(1)
-                self.tab_directory.load_directory(project_path)
+                self.tab_directory.load_root_directory(project_path)
 
                 print(f"Project geladen: {project_path}")
                 # # Toon succes bericht               

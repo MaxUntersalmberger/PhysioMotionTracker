@@ -1,8 +1,11 @@
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtWidgets import QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton, QLineEdit, QLabel, QFileDialog, QFileIconProvider
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QFileInfo
 from PyQt5.QtGui import QIcon
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # Configuratie: maximale diepte voor mappenstructuur in de tree
@@ -84,37 +87,50 @@ class TabDirectory:
     
     def load_root_directory(self, directory_path):
         """Laadt de directory structuur in de tree widget met lazy loading"""
-        directory_path = Path(directory_path)
-        
-        if not directory_path.exists():
-            QtWidgets.QMessageBox.warning(self.window, "Fout", f"Directory niet gevonden: {directory_path}")
-            return
-        
-        if not directory_path.is_dir():
-            QtWidgets.QMessageBox.warning(self.window, "Fout", f"Pad is geen directory: {directory_path}")
-            return
-        
-        self.root_directory = directory_path
-        self.path_input.setText(str(directory_path))
-        
-        # Clear tree
-        self.tree_widget.clear()
-        
-        # Voeg root item toe
-        root_item = QTreeWidgetItem(self.tree_widget)
-        root_item.setText(0, directory_path.name or str(directory_path))
-        root_item.setData(0, Qt.UserRole, str(directory_path))
-        
-        # Icon voor root
-        icon = self.icon_provider.icon(QFileIconProvider.Folder)
-        root_item.setIcon(0, icon)
-        root_item.setText(1, "Map")
-        
-        # Laad direct één niveau (lazy loading voor rest)
-        self._populate_tree_item_lazy(root_item, directory_path, 1)
-        
-        # Expand root
-        root_item.setExpanded(True)
+        try:
+            directory_path = Path(directory_path)
+            
+            if not directory_path.exists():
+                error_msg = f"Directory niet gevonden: {directory_path}"
+                logger.warning(error_msg)
+                QtWidgets.QMessageBox.warning(self.window, "Fout", error_msg)
+                return
+            
+            if not directory_path.is_dir():
+                error_msg = f"Pad is geen directory: {directory_path}"
+                logger.warning(error_msg)
+                QtWidgets.QMessageBox.warning(self.window, "Fout", error_msg)
+                return
+            
+            self.root_directory = directory_path
+            self.path_input.setText(str(directory_path))
+            
+            # Clear tree
+            self.tree_widget.clear()
+            
+            # Voeg root item toe
+            root_item = QTreeWidgetItem(self.tree_widget)
+            root_item.setText(0, directory_path.name or str(directory_path))
+            root_item.setData(0, Qt.UserRole, str(directory_path))
+            
+            # Icon voor root
+            icon = self.icon_provider.icon(QFileIconProvider.Folder)
+            root_item.setIcon(0, icon)
+            root_item.setText(1, "Map")
+            
+            # Laad direct één niveau (lazy loading voor rest)
+            self._populate_tree_item_lazy(root_item, directory_path, 1)
+            
+            # Expand root
+            root_item.setExpanded(True)
+        except Exception as e:
+            error_msg = f"Kon directory niet laden: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            QtWidgets.QMessageBox.critical(
+                self.window,
+                "Fout bij laden directory",
+                error_msg
+            )
     
     def _populate_tree_item_lazy(self, parent_item, directory_path, depth_level):
         """Laadt items met lazy loading - volgende level wordt geladen wanneer item wordt uitgeklapt"""
@@ -139,7 +155,9 @@ class TabDirectory:
                     icon = self.icon_provider.icon(QFileIconProvider.Folder)
                     item.setText(1, "Map")
                 else:
-                    icon = self.icon_provider.icon(item_path)
+                    # Zet Path om naar QFileInfo voor het icon
+                    file_info = QFileInfo(str(item_path))
+                    icon = self.icon_provider.icon(file_info)
                     item.setText(1, "Bestand")
                 
                 item.setIcon(0, icon)
@@ -160,21 +178,26 @@ class TabDirectory:
                     dummy.setText(0, "Laden...")
                     item.setData(0, Qt.UserRole + 1, False)  # Mark as not loaded
                     
-        except PermissionError:
+        except (PermissionError, OSError) as e:
+            # Stille fout - directory kon niet gelezen worden
             pass
     
     def on_tree_item_expanded(self, item):
         """Wordt aangeroepen wanneer een item wordt uitgeklapt - laadt submappen"""
-        item_path_str = item.data(0, Qt.UserRole)
-        if not item_path_str:
-            return
-        
-        item_path = Path(item_path_str)
-        
-        # Check if already loaded
-        if item.data(0, Qt.UserRole + 1) is False:
-            # Laad de submappen
-            self._populate_tree_item_lazy(item, item_path, self._get_depth_level(item) + 1)
+        try:
+            item_path_str = item.data(0, Qt.UserRole)
+            if not item_path_str:
+                return
+            
+            item_path = Path(item_path_str)
+            
+            # Check if already loaded
+            if item.data(0, Qt.UserRole + 1) is False:
+                # Laad de submappen
+                self._populate_tree_item_lazy(item, item_path, self._get_depth_level(item) + 1)
+        except Exception as e:
+            # Stille fout bij laden - item wordt gewoon niet uitgebreid
+            pass
     
     def _get_depth_level(self, item):
         """Bepaal de depth level van een tree item"""
@@ -187,15 +210,31 @@ class TabDirectory:
     
     def go_up_directory(self):
         """Gaat één niveau omhoog in de directory structuur"""
-        parent_path = self.root_directory.parent
-        
-        if parent_path != self.root_directory:
-            self.load_root_directory(parent_path)
-        else:
-            QtWidgets.QMessageBox.information(
+        try:
+            # Zorg dat root_directory geïnitialiseerd is
+            if self.root_directory is None:
+                self.root_directory = Path.cwd()
+            
+            # Zet om naar Path object als het nog een string is
+            current_path = Path(self.root_directory) if not isinstance(self.root_directory, Path) else self.root_directory
+            parent_path = current_path.parent
+            
+            # Controleer of we naar omhoog kunnen gaan
+            if parent_path != current_path:
+                self.load_root_directory(parent_path)
+            else:
+                QtWidgets.QMessageBox.information(
+                    self.window,
+                    "Info",
+                    "U bent al in de root directory"
+                )
+        except Exception as e:
+            error_msg = f"Kan niet naar bovenliggende map navigeren: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            QtWidgets.QMessageBox.critical(
                 self.window,
-                "Info",
-                "U bent al in de root directory"
+                "Fout bij navigatie",
+                error_msg
             )
     
     def load_directory_from_input(self):
@@ -233,8 +272,10 @@ class TabDirectory:
                 f"Standaard locatie ingesteld op:\n{self.root_directory}"
             )
         except Exception as e:
+            error_msg = f"Kon standaard locatie niet instellen: {str(e)}"
+            logger.error(error_msg, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 self.window,
                 "Fout",
-                f"Kon standaard locatie niet instellen:\n{str(e)}"
+                error_msg
             )
