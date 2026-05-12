@@ -1,6 +1,7 @@
 import cv2
 import time
 from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtMultimedia import QCameraInfo
 
 class CameraThread(QtCore.QThread):
     change_pixmap_signal = QtCore.pyqtSignal(QtGui.QImage)
@@ -12,21 +13,17 @@ class CameraThread(QtCore.QThread):
         self.width = width
         self.height = height
         self._run_flag = True
-
         self.rotate = 0  
         self.mirror = False
         self.exposure = -5 
 
     def run(self):
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-        
-        # Variabelen om huidige hardware status bij te houden
         current_w, current_h = 0, 0
         current_exp = None
 
         while self._run_flag:
             start_time = time.time()
-            
             if not cap.isOpened():
                 time.sleep(0.1)
                 continue
@@ -57,7 +54,6 @@ class CameraThread(QtCore.QThread):
                 h, w, ch = rgb_image.shape
                 bytes_per_line = ch * w
                 qt_img = QtGui.QImage(rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
-                
                 self.change_pixmap_signal.emit(qt_img.copy())
 
             # Gebruik FastTransformation voor betere performance tijdens UI scaling
@@ -92,7 +88,7 @@ class CameraFrame(QtWidgets.QFrame):
         # --- Controls ---
         self.controls_layout = QtWidgets.QHBoxLayout()
         self.combo_select_cam = QtWidgets.QComboBox()
-        self.combo_select_cam.addItems(["Geen Camera", "0", "1", "2", "3"])
+        self.refresh_camera_list() 
         self.combo_select_cam.currentIndexChanged.connect(self.manage_thread)
         
         self.btn_settings = QtWidgets.QPushButton("⋮")
@@ -149,23 +145,42 @@ class CameraFrame(QtWidgets.QFrame):
         self.stacked.addWidget(self.settings_frame)
         self.main_layout.addWidget(self.stacked)
 
+    def refresh_camera_list(self):
+        self.combo_select_cam.blockSignals(True)
+        self.combo_select_cam.clear()
+        # "Geen Camera" krijgt index -1 als marker
+        self.combo_select_cam.addItem("Geen Camera", -1)
+        cameras = QCameraInfo.availableCameras()
+        for i, cam in enumerate(cameras):
+            self.combo_select_cam.addItem(cam.description(), i)
+        self.combo_select_cam.blockSignals(False)
+
     def manage_thread(self, index):
+        opencv_idx = self.combo_select_cam.currentData()
+
+        # Check op dubbele camera (alleen als het handmatig gewisseld wordt naar een bezette camera)
+        if opencv_idx is not None and opencv_idx != -1:
+            cam_name = self.combo_select_cam.currentText()
+            if self.parent_tab and self.parent_tab.is_camera_in_use(cam_name, self):
+                QtWidgets.QMessageBox.warning(self, "Camera Bezet", f"'{cam_name}' is al in gebruik.")
+                self.combo_select_cam.blockSignals(True)
+                self.combo_select_cam.setCurrentIndex(0) 
+                self.combo_select_cam.blockSignals(False)
+                opencv_idx = -1 
+
         if self.thread:
             self.thread.stop()
             self.thread = None
 
-        if index > 0:
-            cam_idx = int(self.combo_select_cam.currentText())
-            self.thread = CameraThread(
-                camera_index=cam_idx, 
-                width=self.spin_width.value(),
-                height=self.spin_height.value()
-            )
-            self.apply_settings() # Pas initiële settings toe
+        if opencv_idx is not None and opencv_idx != -1:
+            # Maak de thread aan met de geselecteerde index
+            self.thread = CameraThread(camera_index=opencv_idx, width=self.spin_width.value(), height=self.spin_height.value())
+            self.apply_settings()
             self.thread.change_pixmap_signal.connect(self.update_frame)
             self.thread.start()
         else:
             self.video_label.clear()
+            self.video_label.setPixmap(QtGui.QPixmap())
             self.video_label.setText("Selecteer een camera")
 
     def apply_settings(self):
@@ -228,12 +243,47 @@ class TabCameras:
         self.update_grid()
 
     def add_new_camera(self):
+        # 1. Haal alle aangesloten camera's op
+        available_cameras = QCameraInfo.availableCameras()
+        
+        # 2. Zoek naar de eerste camera die nog NIET in gebruik is
+        camera_to_use_idx = -1
+        for i, cam in enumerate(available_cameras):
+            if not self.is_camera_in_use(cam.description(), None):
+                camera_to_use_idx = i
+                break
+        
+        # 3. Als er geen camera meer vrij is, geef een melding
+        if camera_to_use_idx == -1:
+            QtWidgets.QMessageBox.information(self.ui, "Geen Camera's Beschikbaar", 
+                "Alle aangesloten camera's zijn al in gebruik.")
+            return
+
+        # 4. Voeg het frame toe en selecteer direct de gevonden camera
         new_cam = CameraFrame(self.remove_camera)
+        new_cam.parent_tab = self
         self.camera_frames.append(new_cam)
+        
+        # Selecteer de camera in de combobox (index + 1 omdat 0 'Geen Camera' is)
+        new_cam.combo_select_cam.setCurrentIndex(camera_to_use_idx + 1)
+        
         self.update_grid()
+
+    def is_camera_in_use(self, camera_name, calling_frame):
+        # "Geen Camera" is nooit "in gebruik", dus die checken we niet
+        if camera_name == "Geen Camera":
+            return False
+        for frame in self.camera_frames:
+            if frame != calling_frame and frame.combo_select_cam.currentText() == camera_name:
+                return True
+        return False
 
     def remove_camera(self, frame_to_remove):
         if frame_to_remove in self.camera_frames:
+            # Zorg dat de thread eerst stopt
+            if frame_to_remove.thread:
+                frame_to_remove.thread.stop()
+            
             self.camera_frames.remove(frame_to_remove)
             frame_to_remove.setParent(None)
             frame_to_remove.deleteLater()
