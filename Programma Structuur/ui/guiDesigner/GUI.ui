@@ -49,7 +49,7 @@
        <item row="0" column="1">
         <widget class="QStackedWidget" name="stackedWidget">
          <property name="currentIndex">
-          <number>4</number>
+          <number>1</number>
          </property>
          <widget class="QWidget" name="page_home">
           <layout class="QGridLayout" name="gridLayout_4">
@@ -135,6 +135,9 @@
              <property name="textFormat">
               <enum>Qt::PlainText</enum>
              </property>
+             <property name="alignment">
+              <set>Qt::AlignCenter</set>
+             </property>
             </widget>
            </item>
           </layout>
@@ -189,25 +192,35 @@
              <layout class="QGridLayout" name="gridLayout_6"/>
             </widget>
            </item>
+           <item row="4" column="1">
+            <widget class="QPushButton" name="search_cameras">
+             <property name="text">
+              <string>Scan voor beschikbare camera's</string>
+             </property>
+            </widget>
+           </item>
           </layout>
          </widget>
-         <widget class="QWidget" name="page_process">
-          <layout class="QGridLayout" name="gridLayout_5">
-           <item row="0" column="0">
-            <widget class="QPushButton" name="btn_process_startprocessing">
-             <property name="text">
-              <string>Start Processing</string>
-             </property>
-            </widget>
-           </item>
-           <item row="1" column="0">
-            <widget class="QPushButton" name="btn_process_exporttomel">
-             <property name="text">
-              <string>Export TOMEL</string>
-             </property>
-            </widget>
-           </item>
-          </layout>
+         <widget class="QWidget" name="page_results">
+          <widget class="QWidget" name="gridLayoutWidget">
+           <property name="geometry">
+            <rect>
+             <x>-10</x>
+             <y>-10</y>
+             <width>861</width>
+             <height>481</height>
+            </rect>
+           </property>
+           <layout class="QGridLayout" name="gridLayout_8">
+            <item row="0" column="0">
+             <widget class="QPushButton" name="export_toml">
+              <property name="text">
+               <string>Export TOML</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
          </widget>
          <widget class="QWidget" name="page_directory">
           <layout class="QGridLayout" name="gridLayout_7">
@@ -220,7 +233,10 @@
            </item>
           </layout>
          </widget>
-         <widget class="QWidget" name="page_results"/>
+         <widget class="QWidget" name="page_diagnostics">
+          <layout class="QGridLayout" name="gridLayout_5"/>
+         </widget>
+         <widget class="QWidget" name="page_advanced_settings"/>
         </widget>
        </item>
       </layout>
@@ -275,7 +291,7 @@
           <string/>
          </property>
          <property name="pixmap">
-          <pixmap>../imagesGUI/80x80 hu image.png</pixmap>
+          <pixmap resource="../imagesGUI/resources.qrc">:/80x80 hu image.png</pixmap>
          </property>
         </widget>
        </item>
@@ -322,12 +338,13 @@
           <bool>true</bool>
          </property>
          <property name="text">
-          <string>Camera's</string>
+          <string>Camera's / 
+Kalibratie</string>
          </property>
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="btn_process">
+        <widget class="QPushButton" name="btn_results">
          <property name="minimumSize">
           <size>
            <width>80</width>
@@ -340,11 +357,18 @@
            <height>80</height>
           </size>
          </property>
+         <property name="sizeIncrement">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
          <property name="mouseTracking">
           <bool>true</bool>
          </property>
          <property name="text">
-          <string>Process</string>
+          <string>Results /
+Export</string>
          </property>
         </widget>
        </item>
@@ -377,7 +401,7 @@
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="btn_results">
+        <widget class="QPushButton" name="btn_diagnostics">
          <property name="minimumSize">
           <size>
            <width>80</width>
@@ -390,17 +414,31 @@
            <height>80</height>
           </size>
          </property>
-         <property name="sizeIncrement">
-          <size>
-           <width>0</width>
-           <height>0</height>
-          </size>
-         </property>
          <property name="mouseTracking">
           <bool>true</bool>
          </property>
          <property name="text">
-          <string>Results</string>
+          <string>Diagnostics</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btn_advanced_settings">
+         <property name="minimumSize">
+          <size>
+           <width>80</width>
+           <height>80</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>80</width>
+           <height>80</height>
+          </size>
+         </property>
+         <property name="text">
+          <string>Geavanceerde 
+instellingen</string>
          </property>
         </widget>
        </item>
@@ -428,7 +466,7 @@
      <x>0</x>
      <y>0</y>
      <width>988</width>
-     <height>26</height>
+     <height>21</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
