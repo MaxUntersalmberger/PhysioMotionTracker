@@ -3,55 +3,75 @@ import time
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 class CameraThread(QtCore.QThread):
-    """Thread die beelden ophaalt en instellingen live toepast."""
     change_pixmap_signal = QtCore.pyqtSignal(QtGui.QImage)
 
-    def __init__(self, camera_index=0, fps=30, width=640, height=480):
+    def __init__(self, camera_index=0, width=640, height=480):
         super().__init__()
         self.camera_index = camera_index
-        self.fps = fps
+        self.fps = 30 # We zetten FPS vast op een stabiele waarde
         self.width = width
         self.height = height
         self._run_flag = True
 
+        self.rotate = 0  
+        self.mirror = False
+        self.exposure = -5 
+
     def run(self):
-        # Gebruik CAP_DSHOW op Windows voor snellere initialisatie
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
         
-        # Initialiseer resolutie
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        # Variabelen om huidige hardware status bij te houden
+        current_w, current_h = 0, 0
+        current_exp = None
 
         while self._run_flag:
             start_time = time.time()
             
-            # Update resolutie als deze tussentijds is veranderd
-            if cap.get(cv2.CAP_PROP_FRAME_WIDTH) != self.width:
+            if not cap.isOpened():
+                time.sleep(0.1)
+                continue
+
+            # Update hardware ALLEEN als het echt veranderd is
+            if current_w != self.width or current_h != self.height:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                current_w, current_h = self.width, self.height
+            
+            if current_exp != self.exposure:
+                cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
+                current_exp = self.exposure
 
             ret, frame = cap.read()
             if ret:
-                # Conversie naar Qt formaat
+                if self.mirror:
+                    frame = cv2.flip(frame, 1)
+
+                if self.rotate == 90:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                elif self.rotate == 180:
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
+                elif self.rotate == 270:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
                 rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_image.shape
                 bytes_per_line = ch * w
                 qt_img = QtGui.QImage(rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
                 
-                # .copy() is cruciaal om geheugencrashes te voorkomen
                 self.change_pixmap_signal.emit(qt_img.copy())
 
-            # FPS timing: wacht precies lang genoeg
+            # Gebruik FastTransformation voor betere performance tijdens UI scaling
             sleep_time = max(1/self.fps - (time.time() - start_time), 0.001)
             time.sleep(sleep_time)
 
         cap.release()
 
-    def update_params(self, fps, res_str):
-        """Update de parameters die in de loop worden gebruikt."""
-        self.fps = fps
-        w, h = map(int, res_str.split('x'))
-        self.width, self.height = w, h
+    def update_params(self, width, height, rotate, mirror, exposure):
+        self.width = width
+        self.height = height
+        self.rotate = rotate
+        self.mirror = mirror
+        self.exposure = exposure
 
     def stop(self):
         self._run_flag = False
@@ -66,15 +86,13 @@ class CameraFrame(QtWidgets.QFrame):
         self.setFrameShape(QtWidgets.QFrame.Box)
         self.setMinimumSize(250, 200)
         
-        # Layout
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # --- Controls (Bovenbalk) ---
+        # --- Controls ---
         self.controls_layout = QtWidgets.QHBoxLayout()
-        
         self.combo_select_cam = QtWidgets.QComboBox()
-        self.combo_select_cam.addItems(["Geen Camera", "0", "1", "2"])
+        self.combo_select_cam.addItems(["Geen Camera", "0", "1", "2", "3"])
         self.combo_select_cam.currentIndexChanged.connect(self.manage_thread)
         
         self.btn_settings = QtWidgets.QPushButton("⋮")
@@ -84,7 +102,6 @@ class CameraFrame(QtWidgets.QFrame):
 
         self.btn_delete = QtWidgets.QPushButton("X")
         self.btn_delete.setFixedSize(30, 30)
-        self.btn_delete.setStyleSheet("background-color: #ff4d4d; color: white;")
         self.btn_delete.clicked.connect(self.full_cleanup)
 
         self.controls_layout.addWidget(self.combo_select_cam, 1)
@@ -95,33 +112,44 @@ class CameraFrame(QtWidgets.QFrame):
         # --- Inhoud (Stack) ---
         self.stacked = QtWidgets.QStackedWidget()
         
-        # Pagina 0: Live View
         self.video_label = QtWidgets.QLabel("Selecteer een camera")
         self.video_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.video_label.setStyleSheet("background-color: black; color: white;")
+        self.video_label.setStyleSheet("background-color: black;")
         
-        # Pagina 1: Settings
+        # Settings Pagina
         self.settings_frame = QtWidgets.QFrame()
         self.settings_layout = QtWidgets.QFormLayout(self.settings_frame)
         
-        self.spin_fps = QtWidgets.QSpinBox()
-        self.spin_fps.setRange(1, 60)
-        self.spin_fps.setValue(30)
-        self.spin_fps.valueChanged.connect(self.apply_settings)
-        
-        self.combo_res = QtWidgets.QComboBox()
-        self.combo_res.addItems(["640x480", "1280x720", "1920x1080"])
-        self.combo_res.currentIndexChanged.connect(self.apply_settings)
-        
-        self.settings_layout.addRow("Preview FPS:", self.spin_fps)
-        self.settings_layout.addRow("Resolutie:", self.combo_res)
+        # Resolutie velden (FPS verwijderd)
+        self.spin_width = QtWidgets.QSpinBox()
+        self.spin_width.setRange(160, 3840); self.spin_width.setValue(640)
+        self.spin_height = QtWidgets.QSpinBox()
+        self.spin_height.setRange(120, 2160); self.spin_height.setValue(480)
+
+        self.combo_rotate = QtWidgets.QComboBox()
+        self.combo_rotate.addItems(["0", "90", "180", "270"])
+        self.check_mirror = QtWidgets.QCheckBox("Mirror Image")
+
+        self.spin_exposure = QtWidgets.QSpinBox()
+        self.spin_exposure.setRange(-13, 0); self.spin_exposure.setValue(-5)
+
+        # DE APPLY KNOP
+        self.btn_apply = QtWidgets.QPushButton("Apply Settings")
+        self.btn_apply.clicked.connect(self.apply_settings)
+        self.btn_apply.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
+
+        self.settings_layout.addRow("Width (px):", self.spin_width)
+        self.settings_layout.addRow("Height (px):", self.spin_height)
+        self.settings_layout.addRow("Rotate (°):", self.combo_rotate)
+        self.settings_layout.addRow("Mirror:", self.check_mirror)
+        self.settings_layout.addRow("Exposure:", self.spin_exposure)
+        self.settings_layout.addRow("", self.btn_apply)
         
         self.stacked.addWidget(self.video_label)
         self.stacked.addWidget(self.settings_frame)
         self.main_layout.addWidget(self.stacked)
 
     def manage_thread(self, index):
-        """Start of stopt de camera thread."""
         if self.thread:
             self.thread.stop()
             self.thread = None
@@ -130,10 +158,10 @@ class CameraFrame(QtWidgets.QFrame):
             cam_idx = int(self.combo_select_cam.currentText())
             self.thread = CameraThread(
                 camera_index=cam_idx, 
-                fps=self.spin_fps.value(),
-                width=int(self.combo_res.currentText().split('x')[0]),
-                height=int(self.combo_res.currentText().split('x')[1])
+                width=self.spin_width.value(),
+                height=self.spin_height.value()
             )
+            self.apply_settings() # Pas initiële settings toe
             self.thread.change_pixmap_signal.connect(self.update_frame)
             self.thread.start()
         else:
@@ -141,24 +169,29 @@ class CameraFrame(QtWidgets.QFrame):
             self.video_label.setText("Selecteer een camera")
 
     def apply_settings(self):
-        """Geef instellingen direct door aan de thread."""
-        if self.thread:
-            self.thread.update_params(self.spin_fps.value(), self.combo_res.currentText())
+        """Wordt nu alleen aangeroepen via de Apply knop of bij start."""
+        if self.thread and self.thread.isRunning():
+            self.thread.update_params(
+                width=self.spin_width.value(),
+                height=self.spin_height.value(),
+                rotate=int(self.combo_rotate.currentText()),
+                mirror=self.check_mirror.isChecked(),
+                exposure=self.spin_exposure.value()
+            )
 
     def update_frame(self, img):
-        """Toon het beeld op de QLabel (behalve als we in settings zitten)."""
         if not self.btn_settings.isChecked():
             pixmap = QtGui.QPixmap.fromImage(img)
+            # Gebruik FastTransformation om CPU-lag in de UI te voorkomen
             self.video_label.setPixmap(pixmap.scaled(
-                self.video_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+                self.video_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
             ))
 
     def toggle_view(self):
         self.stacked.setCurrentIndex(1 if self.btn_settings.isChecked() else 0)
 
     def full_cleanup(self):
-        if self.thread:
-            self.thread.stop()
+        if self.thread: self.thread.stop()
         self.on_delete_callback(self)
 
     def resizeEvent(self, event):
