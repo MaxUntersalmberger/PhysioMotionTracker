@@ -11,7 +11,7 @@ import sys
 import webbrowser
 
 # Voeg parent directory toe aan path zodat core module gevonden wordt
-sys.path.insert(0, str(Path(__file__).parent.parent))
+#sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # --- DE KLASSE VOOR ORCHESTRATIE ---
 class Logic:
@@ -38,6 +38,21 @@ class Logic:
         # --- HOME ACTION CONNECTIONS ---
         self.window.btn_newproject.clicked.connect(self.create_new_project)
         self.window.btn_loadproject.clicked.connect(self.load_project)
+        
+        # Voeg de rest toe zodra je die knoppen in de UI hebt:
+
+        self.window.search_cameras.clicked.connect(self.probe_sources)
+        # self.window.btn_capture_sample.clicked.connect(self.capture_sample)
+        # self.window.btn_start_live.clicked.connect(self.start_live)
+        # self.window.btn_stop.clicked.connect(self.stop_capture)
+        # self.window.btn_capture_calib.clicked.connect(self.capture_calibration_sample)
+        # self.window.btn_solve_intrinsics.clicked.connect(self.solve_intrinsics)
+        # self.window.btn_solve_extrinsics.clicked.connect(self.solve_extrinsics)
+        # self.window.btn_load_profile.clicked.connect(self.load_profile)
+        # self.window.btn_save_profile.clicked.connect(self.save_profile)
+        # self.window.btn_export_profile.clicked.connect(self.export_profile)
+        # self.window.btn_reset_samples.clicked.connect(self.reset_samples)
+
 
         # --- INITIALISEER TABS ---
         self.tab_home = TabHome(self)
@@ -62,6 +77,28 @@ class Logic:
         self.window.actionOpen_documentation.triggered.connect(self.open_documentation)
 
         self.switch_page(0)
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+        from calibration_app.config import CalibrationAppConfig
+        from calibration_app.project import CalibrationProjectRepository
+        from calibration_app.calibration_manager import CalibrationOnlyManager
+
+        from calibration_app.legacy_bridge import ensure_legacy_path
+        ensure_legacy_path()
+
+        from calibration.repository import CalibrationRepository
+        from capture.backend import OpenCVCaptureSession
+        from capture.sources import parse_sources_csv
+
+        self._config = CalibrationAppConfig.load()
+        self._project_repo = CalibrationProjectRepository(self._config.projects_dir)
+        self._calib_repo = CalibrationRepository()
+        self._calib_manager = CalibrationOnlyManager()
+        self._active_project = None
+        self._current_bundle = None
+        self._capture_session = None
 
     def switch_page(self, index):
         """Wisselt de actieve pagina in het stackedWidget en update de knop-styling"""
@@ -78,87 +115,112 @@ class Logic:
             else:
                 btn.setStyleSheet(normal_style)
 
+# --- NEW PROJECT ---
     def create_new_project(self):
-        """Maakt een nieuw projectfolder aan in de sessions map met timestamp"""
         try:
-            # Laad de app configuratie
-            from core.config import AppConfig
-            config = AppConfig.load()
-            sessions_dir = config.sessions_dir or Path.cwd() / "sessions"
-            
-            # Zorg dat de sessions directory bestaat
-            sessions_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Genereer timestamp in formaat: YYYY-MM-DD_HH_MM_SS
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
-            project_folder_name = f"Session_{timestamp}"
-            project_path = sessions_dir / project_folder_name
-            
-            # Maak de projectfolder aan
-            project_path.mkdir(parents=True, exist_ok=True)
-            
-            # Navigeer naar de camera's tab en open deze folder
-            self.switch_page(1)  # Schakel naar tab_camera (index 1)
-            self.tab_directory.load_root_directory(project_path)
-            
-            print(f"Nieuw project aangemaakt: {project_path}")
-
-            # # Toon succes bericht
-            # QtWidgets.QMessageBox.information(
-            #     self.window,
-            #     "Project aangemaakt",
-            #     f"Nieuw project aangemaakt:\n{project_folder_name}"
-            # )
+            from datetime import datetime
+            name = f"Session_{datetime.now().strftime('%Y-%m-%d_%H_%M_%S')}"
+            project = self._project_repo.create(name=name, sources_csv="0", target_fps=20.0)
+            self._active_project = project
+            self.switch_page(1)
+            print(f"Project aangemaakt: {project.root_dir}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.window,
-                "Fout",
-                f"Kon project niet aanmaken:\n{str(e)}"
-            )
-            print(f"Fout bij aanmaken project: {str(e)}") 
+            QtWidgets.QMessageBox.critical(self.window, "Fout", f"Kon project niet aanmaken:\n{str(e)}")
+            print(f"Fout bij aanmaken project: {str(e)}")
 
+# --- OPEN PROJECT ---
     def load_project(self):
-        """Opent een bestaand projectfolder via bestandsverkenner"""
         try:
-            from core.config import AppConfig
-            
-            # Bepaal de startmap (sessions directory)
-            config = AppConfig.load()
-            start_dir = config.sessions_dir or Path.cwd() / "sessions"
-            
-            # Open bestandsverkenner
-            selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
-                self.window,
-                "Selecteer een project map",
-                str(start_dir)
-            )
-            
-            if selected_dir:
-                project_path = Path(selected_dir)
-                
-                # Stel deze als het huidige project in
-                config.default_sessions_dir = project_path.parent
-                config.save()
-                
-                # Navigeer naar de camera's tab
+            start = str(self._config.projects_dir)
+            selected = QtWidgets.QFileDialog.getExistingDirectory(self.window, "Selecteer project", start)
+            if selected:    
+                from calibration_app.project import CalibrationProjectRepository
+                self._active_project = self._project_repo.load(Path(selected))
                 self.switch_page(1)
-                self.tab_directory.load_root_directory(project_path)
-
-                print(f"Project geladen: {project_path}")
-                # # Toon succes bericht               
-
-                # QtWidgets.QMessageBox.information(
-                #     self.window,
-                #     "Project geladen",
-                #     f"Project geladen:\n{project_path.name}"
-                # )
+                print(f"Project geladen: {self._active_project.name}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.window,
-                "Fout",
-                f"Kon project niet openen:\n{str(e)}"
-            )
-            print(f"Fout bij laden project: {str(e)}") 
+            QtWidgets.QMessageBox.critical(self.window, "Fout", f"Kon project niet openen:\n{str(e)}")
+            print(f"Fout bij laden project: {str(e)}")
+
+# --- PROBE SOURCES ---
+def probe_sources(self):
+    sources_csv = self.window.lineedit_sources.text().strip() or "0"
+    sources = parse_sources_csv(sources_csv)
+    session = OpenCVCaptureSession(sources=sources, target_fps=20.0, max_frame_width=1280)
+    try:
+        session.open()
+        print(f"Bronnen bereikbaar: {sources_csv}")
+    except Exception as e:
+        print(f"Probe mislukt: {e}")
+    finally:
+        session.close()
+
+# --- CAPTURE SAMPLE ---
+def capture_sample(self):
+    sources_csv = self.window.lineedit_sources.text().strip() or "0"
+    fps = float(self.window.spin_cap_fps.value())
+    sources = parse_sources_csv(sources_csv)
+    session = OpenCVCaptureSession(sources=sources, target_fps=fps, max_frame_width=1280)
+    try:
+        session.open()
+        batch = session.read_batch()
+        print(f"Sample captured: {len(batch.frames)} frames")
+    except Exception as e:
+        print(f"Capture mislukt: {e}")
+    finally:
+        session.close()
+
+# --- SOLVE INTRINSICS ---
+def solve_intrinsics(self):
+    readiness = self._calib_manager.workflow_readiness()
+    if not readiness.can_solve_intrinsics:
+        print(f"Nog niet klaar: {' | '.join(readiness.notes)}")
+        return
+    result = self._calib_manager.solve_intrinsics()
+    self._current_bundle = result.bundle
+    print(f"Intrinsics opgelost: {result.sample_counts}")
+
+# --- SOLVE EXTRINSICS ---
+def solve_extrinsics(self):
+    readiness = self._calib_manager.workflow_readiness()
+    if not readiness.can_solve_extrinsics:
+        print(f"Nog niet klaar: {' | '.join(readiness.notes)}")
+        return
+    result = self._calib_manager.solve_extrinsics()
+    self._current_bundle = result.bundle
+    print(f"Extrinsics opgelost.")
+
+# --- LOAD PROFILE ---
+def load_profile(self):
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(self.window, "Laad profiel", "", "JSON (*.json)")
+    if path:
+        self._current_bundle = self._calib_repo.load(Path(path))
+        print(f"Profiel geladen: {path}")
+
+# --- SAVE PROFILE ---
+def save_profile(self):
+    if self._current_bundle is None:
+        print("Geen profiel om op te slaan.")
+        return
+    profile_path = self._active_project.default_profile_path if self._active_project else Path("calibration.json")
+    self._calib_repo.save(self._current_bundle, profile_path)
+    print(f"Profiel opgeslagen: {profile_path}")
+
+# --- EXPORT PROFILE ---
+def export_profile(self):
+    if self._current_bundle is None or self._active_project is None:
+        print("Geen profiel of project beschikbaar.")
+        return
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    export_path = self._active_project.exports_dir / f"calibration_{stamp}.json"
+    self._calib_repo.save(self._current_bundle, export_path)
+    print(f"Profiel geëxporteerd: {export_path}")
+
+# --- RESET SAMPLES ---
+def reset_samples(self):
+    self._calib_manager.reset_samples()
+    print("Samples gereset.")
 
     def quit_application(self):
         """Sluit de applicatie af"""
