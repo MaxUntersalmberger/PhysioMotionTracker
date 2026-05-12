@@ -1,9 +1,10 @@
 from PyQt5 import QtCore, QtWidgets
 from tab_home import TabHome
 from tab_cameras import TabCameras
-from tab_process import TabProcess
+from tab_diagnostics import TabDiagnostics
 from tab_directory import TabDirectory
 from tab_results import TabResults
+from tab_settings import TabSettings
 from pathlib import Path
 from datetime import datetime
 import sys
@@ -20,16 +21,18 @@ class Logic:
         self.nav_buttons = [
             self.window.btn_home,
             self.window.btn_cameras,
-            self.window.btn_process,
             self.window.btn_directory,
-            self.window.btn_results
+            self.window.btn_results,
+            self.window.btn_diagnostics,
+            self.window.btn_advanced_settings
         ]
 
         self.window.btn_home.clicked.connect(lambda: self.switch_page(0))
         self.window.btn_cameras.clicked.connect(lambda: self.switch_page(1))
-        self.window.btn_process.clicked.connect(lambda: self.switch_page(2))
+        self.window.btn_results.clicked.connect(lambda: self.switch_page(2))
         self.window.btn_directory.clicked.connect(lambda: self.switch_page(3))
-        self.window.btn_results.clicked.connect(lambda: self.switch_page(4))
+        self.window.btn_diagnostics.clicked.connect(lambda: self.switch_page(4))
+        self.window.btn_advanced_settings.clicked.connect(lambda: self.switch_page(5))
         
         
         # --- HOME ACTION CONNECTIONS ---
@@ -39,16 +42,18 @@ class Logic:
         # --- INITIALISEER TABS ---
         self.tab_home = TabHome(self)
         self.tab_cameras = TabCameras(self)
-        self.tab_process = TabProcess(self)
-        self.tab_directory = TabDirectory(self)
         self.tab_results = TabResults(self)
+        self.tab_directory = TabDirectory(self)
+        self.tab_diagnostics = TabDiagnostics(self)
+        self.tab_settings = TabSettings(self)
 
         # Setup elke tab
         self.tab_home.setup()
         self.tab_cameras.setup()
-        self.tab_process.setup()
-        self.tab_directory.setup()
         self.tab_results.setup()
+        self.tab_directory.setup()
+        self.tab_diagnostics.setup()
+        self.tab_settings.setup()
 
         # --- MENU ACTION CONNECTIONS ---
         self.window.actionNew_project.triggered.connect(self.create_new_project)
@@ -94,7 +99,7 @@ class Logic:
             
             # Navigeer naar de camera's tab en open deze folder
             self.switch_page(1)  # Schakel naar tab_camera (index 1)
-            self.tab_directory.load_directory(project_path)
+            self.tab_directory.load_root_directory(project_path)
             
             print(f"Nieuw project aangemaakt: {project_path}")
 
@@ -137,7 +142,7 @@ class Logic:
                 
                 # Navigeer naar de camera's tab
                 self.switch_page(1)
-                self.tab_directory.load_directory(project_path)
+                self.tab_directory.load_root_directory(project_path)
 
                 print(f"Project geladen: {project_path}")
                 # # Toon succes bericht               
