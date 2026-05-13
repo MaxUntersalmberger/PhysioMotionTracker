@@ -205,6 +205,9 @@ class CameraControlWidget(QWidget):
         _width, height = self._selected_resolution()
         return height
 
+    def requested_resolution_label(self) -> str:
+        return self._resolution_combo.currentText().strip() or "Auto"
+
     def _selected_resolution(self) -> tuple[int, int]:
         data = self._resolution_combo.currentData()
         if isinstance(data, tuple) and len(data) == 2:

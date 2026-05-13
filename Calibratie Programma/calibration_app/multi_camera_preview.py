@@ -31,6 +31,8 @@ class _PreviewTileWidget(QFrame):
         self._quality: CalibrationCameraQuality | None = None
         self._sample_count = 0
         self._sync_sample_count = 0
+        self._requested_resolution: tuple[int, int] = (0, 0)
+        self._requested_resolution_label = "Auto"
         self._current_pixmap: QPixmap | None = None
 
         self._title_label = QLabel()
@@ -99,6 +101,12 @@ class _PreviewTileWidget(QFrame):
         self._status_label.setText(self._format_status(self._frame, self._probe))
         self._refresh_pixmap()
 
+    def set_requested_resolution(self, width: int, height: int, label: str = "Auto") -> None:
+        self._requested_resolution = max(0, int(width)), max(0, int(height))
+        self._requested_resolution_label = label.strip() or "Auto"
+        self._status_label.setText(self._format_status(self._frame, self._probe))
+        self._refresh_pixmap()
+
     def set_selected(self, selected: bool) -> None:
         self._selected = bool(selected)
         self._apply_style()
@@ -156,7 +164,12 @@ class _PreviewTileWidget(QFrame):
             bits.append(f"{frame.timestamp_sec:.3f}s")
         if probe is not None:
             status = "opened" if probe.opened else "failed"
-            bits.append(f"{status} {probe.width}x{probe.height}")
+            bits.append(f"{status} camera={probe.width}x{probe.height}")
+        frame_size = self._frame_size_text()
+        if frame_size:
+            bits.append(f"frame={frame_size}")
+        if self._requested_resolution != (0, 0):
+            bits.append(f"requested={self._requested_resolution_label}")
         if self._quality is not None:
             bits.append(
                 f"{self._quality.quality_label} {self._quality.score:.0f}/100 | "
@@ -237,8 +250,35 @@ class _PreviewTileWidget(QFrame):
         lines.append(f"Samples cam={self._sample_count} | sync={self._sync_sample_count}")
         if self._probe is not None:
             status = "opened" if self._probe.opened else "failed"
-            lines.append(f"{status} {self._probe.width}x{self._probe.height}")
+            lines.append(f"Camera {status}: {self._probe.width}x{self._probe.height}")
+        frame_size = self._frame_size_text()
+        if frame_size:
+            lines.append(f"Frame data: {frame_size}")
+        if self._requested_resolution != (0, 0):
+            lines.append(f"Requested: {self._requested_resolution_label}")
+            if self._resolution_mismatch():
+                lines.append("Camera fallback: preset niet geaccepteerd")
         return lines
+
+    def _frame_size_text(self) -> str:
+        if self._frame is None or not hasattr(self._frame.frame_data, "shape"):
+            return ""
+        shape = self._frame.frame_data.shape
+        if len(shape) < 2:
+            return ""
+        height, width = shape[:2]
+        return f"{int(width)}x{int(height)}"
+
+    def _resolution_mismatch(self) -> bool:
+        requested_width, requested_height = self._requested_resolution
+        if requested_width <= 0 or requested_height <= 0:
+            return False
+        if self._probe is not None and self._probe.width > 0 and self._probe.height > 0:
+            return self._probe.width != requested_width or self._probe.height != requested_height
+        if self._frame is not None and hasattr(self._frame.frame_data, "shape"):
+            height, width = self._frame.frame_data.shape[:2]
+            return int(width) != requested_width or int(height) != requested_height
+        return False
 
     def _frame_to_pixmap(self, frame_data: Any) -> QPixmap | None:
         if frame_data is None or not hasattr(frame_data, "shape"):
@@ -336,6 +376,8 @@ class MultiCameraPreviewWidget(QWidget):
         self._quality_scores: dict[str, CalibrationCameraQuality] = {}
         self._sample_counts: dict[str, int] = {}
         self._sync_sample_count = 0
+        self._requested_resolution: tuple[int, int] = (0, 0)
+        self._requested_resolution_label = "Auto"
         self._latest_batch: CaptureBatch | None = None
         self._selected_source_id: str | None = None
         self._tiles: dict[str, _PreviewTileWidget] = {}
@@ -431,6 +473,13 @@ class MultiCameraPreviewWidget(QWidget):
             tile.set_sample_status(self._sample_counts.get(source_id, 0), self._sync_sample_count)
         self._refresh_summary()
 
+    def set_requested_resolution(self, width: int, height: int, label: str = "Auto") -> None:
+        self._requested_resolution = max(0, int(width)), max(0, int(height))
+        self._requested_resolution_label = label.strip() or "Auto"
+        for tile in self._tiles.values():
+            tile.set_requested_resolution(*self._requested_resolution, self._requested_resolution_label)
+        self._refresh_summary()
+
     def clear_preview(self, message: str = "No frame yet") -> None:
         self._latest_batch = None
         self._detections = {}
@@ -459,6 +508,7 @@ class MultiCameraPreviewWidget(QWidget):
             tile.set_calibration_detection(self._detections.get(source.source_id))
             tile.set_quality(self._quality_scores.get(source.source_id))
             tile.set_sample_status(self._sample_counts.get(source.source_id, 0), self._sync_sample_count)
+            tile.set_requested_resolution(*self._requested_resolution, self._requested_resolution_label)
             self._tiles[source.source_id] = tile
             self._grid_layout.addWidget(tile, index // columns, index % columns)
 

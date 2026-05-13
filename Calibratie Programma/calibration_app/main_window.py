@@ -261,6 +261,7 @@ class CalibrationMainWindow(QMainWindow):
         self._stop_probe_worker()
         self._camera_controls.set_state("Probing sources...")
         self._camera_controls.set_probe_running(True)
+        self._sync_preview_requested_resolution()
         self._preview.set_sources(sources, self._probe_results)
         self._preview.clear_preview("Probing sources...")
         self._camera_grid.set_sources(sources, self._probe_results)
@@ -293,14 +294,17 @@ class CalibrationMainWindow(QMainWindow):
         self._sync_calibration_settings()
         self._stop_capture_worker()
         self._active_sources = sources
+        self._sync_preview_requested_resolution()
         self._preview.set_sources(sources, self._probe_results)
         self._camera_grid.set_sources(sources, self._probe_results)
+        requested_width = self._camera_controls.requested_width()
+        requested_height = self._camera_controls.requested_height()
         worker = CaptureWorker(
             sources=sources,
             target_fps=target_fps,
-            max_frame_width=1280,
-            requested_width=self._camera_controls.requested_width(),
-            requested_height=self._camera_controls.requested_height(),
+            max_frame_width=0 if requested_width > 0 and requested_height > 0 else 1280,
+            requested_width=requested_width,
+            requested_height=requested_height,
             requested_fps=target_fps,
             exposure=self._camera_controls.requested_exposure(),
             gain=self._camera_controls.requested_gain(),
@@ -316,6 +320,13 @@ class CalibrationMainWindow(QMainWindow):
         self._camera_controls.set_running(True)
         self._camera_controls.set_state("Running capture...")
         worker.start()
+
+    def _sync_preview_requested_resolution(self) -> None:
+        self._preview.set_requested_resolution(
+            self._camera_controls.requested_width(),
+            self._camera_controls.requested_height(),
+            self._camera_controls.requested_resolution_label(),
+        )
 
     def _on_capture_calibration_requested(self) -> None:
         self._sync_calibration_settings()
@@ -585,10 +596,17 @@ class CalibrationMainWindow(QMainWindow):
         self._preview.set_sources(self._active_sources, self._probe_results)
         self._camera_grid.update_probe_results(self._probe_results)
         lines = ["Camera probe complete"]
+        requested_width = self._camera_controls.requested_width()
+        requested_height = self._camera_controls.requested_height()
+        if requested_width > 0 and requested_height > 0:
+            lines.append(f"Requested resolution: {self._camera_controls.requested_resolution_label()}")
         for source_id, probe in results.items():
             status = "opened" if probe.opened else "failed"
             fps_text = f", fps={probe.fps:.1f}" if probe.fps > 0 else ""
-            lines.append(f"- {source_id}: {status}, backend={probe.backend}, size={probe.width}x{probe.height}{fps_text}")
+            mismatch = ""
+            if requested_width > 0 and requested_height > 0 and (probe.width != requested_width or probe.height != requested_height):
+                mismatch = ", camera fallback"
+            lines.append(f"- {source_id}: {status}, backend={probe.backend}, size={probe.width}x{probe.height}{fps_text}{mismatch}")
         self._camera_controls.clear_output()
         self._camera_controls.append_output("\n".join(lines))
         self._camera_controls.set_state(f"Probe found {len(results)} source(s)")

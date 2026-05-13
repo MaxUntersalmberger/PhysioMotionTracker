@@ -72,6 +72,7 @@ Live preview:
 - `MultiCameraPreviewWidget.set_calibration_detections(result.detections)`
 - `MultiCameraPreviewWidget.set_camera_quality_scores(result.camera_quality_scores)`
 - `MultiCameraPreviewWidget.set_sample_counts(result.sample_counts, result.synchronized_samples)`
+- `MultiCameraPreviewWidget.set_requested_resolution(width, height, label)` zodat de overlay `requested`, camera-resolutie en echte frame-resolutie kan vergelijken.
 - `MultiCameraPreviewWidget.clear_preview(message)`
 - `MultiCameraPreviewWidget.select_source(source_id)` selecteert alleen de highlight; alle actieve camera's blijven zichtbaar.
   De live preview tekent zelf een leesbare overlay met frame, detectiestatus, score, corners, coverage en sample counters.
