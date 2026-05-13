@@ -11,7 +11,7 @@ from .legacy_bridge import ensure_legacy_path
 
 ensure_legacy_path()
 
-from calibration import CalibrationViewDetection  # noqa: E402
+from calibration import CalibrationCameraQuality, CalibrationViewDetection  # noqa: E402
 from capture.backend import CaptureBatch  # noqa: E402
 from models.types import CameraProbeResult, CameraSourceConfig, FramePacket  # noqa: E402
 
@@ -28,6 +28,7 @@ class _PreviewTileWidget(QFrame):
         self._frame: FramePacket | None = None
         self._probe: CameraProbeResult | None = None
         self._detection: CalibrationViewDetection | None = None
+        self._quality: CalibrationCameraQuality | None = None
         self._current_pixmap: QPixmap | None = None
 
         self._title_label = QLabel()
@@ -84,9 +85,25 @@ class _PreviewTileWidget(QFrame):
         self._detection = detection
         self.set_frame(self._frame, self._probe)
 
+    def set_quality(self, quality: CalibrationCameraQuality | None) -> None:
+        self._quality = quality
+        self._status_label.setText(self._format_status(self._frame, self._probe))
+        self._apply_style()
+
     def set_selected(self, selected: bool) -> None:
-        border = "2px solid #1f6feb" if selected else "1px solid #c9d7e4"
-        background = "#eef5ff" if selected else "#fbfdff"
+        self._selected = bool(selected)
+        self._apply_style()
+
+    def _apply_style(self) -> None:
+        if getattr(self, "_selected", False):
+            border = "2px solid #1f6feb"
+            background = "#eef5ff"
+        elif self._quality is not None and self._quality.visible:
+            border = "2px solid #16a34a" if self._quality.score >= 70.0 else "2px solid #f59e0b"
+            background = "#f7fff8" if self._quality.score >= 70.0 else "#fff9ec"
+        else:
+            border = "1px solid #c9d7e4"
+            background = "#fbfdff"
         self.setStyleSheet(
             f"""
             QFrame#previewTile {{
@@ -131,7 +148,13 @@ class _PreviewTileWidget(QFrame):
         if probe is not None:
             status = "opened" if probe.opened else "failed"
             bits.append(f"{status} {probe.width}x{probe.height}")
-        if self._detection is not None and frame is not None and self._detection.frame_index == frame.frame_index:
+        if self._quality is not None:
+            bits.append(
+                f"{self._quality.quality_label} {self._quality.score:.0f}/100 | "
+                f"{self._quality.corner_count}/{self._quality.expected_corners} corners | "
+                f"{self._quality.coverage_ratio:.0%} coverage"
+            )
+        elif self._detection is not None and frame is not None and self._detection.frame_index == frame.frame_index:
             bits.append(f"calib={self._detection.corner_count} corners")
         return " | ".join(bits)
 
@@ -239,6 +262,7 @@ class MultiCameraPreviewWidget(QWidget):
         self._sources: list[CameraSourceConfig] = []
         self._probe_results: dict[str, CameraProbeResult] = {}
         self._detections: dict[str, CalibrationViewDetection] = {}
+        self._quality_scores: dict[str, CalibrationCameraQuality] = {}
         self._latest_batch: CaptureBatch | None = None
         self._selected_source_id: str | None = None
         self._tiles: dict[str, _PreviewTileWidget] = {}
@@ -321,11 +345,19 @@ class MultiCameraPreviewWidget(QWidget):
             tile.set_calibration_detection(self._detections.get(source_id))
         self._refresh_summary()
 
+    def set_camera_quality_scores(self, scores: dict[str, CalibrationCameraQuality] | None) -> None:
+        self._quality_scores = dict(scores or {})
+        for source_id, tile in self._tiles.items():
+            tile.set_quality(self._quality_scores.get(source_id))
+        self._refresh_summary()
+
     def clear_preview(self, message: str = "No frame yet") -> None:
         self._latest_batch = None
         self._detections = {}
+        self._quality_scores = {}
         for tile in self._tiles.values():
             tile.set_calibration_detection(None)
+            tile.set_quality(None)
             tile.set_frame(None, self._probe_results.get(tile.source_id()))
         self._summary_label.setText(message)
 
@@ -342,6 +374,7 @@ class MultiCameraPreviewWidget(QWidget):
             tile.selected.connect(self._on_tile_selected)
             tile.set_selected(source.source_id == self._selected_source_id)
             tile.set_calibration_detection(self._detections.get(source.source_id))
+            tile.set_quality(self._quality_scores.get(source.source_id))
             self._tiles[source.source_id] = tile
             self._grid_layout.addWidget(tile, index // columns, index % columns)
 
@@ -350,6 +383,7 @@ class MultiCameraPreviewWidget(QWidget):
             return
         for source_id, tile in self._tiles.items():
             tile.set_calibration_detection(self._detections.get(source_id))
+            tile.set_quality(self._quality_scores.get(source_id))
             tile.set_frame(self._latest_batch.frames.get(source_id), self._probe_results.get(source_id))
 
     def _clear_layout(self) -> None:
@@ -375,10 +409,11 @@ class MultiCameraPreviewWidget(QWidget):
             self._summary_label.setText("No cameras configured.")
             return
         visible_count = len(self._detections)
+        good_count = sum(1 for quality in self._quality_scores.values() if quality.visible and quality.score >= 70.0)
         selected_text = self._selected_source_id or "none"
         frame_count = len(self._latest_batch.frames) if self._latest_batch is not None else 0
         dropped_count = len(self._latest_batch.dropped_sources) if self._latest_batch is not None else 0
         self._summary_label.setText(
             f"{len(self._sources)} camera(s) | frames={frame_count} | calib_visible={visible_count}/{len(self._sources)} "
-            f"| selected={selected_text} | dropped={dropped_count}"
+            f"| good={good_count}/{len(self._sources)} | selected={selected_text} | dropped={dropped_count}"
         )

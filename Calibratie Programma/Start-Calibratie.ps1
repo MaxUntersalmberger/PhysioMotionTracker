@@ -61,6 +61,7 @@ if (-not $SkipInstall) {
 
     if ($needsInstall) {
         Write-Step "Benodigde packages installeren"
+        & $VenvPython -m pip uninstall -y opencv-python opencv-python-headless | Out-Null
         & $VenvPython -m pip install -r $Requirements
         if ($LASTEXITCODE -ne 0) {
             throw "Installeren van packages is mislukt."

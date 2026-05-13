@@ -32,6 +32,8 @@ Voor teamgenoten is dit de makkelijkste manier:
 2. Dubbelklik op `Start-Calibratie.bat`.
 3. De eerste keer maakt het script automatisch een lokale `.venv` aan en installeert het de benodigde packages.
 
+Het script installeert `opencv-contrib-python`, omdat ChArUco-detectie `cv2.aruco` nodig heeft.
+
 Voor een snelle test zonder GUI:
 
 ```powershell

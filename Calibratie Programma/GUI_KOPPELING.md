@@ -69,6 +69,7 @@ Live preview:
 
 - `MultiCameraPreviewWidget.show_batch(batch, sources, probe_results)`
 - `MultiCameraPreviewWidget.set_calibration_detections(result.detections)`
+- `MultiCameraPreviewWidget.set_camera_quality_scores(result.camera_quality_scores)`
 - `MultiCameraPreviewWidget.clear_preview(message)`
 - `MultiCameraPreviewWidget.select_source(source_id)` selecteert alleen de highlight; alle actieve camera's blijven zichtbaar.
 

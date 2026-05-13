@@ -468,6 +468,7 @@ class CalibrationMainWindow(QMainWindow):
         self._camera_grid.set_calibration_detections(result.detections)
         self._calibration_controls.set_sync_status(self._format_sync_status(result.sync_report))
         if result.history_entry is not None or now - self._last_quality_update_sec >= 1.0:
+            self._preview.set_camera_quality_scores(result.camera_quality_scores)
             self._calibration_controls.set_camera_quality_scores(result.camera_quality_scores)
             self._last_quality_update_sec = now
 
