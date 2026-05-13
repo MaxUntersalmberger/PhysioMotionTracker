@@ -6,6 +6,7 @@ Dit document is bedoeld voor de GUI-groep. De huidige placeholder-GUI staat in `
 
 Startpunt:
 
+- `Start-Calibratie.bat` is de makkelijke starter voor teamgenoten; deze maakt automatisch een lokale `.venv` en start `run.py --ui`.
 - `run.py` start `calibration_app.cli.run()`.
 - `--ui` maakt `CalibrationMainWindow(CalibrationAppConfig.load())`.
 - `CalibrationMainWindow` regelt project, camera-workers, calibratie-manager, preview en export.
@@ -66,8 +67,10 @@ _update_readiness()
 
 Live preview:
 
-- `FramePreviewWidget.show_batch(batch, sources, probe_results)`
-- `FramePreviewWidget.set_calibration_detections(result.detections)`
+- `MultiCameraPreviewWidget.show_batch(batch, sources, probe_results)`
+- `MultiCameraPreviewWidget.set_calibration_detections(result.detections)`
+- `MultiCameraPreviewWidget.clear_preview(message)`
+- `MultiCameraPreviewWidget.select_source(source_id)` selecteert alleen de highlight; alle actieve camera's blijven zichtbaar.
 
 Camera grid:
 

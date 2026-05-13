@@ -4,3 +4,4 @@ projects/
 exports/
 __pycache__/
 *.py[cod]
+.venv/

@@ -9,10 +9,12 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QFileDialog, QDockWidget, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 from .calibration_manager import CalibrationOnlyManager
+from .camera_grid import CameraGridWidget
 from .config import CalibrationAppConfig
 from .legacy_bridge import ensure_legacy_path
 from .multi_camera_preview import MultiCameraPreviewWidget
 from .project import CalibrationProject, CalibrationProjectRepository
+from .qt_workers import CalibrationAnalysisOutcome, CalibrationAnalysisWorker, CameraProbeWorker, CaptureWorker
 from .widgets import CalibrationSettingsWidget, CameraControlWidget, HomeWidget, ResultsWidget
 
 ensure_legacy_path()
@@ -22,10 +24,6 @@ from calibration.repository import CalibrationRepository  # noqa: E402
 from capture.backend import CaptureBatch  # noqa: E402
 from capture.sources import parse_sources_csv  # noqa: E402
 from models.types import CalibrationBundle, CameraProbeResult, CameraSourceConfig  # noqa: E402
-from ui.widgets.camera_grid import CameraGridWidget  # noqa: E402
-from workers.calibration_analysis_worker import CalibrationAnalysisOutcome, CalibrationAnalysisWorker  # noqa: E402
-from workers.camera_probe_worker import CameraProbeWorker  # noqa: E402
-from workers.capture_worker import CaptureWorker  # noqa: E402
 
 
 LOGGER = logging.getLogger(__name__)

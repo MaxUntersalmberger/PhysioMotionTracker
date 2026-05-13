@@ -2,7 +2,7 @@
 
 Nieuw, apart programma voor de aangepaste projectscope: camera's openen, calibratieframes verzamelen, intrinsics/extrinsics oplossen, resultaten beoordelen en calibratieprofielen exporteren. Dit programma stopt bij calibratie.
 
-De bestaande map `Programma Structuur` wordt niet aangepast door deze app. Voor camera-IO, OpenCV-calibratie en preview-widgets gebruikt dit programma die bestaande code alleen als lokale bibliotheek.
+De bestaande map `Programma Structuur` wordt niet aangepast door deze app. Voor camera-IO, OpenCV-calibratie en gedeelde datamodellen gebruikt dit programma die bestaande code alleen als lokale bibliotheek.
 
 ## Tabbladen
 
@@ -25,6 +25,20 @@ De bestaande map `Programma Structuur` wordt niet aangepast door deze app. Voor 
 Voor de Qt Designer-koppeling staat er een kort overzicht in [GUI_KOPPELING.md](GUI_KOPPELING.md).
 
 ## Run
+
+Voor teamgenoten is dit de makkelijkste manier:
+
+1. Open de map `Calibratie Programma`.
+2. Dubbelklik op `Start-Calibratie.bat`.
+3. De eerste keer maakt het script automatisch een lokale `.venv` aan en installeert het de benodigde packages.
+
+Voor een snelle test zonder GUI:
+
+```powershell
+.\Start-Calibratie.bat -SmokeTest
+```
+
+Handmatig kan ook nog steeds:
 
 ```bash
 py -m pip install -r requirements.txt
