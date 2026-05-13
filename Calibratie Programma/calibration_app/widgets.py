@@ -44,13 +44,9 @@ class HomeWidget(QWidget):
 
     def __init__(self, default_sources_csv: str = "0", default_fps: float = 20.0) -> None:
         super().__init__()
+        self._default_sources_csv = default_sources_csv.strip() or "0"
+        self._default_fps = float(default_fps)
         self._name_edit = QLineEdit("Calibratie Project")
-        self._sources_edit = QLineEdit(default_sources_csv)
-        self._fps_spin = QDoubleSpinBox()
-        self._fps_spin.setRange(1.0, 240.0)
-        self._fps_spin.setDecimals(1)
-        self._fps_spin.setValue(float(default_fps))
-        self._fps_spin.setSuffix(" fps")
         self._new_button = QPushButton("New Project")
         self._open_button = QPushButton("Open Project")
         self._state_label = QLabel("No project loaded.")
@@ -61,8 +57,6 @@ class HomeWidget(QWidget):
 
         form = QFormLayout()
         form.addRow("Project name", self._name_edit)
-        form.addRow("Camera sources", self._sources_edit)
-        form.addRow("Target FPS", self._fps_spin)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self._new_button)
@@ -94,16 +88,16 @@ class HomeWidget(QWidget):
         return self._name_edit.text().strip() or "Calibratie Project"
 
     def sources_csv(self) -> str:
-        return self._sources_edit.text().strip() or "0"
+        return self._default_sources_csv
 
     def set_sources_csv(self, sources_csv: str) -> None:
-        self._sources_edit.setText(sources_csv.strip() or "0")
+        self._default_sources_csv = sources_csv.strip() or "0"
 
     def target_fps(self) -> float:
-        return float(self._fps_spin.value())
+        return self._default_fps
 
     def set_target_fps(self, target_fps: float) -> None:
-        self._fps_spin.setValue(float(target_fps))
+        self._default_fps = float(target_fps)
 
     def set_project(self, project: CalibrationProject | None) -> None:
         if project is None:
@@ -134,8 +128,17 @@ class CameraControlWidget(QWidget):
         self._fps_spin.setDecimals(1)
         self._fps_spin.setValue(float(default_fps))
         self._fps_spin.setSuffix(" fps")
-        self._width_spin = _auto_spin(7680.0, " px")
-        self._height_spin = _auto_spin(4320.0, " px")
+        self._resolution_combo = QComboBox()
+        for label, width, height in (
+            ("Auto", 0, 0),
+            ("640 x 480", 640, 480),
+            ("800 x 600", 800, 600),
+            ("1280 x 720", 1280, 720),
+            ("1920 x 1080", 1920, 1080),
+            ("2560 x 1440", 2560, 1440),
+            ("3840 x 2160", 3840, 2160),
+        ):
+            self._resolution_combo.addItem(label, (width, height))
         self._exposure_spin = _auto_spin(10000.0, "")
         self._exposure_spin.setRange(-20.0, 10000.0)
         self._gain_spin = _auto_spin(10000.0, "")
@@ -152,8 +155,7 @@ class CameraControlWidget(QWidget):
         form = QFormLayout()
         form.addRow("Sources", self._sources_edit)
         form.addRow("Target FPS", self._fps_spin)
-        form.addRow("Width", self._width_spin)
-        form.addRow("Height", self._height_spin)
+        form.addRow("Resolution", self._resolution_combo)
         form.addRow("Exposure", self._exposure_spin)
         form.addRow("Gain", self._gain_spin)
         form.addRow("White balance", self._white_balance_spin)
@@ -196,10 +198,18 @@ class CameraControlWidget(QWidget):
         self._fps_spin.setValue(float(fps))
 
     def requested_width(self) -> int:
-        return int(self._width_spin.value())
+        width, _height = self._selected_resolution()
+        return width
 
     def requested_height(self) -> int:
-        return int(self._height_spin.value())
+        _width, height = self._selected_resolution()
+        return height
+
+    def _selected_resolution(self) -> tuple[int, int]:
+        data = self._resolution_combo.currentData()
+        if isinstance(data, tuple) and len(data) == 2:
+            return int(data[0]), int(data[1])
+        return 0, 0
 
     def requested_exposure(self) -> float | None:
         return _optional_spin_value(self._exposure_spin)
@@ -217,8 +227,7 @@ class CameraControlWidget(QWidget):
         for widget in (
             self._sources_edit,
             self._fps_spin,
-            self._width_spin,
-            self._height_spin,
+            self._resolution_combo,
             self._exposure_spin,
             self._gain_spin,
             self._white_balance_spin,

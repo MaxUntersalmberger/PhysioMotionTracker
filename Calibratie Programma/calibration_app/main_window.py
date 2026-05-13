@@ -96,6 +96,7 @@ class CalibrationMainWindow(QMainWindow):
         workspace = QMainWindow()
         workspace.setObjectName("dockWorkspace")
         workspace.setDockNestingEnabled(True)
+        workspace.setTabPosition(Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.South)
         workspace.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks
             | QMainWindow.DockOption.AllowTabbedDocks
@@ -112,13 +113,17 @@ class CalibrationMainWindow(QMainWindow):
         preview_dock = self._build_dock("Live Preview", self._preview)
         grid_dock = self._build_dock("Camera Grid", self._camera_grid)
 
+        workspace.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, calibration_dock)
         workspace.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, camera_dock)
-        workspace.splitDockWidget(camera_dock, calibration_dock, Qt.Orientation.Vertical)
+        workspace.tabifyDockWidget(calibration_dock, camera_dock)
+        calibration_dock.raise_()
+
         workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, preview_dock)
-        workspace.splitDockWidget(preview_dock, grid_dock, Qt.Orientation.Vertical)
-        workspace.resizeDocks([camera_dock, preview_dock], [520, 920], Qt.Orientation.Horizontal)
-        workspace.resizeDocks([preview_dock, grid_dock], [520, 280], Qt.Orientation.Vertical)
-        workspace.resizeDocks([camera_dock, calibration_dock], [380, 420], Qt.Orientation.Vertical)
+        workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, grid_dock)
+        workspace.tabifyDockWidget(preview_dock, grid_dock)
+        preview_dock.raise_()
+
+        workspace.resizeDocks([calibration_dock, preview_dock], [720, 720], Qt.Orientation.Horizontal)
         return workspace
 
     def _build_dock(self, title: str, widget: QWidget) -> QDockWidget:

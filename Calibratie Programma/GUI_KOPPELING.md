@@ -24,7 +24,7 @@ Belangrijke backend-objecten:
 
 | UI-knop / actie | Signal of slot in placeholder | Wat gebeurt er |
 | --- | --- | --- |
-| New Project | `HomeWidget.new_project_requested(name, sources_csv, fps)` -> `_on_new_project()` | Maakt projectmap + `calibration_project.json`, zet active project, gaat naar tab 2. |
+| New Project | `HomeWidget.new_project_requested(name, default_sources_csv, default_fps)` -> `_on_new_project()` | Maakt projectmap + `calibration_project.json`, zet active project, gaat naar tab 2. Sources/FPS worden daarna in Camera Controls ingesteld. |
 | Open Project | `HomeWidget.open_project_requested` -> `_on_open_project()` | Laat map kiezen en laadt `calibration_project.json`. |
 | Probe Sources | `CameraControlWidget.probe_requested(source_csv)` -> `_on_probe_requested()` | Parse bronnen en start `CameraProbeWorker`. Resultaat naar camera output/grid. |
 | Capture Sample | `sample_requested(source_csv, fps)` -> `_on_sample_requested()` | Start `CaptureWorker` met `batch_limit=1`. |
@@ -44,7 +44,8 @@ Camera-controls:
 
 - `sources_csv`: bijvoorbeeld `"0"` of `"0,1"` of videopad.
 - `target_fps`
-- optioneel: `requested_width`, `requested_height`, `requested_exposure`, `requested_gain`, `requested_white_balance`
+- `resolution`: een preset voor alle camera's; intern naar `requested_width()` en `requested_height()`, waarbij `Auto` beide op `0` zet.
+- optioneel: `requested_exposure`, `requested_gain`, `requested_white_balance`
 
 Calibratie-controls:
 
