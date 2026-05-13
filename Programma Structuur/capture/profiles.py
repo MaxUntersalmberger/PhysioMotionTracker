@@ -16,6 +16,7 @@ class CameraControlSettings:
     width: int = 0
     height: int = 0
     fps: float = 0.0
+    fourcc: str | None = None
     exposure: float | None = None
     gain: float | None = None
     white_balance: float | None = None
@@ -167,8 +168,14 @@ def _memory_percent() -> float | None:
 def apply_camera_controls(capture: Any, cv2_module: Any, settings: CameraControlSettings) -> dict[str, bool]:
     applied: dict[str, bool] = {}
     _set_capture_property(applied, capture, cv2_module, "buffersize", "CAP_PROP_BUFFERSIZE", 1)
-    if settings.width > 0 or settings.height > 0:
+    if settings.fourcc:
+        _set_capture_fourcc(applied, capture, cv2_module, settings.fourcc)
+    elif settings.fourcc is None and (settings.width > 0 or settings.height > 0):
         _set_capture_fourcc(applied, capture, cv2_module, "MJPG")
+    if settings.width > 0:
+        _set_capture_property(applied, capture, cv2_module, "width", "CAP_PROP_FRAME_WIDTH", settings.width)
+    if settings.height > 0:
+        _set_capture_property(applied, capture, cv2_module, "height", "CAP_PROP_FRAME_HEIGHT", settings.height)
     if settings.fps > 0:
         _set_capture_property(applied, capture, cv2_module, "fps", "CAP_PROP_FPS", settings.fps)
     if settings.width > 0:
@@ -199,7 +206,7 @@ def _set_capture_fourcc(applied: dict[str, bool], capture: Any, cv2_module: Any,
         return
     try:
         fourcc = cv2_module.VideoWriter_fourcc(*codec)
-        applied["fourcc"] = bool(capture.set(cv2_module.CAP_PROP_FOURCC, float(fourcc)))
+        applied["fourcc"] = bool(capture.set(cv2_module.CAP_PROP_FOURCC, fourcc))
     except Exception:
         applied["fourcc"] = False
 

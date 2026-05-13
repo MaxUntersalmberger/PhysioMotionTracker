@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -149,25 +149,35 @@ class OpenCVCaptureSession:
         best_probe: CameraProbeResult | None = None
 
         for backend_name, backend_flag in self._backend_candidates(source, cv2_module):
-            capture = (
-                cv2_module.VideoCapture(uri, backend_flag)
-                if backend_flag is not None
-                else cv2_module.VideoCapture(uri)
-            )
-            if capture.isOpened():
-                self._apply_capture_settings(source.source_id, capture, cv2_module)
-                probe = self._build_probe_result(source.source_id, index, capture, backend_name, True, cv2_module)
-                if self._probe_matches_requested_resolution(probe):
-                    if best_capture is not None:
-                        best_capture.release()
-                    return capture, probe
-                if best_probe is None or self._probe_resolution_score(probe) > self._probe_resolution_score(best_probe):
-                    if best_capture is not None:
-                        best_capture.release()
-                    best_capture = capture
-                    best_probe = probe
-                    continue
-            capture.release()
+            for fourcc in self._fourcc_candidates(source):
+                capture = (
+                    cv2_module.VideoCapture(uri, backend_flag)
+                    if backend_flag is not None
+                    else cv2_module.VideoCapture(uri)
+                )
+                if capture.isOpened():
+                    self._apply_capture_settings(source.source_id, capture, cv2_module, fourcc=fourcc)
+                    frame_size = self._read_probe_frame_size(source, capture)
+                    probe = self._build_probe_result(
+                        source.source_id,
+                        index,
+                        capture,
+                        self._format_backend_name(backend_name, fourcc),
+                        True,
+                        cv2_module,
+                        observed_frame_size=frame_size,
+                    )
+                    if self._probe_matches_requested_resolution(probe):
+                        if best_capture is not None:
+                            best_capture.release()
+                        return capture, probe
+                    if best_probe is None or self._probe_resolution_score(probe) > self._probe_resolution_score(best_probe):
+                        if best_capture is not None:
+                            best_capture.release()
+                        best_capture = capture
+                        best_probe = probe
+                        continue
+                capture.release()
 
         if best_capture is not None and best_probe is not None:
             return best_capture, best_probe
@@ -176,8 +186,9 @@ class OpenCVCaptureSession:
         probe = self._build_probe_result(source.source_id, index, fallback, "unavailable", fallback.isOpened(), cv2_module)
         return fallback, probe
 
-    def _apply_capture_settings(self, source_id: str, capture: Any, cv2_module: Any) -> None:
-        self._control_status[source_id] = apply_camera_controls(capture, cv2_module, self._control_settings)
+    def _apply_capture_settings(self, source_id: str, capture: Any, cv2_module: Any, fourcc: str | None = None) -> None:
+        settings = replace(self._control_settings, fourcc=fourcc)
+        self._control_status[source_id] = apply_camera_controls(capture, cv2_module, settings)
 
     def _build_probe_result(
         self,
@@ -187,10 +198,13 @@ class OpenCVCaptureSession:
         backend_name: str,
         opened: bool,
         cv2_module: Any,
+        observed_frame_size: tuple[int, int] | None = None,
     ) -> CameraProbeResult:
         if opened:
             width = int(capture.get(cv2_module.CAP_PROP_FRAME_WIDTH))
             height = int(capture.get(cv2_module.CAP_PROP_FRAME_HEIGHT))
+            if observed_frame_size is not None:
+                width, height = observed_frame_size
             fps = float(capture.get(cv2_module.CAP_PROP_FPS)) if hasattr(cv2_module, "CAP_PROP_FPS") else 0.0
             exposure = _read_capture_property(capture, cv2_module, "CAP_PROP_EXPOSURE")
             gain = _read_capture_property(capture, cv2_module, "CAP_PROP_GAIN")
@@ -249,6 +263,28 @@ class OpenCVCaptureSession:
                 candidates.append(("DSHOW", cv2_module.CAP_DSHOW))
         candidates.append(("default", None))
         return candidates
+
+    def _fourcc_candidates(self, source: CameraSourceConfig) -> list[str | None]:
+        if source.kind != "webcam":
+            return [None]
+        if self._control_settings.width <= 0 and self._control_settings.height <= 0:
+            return [None]
+        return ["MJPG", "YUY2", ""]
+
+    def _format_backend_name(self, backend_name: str, fourcc: str | None) -> str:
+        if fourcc is None:
+            return backend_name
+        return f"{backend_name}/{fourcc or 'default'}"
+
+    def _read_probe_frame_size(self, source: CameraSourceConfig, capture: Any) -> tuple[int, int] | None:
+        if source.kind != "webcam" or self._control_settings.width <= 0 or self._control_settings.height <= 0:
+            return None
+        for _attempt in range(3):
+            ok, frame = capture.read()
+            if ok and hasattr(frame, "shape") and len(frame.shape) >= 2:
+                height, width = frame.shape[:2]
+                return int(width), int(height)
+        return None
 
     def _probe_matches_requested_resolution(self, probe: CameraProbeResult) -> bool:
         requested_width = self._control_settings.width
