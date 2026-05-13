@@ -6,11 +6,12 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QDockWidget, QLabel, QMainWindow, QMessageBox, QPlainTextEdit, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 from .calibration_manager import CalibrationOnlyManager
 from .config import CalibrationAppConfig
 from .legacy_bridge import ensure_legacy_path
+from .multi_camera_preview import MultiCameraPreviewWidget
 from .project import CalibrationProject, CalibrationProjectRepository
 from .widgets import CalibrationSettingsWidget, CameraControlWidget, HomeWidget, ResultsWidget
 
@@ -22,7 +23,6 @@ from capture.backend import CaptureBatch  # noqa: E402
 from capture.sources import parse_sources_csv  # noqa: E402
 from models.types import CalibrationBundle, CameraProbeResult, CameraSourceConfig  # noqa: E402
 from ui.widgets.camera_grid import CameraGridWidget  # noqa: E402
-from ui.widgets.frame_preview import FramePreviewWidget  # noqa: E402
 from workers.calibration_analysis_worker import CalibrationAnalysisOutcome, CalibrationAnalysisWorker  # noqa: E402
 from workers.camera_probe_worker import CameraProbeWorker  # noqa: E402
 from workers.capture_worker import CaptureWorker  # noqa: E402
@@ -53,12 +53,13 @@ class CalibrationMainWindow(QMainWindow):
         self._probe_results: dict[str, CameraProbeResult] = {}
         self._probe_worker: CameraProbeWorker | None = None
         self._capture_worker: CaptureWorker | None = None
+        self._dock_widgets: list[QDockWidget] = []
 
         self._home = HomeWidget(self._config.default_sources_csv, self._config.default_capture_fps)
         self._camera_controls = CameraControlWidget(self._config.default_sources_csv, self._config.default_capture_fps)
         self._calibration_controls = CalibrationSettingsWidget()
         self._results = ResultsWidget()
-        self._preview = FramePreviewWidget(show_source_picker=True, minimum_image_size=(680, 382))
+        self._preview = MultiCameraPreviewWidget(minimum_tile_size=(320, 180))
         self._camera_grid = CameraGridWidget()
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
@@ -94,28 +95,44 @@ class CalibrationMainWindow(QMainWindow):
         self._apply_styles()
 
     def _build_calibration_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        controls = QWidget()
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.addWidget(self._camera_controls)
+        workspace = QMainWindow()
+        workspace.setObjectName("dockWorkspace")
+        workspace.setDockNestingEnabled(True)
+        workspace.setDockOptions(
+            QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks
+            | QMainWindow.DockOption.GroupedDragging
+            | QMainWindow.DockOption.AnimatedDocks
+        )
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._calibration_controls)
-        controls_layout.addWidget(scroll, 1)
-        live = QSplitter(Qt.Orientation.Vertical)
-        live.addWidget(self._preview)
-        live.addWidget(self._camera_grid)
-        live.setStretchFactor(0, 2)
-        live.setStretchFactor(1, 1)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(controls)
-        splitter.addWidget(live)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter, 1)
-        return page
+
+        camera_dock = self._build_dock("Camera Controls", self._camera_controls)
+        calibration_dock = self._build_dock("Calibration Settings", scroll)
+        preview_dock = self._build_dock("Live Preview", self._preview)
+        grid_dock = self._build_dock("Camera Grid", self._camera_grid)
+
+        workspace.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, camera_dock)
+        workspace.splitDockWidget(camera_dock, calibration_dock, Qt.Orientation.Vertical)
+        workspace.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, preview_dock)
+        workspace.splitDockWidget(preview_dock, grid_dock, Qt.Orientation.Vertical)
+        workspace.resizeDocks([camera_dock, preview_dock], [520, 920], Qt.Orientation.Horizontal)
+        workspace.resizeDocks([preview_dock, grid_dock], [520, 280], Qt.Orientation.Vertical)
+        workspace.resizeDocks([camera_dock, calibration_dock], [380, 420], Qt.Orientation.Vertical)
+        return workspace
+
+    def _build_dock(self, title: str, widget: QWidget) -> QDockWidget:
+        dock = QDockWidget(title)
+        dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        dock.setWidget(widget)
+        self._dock_widgets.append(dock)
+        return dock
 
     def _build_results_tab(self) -> QWidget:
         page = QWidget()
@@ -132,6 +149,7 @@ class CalibrationMainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow { background: #eef3f8; }
+            QMainWindow#dockWorkspace { background: #eef3f8; }
             QLabel#appTitle { color: #10212f; font-size: 26px; font-weight: 700; }
             QLabel#appSubtitle { color: #4b5f73; font-size: 13px; margin-bottom: 6px; }
             QTabWidget::pane { border: 1px solid #c9d7e4; border-radius: 8px; background: #ffffff; top: -1px; }
@@ -141,6 +159,16 @@ class CalibrationMainWindow(QMainWindow):
                 padding: 8px 14px; margin-right: 2px; min-width: 150px;
             }
             QTabBar::tab:selected { background: #ffffff; border-bottom-color: #ffffff; font-weight: 700; }
+            QDockWidget {
+                border: 1px solid #c9d7e4;
+                border-radius: 6px;
+            }
+            QDockWidget::title {
+                background: #dbe8f3;
+                color: #17324a;
+                padding: 7px 10px;
+                font-weight: 700;
+            }
             QGroupBox {
                 border: 1px solid #c9d7e4; border-radius: 8px; margin-top: 12px;
                 background: #ffffff; font-weight: 600; font-size: 13px;
