@@ -302,7 +302,7 @@ class CalibrationMainWindow(QMainWindow):
         worker = CaptureWorker(
             sources=sources,
             target_fps=target_fps,
-            max_frame_width=0 if requested_width > 0 and requested_height > 0 else 1280,
+            max_frame_width=0,
             requested_width=requested_width,
             requested_height=requested_height,
             requested_fps=target_fps,

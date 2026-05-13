@@ -167,12 +167,14 @@ def _memory_percent() -> float | None:
 def apply_camera_controls(capture: Any, cv2_module: Any, settings: CameraControlSettings) -> dict[str, bool]:
     applied: dict[str, bool] = {}
     _set_capture_property(applied, capture, cv2_module, "buffersize", "CAP_PROP_BUFFERSIZE", 1)
+    if settings.width > 0 or settings.height > 0:
+        _set_capture_fourcc(applied, capture, cv2_module, "MJPG")
+    if settings.fps > 0:
+        _set_capture_property(applied, capture, cv2_module, "fps", "CAP_PROP_FPS", settings.fps)
     if settings.width > 0:
         _set_capture_property(applied, capture, cv2_module, "width", "CAP_PROP_FRAME_WIDTH", settings.width)
     if settings.height > 0:
         _set_capture_property(applied, capture, cv2_module, "height", "CAP_PROP_FRAME_HEIGHT", settings.height)
-    if settings.fps > 0:
-        _set_capture_property(applied, capture, cv2_module, "fps", "CAP_PROP_FPS", settings.fps)
     if settings.exposure is not None:
         _set_capture_property(applied, capture, cv2_module, "exposure", "CAP_PROP_EXPOSURE", settings.exposure)
     if settings.gain is not None:
@@ -189,6 +191,17 @@ def apply_camera_controls(capture: Any, cv2_module: Any, settings: CameraControl
     if settings.auto_exposure is not None:
         _set_capture_property(applied, capture, cv2_module, "auto_exposure", "CAP_PROP_AUTO_EXPOSURE", settings.auto_exposure)
     return applied
+
+
+def _set_capture_fourcc(applied: dict[str, bool], capture: Any, cv2_module: Any, codec: str) -> None:
+    if not hasattr(cv2_module, "CAP_PROP_FOURCC") or not hasattr(cv2_module, "VideoWriter_fourcc"):
+        applied["fourcc"] = False
+        return
+    try:
+        fourcc = cv2_module.VideoWriter_fourcc(*codec)
+        applied["fourcc"] = bool(capture.set(cv2_module.CAP_PROP_FOURCC, float(fourcc)))
+    except Exception:
+        applied["fourcc"] = False
 
 
 def _set_capture_property(

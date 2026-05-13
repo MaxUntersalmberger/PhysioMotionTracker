@@ -145,6 +145,8 @@ class OpenCVCaptureSession:
     def _open_source(self, source: CameraSourceConfig, index: int) -> tuple[Any, CameraProbeResult]:
         cv2_module = self._ensure_cv2()
         uri = self._resolve_uri(source)
+        best_capture: Any | None = None
+        best_probe: CameraProbeResult | None = None
 
         for backend_name, backend_flag in self._backend_candidates(source, cv2_module):
             capture = (
@@ -154,8 +156,21 @@ class OpenCVCaptureSession:
             )
             if capture.isOpened():
                 self._apply_capture_settings(source.source_id, capture, cv2_module)
-                return capture, self._build_probe_result(source.source_id, index, capture, backend_name, True, cv2_module)
+                probe = self._build_probe_result(source.source_id, index, capture, backend_name, True, cv2_module)
+                if self._probe_matches_requested_resolution(probe):
+                    if best_capture is not None:
+                        best_capture.release()
+                    return capture, probe
+                if best_probe is None or self._probe_resolution_score(probe) > self._probe_resolution_score(best_probe):
+                    if best_capture is not None:
+                        best_capture.release()
+                    best_capture = capture
+                    best_probe = probe
+                    continue
             capture.release()
+
+        if best_capture is not None and best_probe is not None:
+            return best_capture, best_probe
 
         fallback = cv2_module.VideoCapture(uri)
         probe = self._build_probe_result(source.source_id, index, fallback, "unavailable", fallback.isOpened(), cv2_module)
@@ -226,12 +241,29 @@ class OpenCVCaptureSession:
 
         candidates: list[tuple[str, int | None]] = []
         if os.name == "nt":
+            if self._control_settings.width > 0 and self._control_settings.height > 0 and hasattr(cv2_module, "CAP_DSHOW"):
+                candidates.append(("DSHOW", cv2_module.CAP_DSHOW))
             if hasattr(cv2_module, "CAP_MSMF"):
                 candidates.append(("MSMF", cv2_module.CAP_MSMF))
-            if hasattr(cv2_module, "CAP_DSHOW"):
+            if not any(name == "DSHOW" for name, _flag in candidates) and hasattr(cv2_module, "CAP_DSHOW"):
                 candidates.append(("DSHOW", cv2_module.CAP_DSHOW))
         candidates.append(("default", None))
         return candidates
+
+    def _probe_matches_requested_resolution(self, probe: CameraProbeResult) -> bool:
+        requested_width = self._control_settings.width
+        requested_height = self._control_settings.height
+        if requested_width <= 0 or requested_height <= 0:
+            return True
+        return probe.opened and probe.width == requested_width and probe.height == requested_height
+
+    def _probe_resolution_score(self, probe: CameraProbeResult) -> int:
+        if not probe.opened:
+            return -1
+        requested_width = self._control_settings.width
+        requested_height = self._control_settings.height
+        exact_bonus = 10_000_000 if probe.width == requested_width and probe.height == requested_height else 0
+        return exact_bonus + max(0, probe.width) * max(0, probe.height)
 
     def _resolve_uri(self, source: CameraSourceConfig) -> Any:
         if source.kind == "webcam":

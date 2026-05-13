@@ -139,6 +139,7 @@ class CameraControlWidget(QWidget):
             ("3840 x 2160", 3840, 2160),
         ):
             self._resolution_combo.addItem(label, (width, height))
+        self._resolution_combo.setCurrentIndex(max(0, self._resolution_combo.findText("1920 x 1080")))
         self._exposure_spin = _auto_spin(10000.0, "")
         self._exposure_spin.setRange(-20.0, 10000.0)
         self._gain_spin = _auto_spin(10000.0, "")

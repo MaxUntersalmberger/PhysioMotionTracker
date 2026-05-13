@@ -44,7 +44,7 @@ Camera-controls:
 
 - `sources_csv`: bijvoorbeeld `"0"` of `"0,1"` of videopad.
 - `target_fps`
-- `resolution`: een preset voor alle camera's; intern naar `requested_width()` en `requested_height()`, waarbij `Auto` beide op `0` zet.
+- `resolution`: een preset voor alle camera's; standaard `1920 x 1080`, intern naar `requested_width()` en `requested_height()`, waarbij `Auto` beide op `0` zet.
 - optioneel: `requested_exposure`, `requested_gain`, `requested_white_balance`
 
 Calibratie-controls:

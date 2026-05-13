@@ -51,7 +51,7 @@ def run(argv: list[str] | None = None) -> int:
 
     if args.capture_sample:
         sources = parse_sources_csv(args.sources or config.default_sources_csv)
-        session = OpenCVCaptureSession(sources=sources, target_fps=config.default_capture_fps, max_frame_width=1280)
+        session = OpenCVCaptureSession(sources=sources, target_fps=config.default_capture_fps, max_frame_width=0)
         try:
             session.open()
             batch = session.read_batch()
