@@ -122,6 +122,8 @@ class CalibrationViewDetection:
     board_shape: tuple[int, int]
     corner_points_px: list[tuple[float, float]]
     coverage_ratio: float
+    pattern_type: str = "chessboard"
+    corner_ids: list[int] = field(default_factory=list)
     visible: bool = True
 
     @property
@@ -150,6 +152,7 @@ class _CalibrationDetection:
     image_points: np.ndarray
     coverage_ratio: float
     pattern_type: str = "chessboard"
+    corner_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -870,6 +873,7 @@ class CalibrationManager:
             image_points=image_points,
             coverage_ratio=coverage_ratio,
             pattern_type="charuco",
+            corner_ids=[int(value) for value in np.asarray(charuco_ids).reshape(-1)],
         )
 
     def _solve_board_transform(
@@ -1015,6 +1019,8 @@ class CalibrationManager:
             board_shape=self._board_shape,
             corner_points_px=corner_points_px,
             coverage_ratio=detection.coverage_ratio,
+            pattern_type=detection.pattern_type,
+            corner_ids=list(detection.corner_ids),
             visible=True,
         )
 

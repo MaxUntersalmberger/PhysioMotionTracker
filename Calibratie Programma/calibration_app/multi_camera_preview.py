@@ -81,7 +81,7 @@ class _PreviewTileWidget(QFrame):
             self._status_label.setText(self._format_status(frame, probe))
             return
 
-        self._current_pixmap = self._apply_calibration_overlay(pixmap, frame)
+        self._current_pixmap = pixmap
         self._status_label.setText(self._format_status(frame, probe))
         self._refresh_pixmap()
 
@@ -189,9 +189,24 @@ class _PreviewTileWidget(QFrame):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        self._draw_current_calibration_overlay(scaled)
         self._draw_readable_overlay(scaled)
         self._image_label.setPixmap(scaled)
         self._image_label.setText("")
+
+    def _draw_current_calibration_overlay(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull() or self._frame is None:
+            return
+        detection = self._detection
+        if detection is None or detection.frame_index != self._frame.frame_index or not detection.corner_points_px:
+            return
+
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            self._draw_calibration_overlay(painter, detection, pixmap.width(), pixmap.height())
+        finally:
+            painter.end()
 
     def _draw_readable_overlay(self, pixmap: QPixmap) -> None:
         if pixmap.isNull():
@@ -246,6 +261,10 @@ class _PreviewTileWidget(QFrame):
             lines.append(f"Detected {self._detection.corner_count} corners | coverage {self._detection.coverage_ratio:.0%}")
         else:
             lines.append("No board detected")
+        if self._detection is not None and getattr(self._detection, "pattern_type", "") == "charuco":
+            corner_ids = getattr(self._detection, "corner_ids", [])
+            if corner_ids:
+                lines.append(f"ChArUco IDs visible: {len(corner_ids)}")
 
         lines.append(f"Samples cam={self._sample_count} | sync={self._sync_sample_count}")
         if self._probe is not None:
@@ -336,13 +355,13 @@ class _PreviewTileWidget(QFrame):
             return
 
         columns, rows = detection.board_shape
-        line_pen = QPen(QColor(94, 234, 212, 220), 2)
-        line_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        line_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(line_pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        pattern_type = getattr(detection, "pattern_type", "chessboard")
+        corner_ids = [int(value) for value in getattr(detection, "corner_ids", [])]
+        line_width = max(3, int(min(width, height) * 0.006))
 
-        if columns > 1 and rows > 1 and len(points) >= columns * rows:
+        def draw_board_grid(pen: QPen) -> None:
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             for row_index in range(rows):
                 row_start = row_index * columns
                 for column_index in range(columns - 1):
@@ -353,11 +372,69 @@ class _PreviewTileWidget(QFrame):
                 for column_index in range(columns):
                     painter.drawLine(points[row_start + column_index], points[next_row_start + column_index])
 
-        radius = max(3, int(min(width, height) * 0.008))
-        painter.setPen(QPen(QColor(11, 31, 56, 220), 2))
-        painter.setBrush(QColor(94, 234, 212, 210))
+        if pattern_type != "charuco" and columns > 1 and rows > 1 and len(points) >= columns * rows:
+            shadow_pen = QPen(QColor(2, 8, 23, 230), line_width + 4)
+            shadow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            shadow_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            highlight_pen = QPen(QColor(45, 255, 196, 245), line_width)
+            highlight_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            highlight_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            draw_board_grid(shadow_pen)
+            draw_board_grid(highlight_pen)
+
+        radius = max(5, int(min(width, height) * 0.011))
+        painter.setPen(QPen(QColor(2, 8, 23, 240), max(3, line_width)))
+        painter.setBrush(QColor(250, 204, 21, 245) if pattern_type == "charuco" else QColor(45, 255, 196, 235))
+        for point in points:
+            painter.drawEllipse(point, radius + 2, radius + 2)
+
+        painter.setPen(QPen(QColor(255, 255, 255, 245), max(1, line_width // 2)))
+        painter.setBrush(QColor(250, 204, 21, 245) if pattern_type == "charuco" else QColor(45, 255, 196, 235))
         for point in points:
             painter.drawEllipse(point, radius, radius)
+
+        if pattern_type == "charuco" and corner_ids:
+            self._draw_charuco_id_labels(painter, points, corner_ids, radius, width, height)
+
+    def _draw_charuco_id_labels(
+        self,
+        painter: QPainter,
+        points: list[QPointF],
+        corner_ids: list[int],
+        radius: int,
+        width: int,
+        height: int,
+    ) -> None:
+        font = QFont()
+        font.setPixelSize(max(11, min(22, int(min(width, height) * 0.045))))
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        padding_x = max(4, radius // 2)
+        padding_y = max(2, radius // 3)
+        offset = max(7, radius + 4)
+
+        for point, corner_id in zip(points, corner_ids):
+            label = str(corner_id)
+            text_width = metrics.horizontalAdvance(label)
+            text_height = metrics.height()
+            box_width = text_width + (2 * padding_x)
+            box_height = text_height + (2 * padding_y)
+            box_x = int(point.x() + offset)
+            box_y = int(point.y() - box_height - offset // 2)
+            box_x = max(2, min(box_x, max(2, width - box_width - 2)))
+            box_y = max(2, min(box_y, max(2, height - box_height - 2)))
+            label_box = QRectF(float(box_x), float(box_y), float(box_width), float(box_height))
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(2, 8, 23, 225))
+            painter.drawRoundedRect(label_box, 4, 4)
+            painter.setPen(QColor(255, 255, 255, 245))
+            painter.drawText(
+                int(box_x + padding_x),
+                int(box_y + padding_y + metrics.ascent()),
+                label,
+            )
 
 
 class MultiCameraPreviewWidget(QWidget):

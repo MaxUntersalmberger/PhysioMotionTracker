@@ -76,6 +76,7 @@ Live preview:
 - `MultiCameraPreviewWidget.clear_preview(message)`
 - `MultiCameraPreviewWidget.select_source(source_id)` selecteert alleen de highlight; alle actieve camera's blijven zichtbaar.
   De live preview tekent zelf een leesbare overlay met frame, detectiestatus, score, corners, coverage en sample counters.
+  Bij ChArUco krijgen `CalibrationViewDetection.pattern_type == "charuco"` en `corner_ids` de zichtbare corner-ID's; de preview tekent die IDs naast de punten.
 
 Camera grid:
 

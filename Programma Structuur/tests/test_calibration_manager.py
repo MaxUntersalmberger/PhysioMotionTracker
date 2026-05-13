@@ -96,6 +96,17 @@ class CalibrationManagerCaptureModeTests(unittest.TestCase):
         self.assertFalse(ready.can_solve_extrinsics)
         self.assertTrue(any("Solve intrinsics" in note for note in ready.notes))
 
+    def test_public_detection_exposes_charuco_corner_ids(self) -> None:
+        manager = CalibrationManager()
+        detection = _detection("cam0", 1)
+        detection.pattern_type = "charuco"
+        detection.corner_ids = [2, 5, 8, 11]
+
+        public = manager._to_public_detection(detection)  # type: ignore[attr-defined]
+
+        self.assertEqual(public.pattern_type, "charuco")
+        self.assertEqual(public.corner_ids, [2, 5, 8, 11])
+
 
 def _intrinsics_only_camera(source_id: str) -> CameraCalibration:
     return CameraCalibration(
