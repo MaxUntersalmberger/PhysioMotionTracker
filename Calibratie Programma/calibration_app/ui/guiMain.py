@@ -8,9 +8,6 @@ from pathlib import Path
 import sys
 import os
 
-# Zorg dat de huidige map altijd in het pad staat
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 # Relatief pad vanuit guiMain.py naar de imagesGUI map
 sys.path.append(os.path.join(os.path.dirname(__file__), "imagesGUI"))
 
