@@ -50,7 +50,7 @@ Calibratie-controls:
 
 - `calibration_object_type`: `"chessboard"` of `"charuco"`
 - `calibration_detector_name`: `"auto"`, `"chessboard_sb"`, `"chessboard_classic"` of `"charuco"`
-- `board_shape`: tuple `(columns, rows)`, standaard `(9, 6)`
+- `board_shape`: tuple `(columns, rows)`, standaard `(9, 6)`, minimum `(2, 2)`
 - `square_size_m`: vakgrootte in meters, standaard `0.024`
 - `capture_mode`: `"intrinsics"` of `"sync_extrinsics"`
 - `auto_capture_enabled`
@@ -70,8 +70,10 @@ Live preview:
 - `MultiCameraPreviewWidget.show_batch(batch, sources, probe_results)`
 - `MultiCameraPreviewWidget.set_calibration_detections(result.detections)`
 - `MultiCameraPreviewWidget.set_camera_quality_scores(result.camera_quality_scores)`
+- `MultiCameraPreviewWidget.set_sample_counts(result.sample_counts, result.synchronized_samples)`
 - `MultiCameraPreviewWidget.clear_preview(message)`
 - `MultiCameraPreviewWidget.select_source(source_id)` selecteert alleen de highlight; alle actieve camera's blijven zichtbaar.
+  De live preview tekent zelf een leesbare overlay met frame, detectiestatus, score, corners, coverage en sample counters.
 
 Camera grid:
 

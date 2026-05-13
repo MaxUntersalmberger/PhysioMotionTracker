@@ -434,7 +434,9 @@ class CalibrationMainWindow(QMainWindow):
     def _on_reset_samples(self) -> None:
         self._manager.reset_samples()
         self._calibration_controls.set_sample_counts({}, 0)
+        self._preview.set_sample_counts({}, 0)
         self._calibration_controls.set_camera_quality_scores({})
+        self._preview.set_camera_quality_scores({})
         self._calibration_controls.set_sample_history(self._manager.sample_history)
         self._calibration_controls.set_auto_capture_status("Auto capture off.")
         self._update_readiness()
@@ -466,6 +468,7 @@ class CalibrationMainWindow(QMainWindow):
         now = time.monotonic()
         self._preview.set_calibration_detections(result.detections)
         self._camera_grid.set_calibration_detections(result.detections)
+        self._preview.set_sample_counts(result.sample_counts, result.synchronized_samples)
         self._calibration_controls.set_sync_status(self._format_sync_status(result.sync_report))
         if result.history_entry is not None or now - self._last_quality_update_sec >= 1.0:
             self._preview.set_camera_quality_scores(result.camera_quality_scores)
@@ -521,6 +524,8 @@ class CalibrationMainWindow(QMainWindow):
         if bundle is None:
             self._calibration_controls.set_profile_path(str(self._profile_path))
             self._calibration_controls.set_sample_counts({}, 0)
+            self._preview.set_sample_counts({}, 0)
+            self._preview.set_camera_quality_scores({})
             self._calibration_controls.set_state("No calibration profile loaded.")
             self._results.set_profile_path(str(self._profile_path))
             self._results.set_bundle(None)
@@ -538,6 +543,7 @@ class CalibrationMainWindow(QMainWindow):
         sample_counts = {source_id: camera.num_samples for source_id, camera in bundle.cameras.items()}
         sync_count = int(bundle.metadata.get("used_synchronized_samples", bundle.metadata.get("synchronized_samples", 0)) or 0)
         self._calibration_controls.set_sample_counts(sample_counts, sync_count)
+        self._preview.set_sample_counts(sample_counts, sync_count)
         self._calibration_controls.set_profile_path(str(self._profile_path))
         self._calibration_controls.set_state(f"Calibration loaded: {len(bundle.cameras)} camera(s).")
         self._results.set_profile_path(str(self._profile_path))

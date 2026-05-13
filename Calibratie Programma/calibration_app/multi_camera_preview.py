@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QGridLayout, QGroupBox, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .legacy_bridge import ensure_legacy_path
@@ -29,6 +29,8 @@ class _PreviewTileWidget(QFrame):
         self._probe: CameraProbeResult | None = None
         self._detection: CalibrationViewDetection | None = None
         self._quality: CalibrationCameraQuality | None = None
+        self._sample_count = 0
+        self._sync_sample_count = 0
         self._current_pixmap: QPixmap | None = None
 
         self._title_label = QLabel()
@@ -89,6 +91,13 @@ class _PreviewTileWidget(QFrame):
         self._quality = quality
         self._status_label.setText(self._format_status(self._frame, self._probe))
         self._apply_style()
+        self._refresh_pixmap()
+
+    def set_sample_status(self, sample_count: int, sync_sample_count: int) -> None:
+        self._sample_count = max(0, int(sample_count))
+        self._sync_sample_count = max(0, int(sync_sample_count))
+        self._status_label.setText(self._format_status(self._frame, self._probe))
+        self._refresh_pixmap()
 
     def set_selected(self, selected: bool) -> None:
         self._selected = bool(selected)
@@ -156,6 +165,7 @@ class _PreviewTileWidget(QFrame):
             )
         elif self._detection is not None and frame is not None and self._detection.frame_index == frame.frame_index:
             bits.append(f"calib={self._detection.corner_count} corners")
+        bits.append(f"samples={self._sample_count} | sync={self._sync_sample_count}")
         return " | ".join(bits)
 
     def _refresh_pixmap(self) -> None:
@@ -166,8 +176,69 @@ class _PreviewTileWidget(QFrame):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        self._draw_readable_overlay(scaled)
         self._image_label.setPixmap(scaled)
         self._image_label.setText("")
+
+    def _draw_readable_overlay(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            return
+
+        lines = self._overlay_lines()
+        if not lines:
+            return
+
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            font = QFont()
+            font.setPointSize(max(9, min(14, pixmap.height() // 26)))
+            font.setBold(True)
+            painter.setFont(font)
+            metrics = QFontMetrics(font)
+
+            margin = max(8, pixmap.width() // 80)
+            padding_x = max(8, pixmap.width() // 70)
+            padding_y = max(7, pixmap.height() // 70)
+            line_height = metrics.height() + 3
+            max_text_width = max(120, pixmap.width() - (2 * margin) - (2 * padding_x))
+            display_lines = [metrics.elidedText(line, Qt.TextElideMode.ElideRight, max_text_width) for line in lines]
+            text_width = max(metrics.horizontalAdvance(line) for line in display_lines)
+            panel_width = min(max_text_width + (2 * padding_x), text_width + (2 * padding_x))
+            panel_height = (line_height * len(display_lines)) + (2 * padding_y)
+            panel = QRectF(float(margin), float(margin), float(panel_width), float(panel_height))
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(11, 31, 56, 205))
+            painter.drawRoundedRect(panel, 8, 8)
+
+            painter.setPen(QColor(255, 255, 255, 240))
+            text_x = margin + padding_x
+            text_y = margin + padding_y + metrics.ascent()
+            for line in display_lines:
+                painter.drawText(text_x, text_y, line)
+                text_y += line_height
+        finally:
+            painter.end()
+
+    def _overlay_lines(self) -> list[str]:
+        lines: list[str] = [self._source.source_id]
+        if self._frame is not None:
+            lines.append(f"Frame #{self._frame.frame_index} @ {self._frame.timestamp_sec:.3f}s")
+
+        if self._quality is not None:
+            lines.append(f"{self._quality.quality_label.upper()} {self._quality.score:.0f}/100")
+            lines.append(f"Corners {self._quality.corner_count}/{self._quality.expected_corners} | coverage {self._quality.coverage_ratio:.0%}")
+        elif self._detection is not None:
+            lines.append(f"Detected {self._detection.corner_count} corners | coverage {self._detection.coverage_ratio:.0%}")
+        else:
+            lines.append("No board detected")
+
+        lines.append(f"Samples cam={self._sample_count} | sync={self._sync_sample_count}")
+        if self._probe is not None:
+            status = "opened" if self._probe.opened else "failed"
+            lines.append(f"{status} {self._probe.width}x{self._probe.height}")
+        return lines
 
     def _frame_to_pixmap(self, frame_data: Any) -> QPixmap | None:
         if frame_data is None or not hasattr(frame_data, "shape"):
@@ -263,6 +334,8 @@ class MultiCameraPreviewWidget(QWidget):
         self._probe_results: dict[str, CameraProbeResult] = {}
         self._detections: dict[str, CalibrationViewDetection] = {}
         self._quality_scores: dict[str, CalibrationCameraQuality] = {}
+        self._sample_counts: dict[str, int] = {}
+        self._sync_sample_count = 0
         self._latest_batch: CaptureBatch | None = None
         self._selected_source_id: str | None = None
         self._tiles: dict[str, _PreviewTileWidget] = {}
@@ -351,13 +424,23 @@ class MultiCameraPreviewWidget(QWidget):
             tile.set_quality(self._quality_scores.get(source_id))
         self._refresh_summary()
 
+    def set_sample_counts(self, sample_counts: dict[str, int] | None, synchronized_samples: int) -> None:
+        self._sample_counts = {source_id: int(count) for source_id, count in dict(sample_counts or {}).items()}
+        self._sync_sample_count = max(0, int(synchronized_samples))
+        for source_id, tile in self._tiles.items():
+            tile.set_sample_status(self._sample_counts.get(source_id, 0), self._sync_sample_count)
+        self._refresh_summary()
+
     def clear_preview(self, message: str = "No frame yet") -> None:
         self._latest_batch = None
         self._detections = {}
         self._quality_scores = {}
+        self._sample_counts = {}
+        self._sync_sample_count = 0
         for tile in self._tiles.values():
             tile.set_calibration_detection(None)
             tile.set_quality(None)
+            tile.set_sample_status(0, 0)
             tile.set_frame(None, self._probe_results.get(tile.source_id()))
         self._summary_label.setText(message)
 
@@ -375,6 +458,7 @@ class MultiCameraPreviewWidget(QWidget):
             tile.set_selected(source.source_id == self._selected_source_id)
             tile.set_calibration_detection(self._detections.get(source.source_id))
             tile.set_quality(self._quality_scores.get(source.source_id))
+            tile.set_sample_status(self._sample_counts.get(source.source_id, 0), self._sync_sample_count)
             self._tiles[source.source_id] = tile
             self._grid_layout.addWidget(tile, index // columns, index % columns)
 
@@ -384,6 +468,7 @@ class MultiCameraPreviewWidget(QWidget):
         for source_id, tile in self._tiles.items():
             tile.set_calibration_detection(self._detections.get(source_id))
             tile.set_quality(self._quality_scores.get(source_id))
+            tile.set_sample_status(self._sample_counts.get(source_id, 0), self._sync_sample_count)
             tile.set_frame(self._latest_batch.frames.get(source_id), self._probe_results.get(source_id))
 
     def _clear_layout(self) -> None:
@@ -413,7 +498,9 @@ class MultiCameraPreviewWidget(QWidget):
         selected_text = self._selected_source_id or "none"
         frame_count = len(self._latest_batch.frames) if self._latest_batch is not None else 0
         dropped_count = len(self._latest_batch.dropped_sources) if self._latest_batch is not None else 0
+        sample_total = sum(self._sample_counts.values())
         self._summary_label.setText(
             f"{len(self._sources)} camera(s) | frames={frame_count} | calib_visible={visible_count}/{len(self._sources)} "
-            f"| good={good_count}/{len(self._sources)} | selected={selected_text} | dropped={dropped_count}"
+            f"| good={good_count}/{len(self._sources)} | samples={sample_total} | sync={self._sync_sample_count} "
+            f"| selected={selected_text} | dropped={dropped_count}"
         )
