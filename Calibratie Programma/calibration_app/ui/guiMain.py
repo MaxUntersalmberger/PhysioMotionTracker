@@ -8,10 +8,13 @@ from pathlib import Path
 import sys
 import os
 
+# Add calibration_app parent directory to path for proper package imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 # Relatief pad vanuit guiMain.py naar de imagesGUI map
 sys.path.append(os.path.join(os.path.dirname(__file__), "imagesGUI"))
 
-import resources_rc
+
 
 #pyrcc5 resources.qrc -o resources_rc.py 
 
@@ -20,10 +23,9 @@ import resources_rc
 if not hasattr(QtCore.Qt, 'QFrame'):
     QtCore.Qt.QFrame = QtWidgets.QFrame
 
-from gui import Ui_MainWindow
-from guiLogic import Logic
-from guiStyle import apply_styles
-import sys
+from calibration_app.ui.gui import Ui_MainWindow
+from calibration_app.ui.guiLogic import Logic
+from calibration_app.ui.guiStyle import apply_styles
 import io
 
 # --- CONSOLE STREAM REDIRECTOR ---

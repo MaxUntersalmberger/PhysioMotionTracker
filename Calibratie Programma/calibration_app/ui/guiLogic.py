@@ -1,10 +1,10 @@
 from PyQt5 import QtCore, QtWidgets
-from tab_home import TabHome
-from tab_cameras import TabCameras
-from tab_diagnostics import TabDiagnostics
-from tab_directory import TabDirectory
-from tab_results import TabResults
-from tab_settings import TabSettings
+from calibration_app.ui.tab_home import TabHome
+from calibration_app.ui.tab_cameras import TabCameras
+from calibration_app.ui.tab_diagnostics import TabDiagnostics
+from calibration_app.ui.tab_directory import TabDirectory
+from calibration_app.ui.tab_results import TabResults
+from calibration_app.ui.tab_settings import TabSettings
 from pathlib import Path
 from datetime import datetime
 import sys
@@ -13,10 +13,12 @@ import webbrowser
 # Voeg parent directory toe aan path zodat core module gevonden wordt
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from ..config import CalibrationAppConfig
 # --- DE KLASSE VOOR ORCHESTRATIE ---
 class Logic:
     def __init__(self, window):
         self.window = window
+        
 
         self.nav_buttons = [
             self.window.btn_home,
@@ -34,7 +36,12 @@ class Logic:
         self.window.btn_diagnostics.clicked.connect(lambda: self.switch_page(4))
         self.window.btn_advanced_settings.clicked.connect(lambda: self.switch_page(5))
         
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         
+        
+
         # --- HOME ACTION CONNECTIONS ---
         self.window.btn_newproject.clicked.connect(self.create_new_project)
         self.window.btn_loadproject.clicked.connect(self.load_project)
@@ -79,86 +86,55 @@ class Logic:
                 btn.setStyleSheet(normal_style)
 
     def create_new_project(self):
-        """Maakt een nieuw projectfolder aan in de sessions map met timestamp"""
         try:
-            # Laad de app configuratie
-            from core.config import AppConfig
-            config = AppConfig.load()
-            sessions_dir = config.sessions_dir or Path.cwd() / "sessions"
-            
-            # Zorg dat de sessions directory bestaat
-            sessions_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Genereer timestamp in formaat: YYYY-MM-DD_HH_MM_SS
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
-            project_folder_name = f"Session_{timestamp}"
-            project_path = sessions_dir / project_folder_name
-            
-            # Maak de projectfolder aan
-            project_path.mkdir(parents=True, exist_ok=True)
-            
-            # Navigeer naar de camera's tab en open deze folder
-            self.switch_page(1)  # Schakel naar tab_camera (index 1)
-            self.tab_directory.load_root_directory(project_path)
-            
-            print(f"Nieuw project aangemaakt: {project_path}")
+            from pathlib import Path
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent))
 
-            # # Toon succes bericht
-            # QtWidgets.QMessageBox.information(
-            #     self.window,
-            #     "Project aangemaakt",
-            #     f"Nieuw project aangemaakt:\n{project_folder_name}"
-            # )
+            from ..config import CalibrationAppConfig
+            from ..project import CalibrationProjectRepository
+
+            config = CalibrationAppConfig.load()
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
+            name = f"Session_{timestamp}"
+
+            repo = CalibrationProjectRepository(config.projects_dir)
+            project = repo.create(name=name, sources_csv="0", target_fps=20.0)
+
+            self._active_project = project
+            self.switch_page(1)
+            self.tab_directory.load_root_directory(project.root_dir)
+
+            print(f"Nieuw project aangemaakt: {project.root_dir}")
+
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.window,
-                "Fout",
-                f"Kon project niet aanmaken:\n{str(e)}"
-            )
-            print(f"Fout bij aanmaken project: {str(e)}") 
+            QtWidgets.QMessageBox.critical(self.window, "Fout", f"Kon project niet aanmaken:\n{str(e)}")
+            print(f"Fout bij aanmaken project: {str(e)}")
 
     def load_project(self):
-        """Opent een bestaand projectfolder via bestandsverkenner"""
         try:
-            from core.config import AppConfig
-            
-            # Bepaal de startmap (sessions directory)
-            config = AppConfig.load()
-            start_dir = config.sessions_dir or Path.cwd() / "sessions"
-            
-            # Open bestandsverkenner
+            from pathlib import Path
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+
+            from ..config import CalibrationAppConfig
+
+            config = CalibrationAppConfig.load()
+            start_dir = config.projects_dir or Path.cwd() / "projects"
+
             selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
-                self.window,
-                "Selecteer een project map",
-                str(start_dir)
+                self.window, "Selecteer een project map", str(start_dir)
             )
-            
+
             if selected_dir:
                 project_path = Path(selected_dir)
-                
-                # Stel deze als het huidige project in
-                config.default_sessions_dir = project_path.parent
-                config.save()
-                
-                # Navigeer naar de camera's tab
                 self.switch_page(1)
                 self.tab_directory.load_root_directory(project_path)
-
                 print(f"Project geladen: {project_path}")
-                # # Toon succes bericht               
 
-                # QtWidgets.QMessageBox.information(
-                #     self.window,
-                #     "Project geladen",
-                #     f"Project geladen:\n{project_path.name}"
-                # )
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.window,
-                "Fout",
-                f"Kon project niet openen:\n{str(e)}"
-            )
-            print(f"Fout bij laden project: {str(e)}") 
+            QtWidgets.QMessageBox.critical(self.window, "Fout", f"Kon project niet openen:\n{str(e)}")
+            print(f"Fout bij laden project: {str(e)}")
 
     def quit_application(self):
         """Sluit de applicatie af"""

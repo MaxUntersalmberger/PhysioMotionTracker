@@ -26,8 +26,8 @@ class TabDirectory:
         # Haal de huidige project locatie op
         try:
             from core.config import AppConfig
-            self.app_config = AppConfig.load()
-            self.root_directory = self.app_config.default_sessions_dir
+            self.app_config = AppConfig()
+            self.root_directory = self.app_config.sessions_dir
         except ImportError:
             # Fallback naar de huidige werkdirectory
             self.root_directory = Path.cwd()
