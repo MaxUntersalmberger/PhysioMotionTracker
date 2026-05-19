@@ -6,10 +6,10 @@ from PyQt5.QtMultimedia import QCameraInfo
 class CameraThread(QtCore.QThread):
     change_pixmap_signal = QtCore.pyqtSignal(QtGui.QImage)
 
-    def __init__(self, camera_index=0, width=640, height=480):
+    def __init__(self, camera_index=0, width=640, height=480, fps=30): # FPS toegevoegd aan init
         super().__init__()
         self.camera_index = camera_index
-        self.fps = 30 # We zetten FPS vast op een stabiele waarde
+        self.fps = fps 
         self.width = width
         self.height = height
         self._run_flag = True
@@ -28,7 +28,6 @@ class CameraThread(QtCore.QThread):
                 time.sleep(0.1)
                 continue
 
-            # Update hardware ALLEEN als het echt veranderd is
             if current_w != self.width or current_h != self.height:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
@@ -56,7 +55,7 @@ class CameraThread(QtCore.QThread):
                 qt_img = QtGui.QImage(rgb_image.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
                 self.change_pixmap_signal.emit(qt_img.copy())
 
-            # Gebruik FastTransformation voor betere performance tijdens UI scaling
+            # De FPS bepaalt de slaaptijd
             sleep_time = max(1/self.fps - (time.time() - start_time), 0.001)
             time.sleep(sleep_time)
 
@@ -78,6 +77,7 @@ class CameraFrame(QtWidgets.QFrame):
         super().__init__()
         self.on_delete_callback = on_delete_callback
         self.thread = None
+        self.parent_tab = None # Wordt later gezet
         
         self.setFrameShape(QtWidgets.QFrame.Box)
         self.setMinimumSize(250, 200)
@@ -105,31 +105,21 @@ class CameraFrame(QtWidgets.QFrame):
         self.controls_layout.addWidget(self.btn_delete)
         self.main_layout.addLayout(self.controls_layout)
 
-        # --- Inhoud (Stack) ---
+        # --- Inhoud ---
         self.stacked = QtWidgets.QStackedWidget()
-        
         self.video_label = QtWidgets.QLabel("Selecteer een camera")
         self.video_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.video_label.setStyleSheet("background-color: black;")
+        self.video_label.setStyleSheet("background-color: black; color: white;")
         
-        # Settings Pagina
         self.settings_frame = QtWidgets.QFrame()
         self.settings_layout = QtWidgets.QFormLayout(self.settings_frame)
         
-        # Resolutie velden (FPS verwijderd)
-        self.spin_width = QtWidgets.QSpinBox()
-        self.spin_width.setRange(160, 3840); self.spin_width.setValue(640)
-        self.spin_height = QtWidgets.QSpinBox()
-        self.spin_height.setRange(120, 2160); self.spin_height.setValue(480)
-
-        self.combo_rotate = QtWidgets.QComboBox()
-        self.combo_rotate.addItems(["0", "90", "180", "270"])
+        self.spin_width = QtWidgets.QSpinBox(); self.spin_width.setRange(160, 3840); self.spin_width.setValue(640)
+        self.spin_height = QtWidgets.QSpinBox(); self.spin_height.setRange(120, 2160); self.spin_height.setValue(480)
+        self.combo_rotate = QtWidgets.QComboBox(); self.combo_rotate.addItems(["0", "90", "180", "270"])
         self.check_mirror = QtWidgets.QCheckBox("Mirror Image")
+        self.spin_exposure = QtWidgets.QSpinBox(); self.spin_exposure.setRange(-13, 0); self.spin_exposure.setValue(-5)
 
-        self.spin_exposure = QtWidgets.QSpinBox()
-        self.spin_exposure.setRange(-13, 0); self.spin_exposure.setValue(-5)
-
-        # DE APPLY KNOP
         self.btn_apply = QtWidgets.QPushButton("Apply Settings")
         self.btn_apply.clicked.connect(self.apply_settings)
         self.btn_apply.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 5px;")
@@ -148,43 +138,41 @@ class CameraFrame(QtWidgets.QFrame):
     def refresh_camera_list(self):
         self.combo_select_cam.blockSignals(True)
         self.combo_select_cam.clear()
-        # "Geen Camera" krijgt index -1 als marker
         self.combo_select_cam.addItem("Geen Camera", -1)
         cameras = QCameraInfo.availableCameras()
         for i, cam in enumerate(cameras):
             self.combo_select_cam.addItem(cam.description(), i)
         self.combo_select_cam.blockSignals(False)
 
-    def manage_thread(self, index):
-        opencv_idx = self.combo_select_cam.currentData()
-
-        # Check op dubbele camera (alleen als het handmatig gewisseld wordt naar een bezette camera)
-        if opencv_idx is not None and opencv_idx != -1:
-            cam_name = self.combo_select_cam.currentText()
-            if self.parent_tab and self.parent_tab.is_camera_in_use(cam_name, self):
-                QtWidgets.QMessageBox.warning(self, "Camera Bezet", f"'{cam_name}' is al in gebruik.")
-                self.combo_select_cam.blockSignals(True)
-                self.combo_select_cam.setCurrentIndex(0) 
-                self.combo_select_cam.blockSignals(False)
-                opencv_idx = -1 
-
+    def manage_thread(self):
+        # Stop bestaande thread
         if self.thread:
             self.thread.stop()
             self.thread = None
 
+        # Start alleen als de globale I/O knop 'aan' staat
+        if self.parent_tab and not self.parent_tab.is_running:
+            self.video_label.setText("Systeem staat uit (druk op I/O)")
+            return
+
+        opencv_idx = self.combo_select_cam.currentData()
         if opencv_idx is not None and opencv_idx != -1:
-            # Maak de thread aan met de geselecteerde index
-            self.thread = CameraThread(camera_index=opencv_idx, width=self.spin_width.value(), height=self.spin_height.value())
+            # Haal FPS op uit de centrale UI via de parent_tab
+            global_fps = self.parent_tab.ui.spin_cap_fps.value()
+            
+            self.thread = CameraThread(
+                camera_index=opencv_idx, 
+                width=self.spin_width.value(), 
+                height=self.spin_height.value(),
+                fps=global_fps
+            )
             self.apply_settings()
             self.thread.change_pixmap_signal.connect(self.update_frame)
             self.thread.start()
         else:
-            self.video_label.clear()
-            self.video_label.setPixmap(QtGui.QPixmap())
             self.video_label.setText("Selecteer een camera")
 
     def apply_settings(self):
-        """Wordt nu alleen aangeroepen via de Apply knop of bij start."""
         if self.thread and self.thread.isRunning():
             self.thread.update_params(
                 width=self.spin_width.value(),
@@ -197,7 +185,6 @@ class CameraFrame(QtWidgets.QFrame):
     def update_frame(self, img):
         if not self.btn_settings.isChecked():
             pixmap = QtGui.QPixmap.fromImage(img)
-            # Gebruik FastTransformation om CPU-lag in de UI te voorkomen
             self.video_label.setPixmap(pixmap.scaled(
                 self.video_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
             ))
@@ -218,6 +205,7 @@ class TabCameras:
         self.logic = logic_instance
         self.ui = logic_instance.window
         self.camera_frames = []
+        self.is_running = False # Status van de I/O knop
 
     def setup(self):
         self.main_layout = self.ui.gridLayout_6
@@ -231,6 +219,10 @@ class TabCameras:
         
         self.scroll_area.setWidget(self.scroll_content)
         self.main_layout.addWidget(self.scroll_area)
+        
+        # Koppel de I/O knop uit de GUI
+        self.ui.ptn_cap_startstop.clicked.connect(self.toggle_system)
+        
         self.setup_add_button()
 
     def setup_add_button(self):
@@ -242,37 +234,54 @@ class TabCameras:
         layout.addWidget(self.btn_plus)
         self.update_grid()
 
-    def add_new_camera(self):
-        # 1. Haal alle aangesloten camera's op
-        available_cameras = QCameraInfo.availableCameras()
+    def toggle_system(self):
+        """Beheert de globale Start/Stop status en de kleur van de knop."""
+        self.is_running = not self.is_running
         
-        # 2. Zoek naar de eerste camera die nog NIET in gebruik is
+        if self.is_running:
+            # Knop blauw maken
+            self.ui.ptn_cap_startstop.setStyleSheet("background-color: #0078d7; color: white; font-weight: bold;")
+            # Start alle threads met de huidige FPS van de spinbox
+            for frame in self.camera_frames:
+                frame.manage_thread()
+        else:
+            # Knop herstellen naar standaard (grijs)
+            self.ui.ptn_cap_startstop.setStyleSheet("")
+            # Stop alle threads
+            for frame in self.camera_frames:
+                if frame.thread:
+                    frame.thread.stop()
+                    frame.thread = None
+                    frame.video_label.clear()
+                    frame.video_label.setText("Systeem staat uit")
+
+    def add_new_camera(self):
+        available_cameras = QCameraInfo.availableCameras()
         camera_to_use_idx = -1
         for i, cam in enumerate(available_cameras):
             if not self.is_camera_in_use(cam.description(), None):
                 camera_to_use_idx = i
                 break
         
-        # 3. Als er geen camera meer vrij is, geef een melding
         if camera_to_use_idx == -1:
             QtWidgets.QMessageBox.information(self.ui, "Geen Camera's Beschikbaar", 
                 "Alle aangesloten camera's zijn al in gebruik.")
             return
 
-        # 4. Voeg het frame toe en selecteer direct de gevonden camera
         new_cam = CameraFrame(self.remove_camera)
         new_cam.parent_tab = self
         self.camera_frames.append(new_cam)
         
-        # Selecteer de camera in de combobox (index + 1 omdat 0 'Geen Camera' is)
         new_cam.combo_select_cam.setCurrentIndex(camera_to_use_idx + 1)
         
+        # Als het systeem al aan stond, start de nieuwe camera direct
+        if self.is_running:
+            new_cam.manage_thread()
+            
         self.update_grid()
 
     def is_camera_in_use(self, camera_name, calling_frame):
-        # "Geen Camera" is nooit "in gebruik", dus die checken we niet
-        if camera_name == "Geen Camera":
-            return False
+        if camera_name == "Geen Camera": return False
         for frame in self.camera_frames:
             if frame != calling_frame and frame.combo_select_cam.currentText() == camera_name:
                 return True
@@ -280,10 +289,8 @@ class TabCameras:
 
     def remove_camera(self, frame_to_remove):
         if frame_to_remove in self.camera_frames:
-            # Zorg dat de thread eerst stopt
             if frame_to_remove.thread:
                 frame_to_remove.thread.stop()
-            
             self.camera_frames.remove(frame_to_remove)
             frame_to_remove.setParent(None)
             frame_to_remove.deleteLater()
