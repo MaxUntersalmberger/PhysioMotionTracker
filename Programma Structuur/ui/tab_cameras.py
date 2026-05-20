@@ -221,7 +221,20 @@ class TabCameras:
         self.main_layout.addWidget(self.scroll_area)
         
         # Koppel de I/O knop uit de GUI
-        self.ui.ptn_cap_startstop.clicked.connect(self.toggle_system)
+        self.ui.ptn_cap_recording_start.clicked.connect(self.toggle_system)
+
+        # --- NIEUW: Maak de Intrinsics & Extrinsics knoppen checkable ---
+        self.ui.btn_cap_intrinsics_start.setCheckable(True)
+        self.ui.btn_cap_extrinsics_start.setCheckable(True)
+        
+        # --- NIEUW: Koppel de functies aan de knoppen ---
+        self.ui.btn_cap_intrinsics_start.clicked.connect(self.toggle_intrinsics)
+        self.ui.btn_cap_extrinsics_start.clicked.connect(self.toggle_extrinsics)
+        self.ui.btn_cap_reset_calibration.clicked.connect(self.reset_calibration_buttons)
+
+        # --- NIEUW: Koppel de Calculate knoppen ---
+        self.ui.btn_cap_calculate_intrinsics.clicked.connect(self.calculate_intrinsics)
+        self.ui.btn_cap_calculate_extrinsics.clicked.connect(self.calculate_extrinsics)
         
         self.setup_add_button()
 
@@ -240,13 +253,13 @@ class TabCameras:
         
         if self.is_running:
             # Knop blauw maken
-            self.ui.ptn_cap_startstop.setStyleSheet("background-color: #0078d7; color: white; font-weight: bold;")
+            self.ui.ptn_cap_recording_start.setStyleSheet("")
             # Start alle threads met de huidige FPS van de spinbox
             for frame in self.camera_frames:
                 frame.manage_thread()
         else:
             # Knop herstellen naar standaard (grijs)
-            self.ui.ptn_cap_startstop.setStyleSheet("")
+            self.ui.ptn_cap_recording_start.setStyleSheet("")
             # Stop alle threads
             for frame in self.camera_frames:
                 if frame.thread:
@@ -303,3 +316,71 @@ class TabCameras:
         for i, frame in enumerate(self.camera_frames):
             self.grid_layout.addWidget(frame, i // 3, i % 3)
         self.grid_layout.addWidget(self.add_frame, len(self.camera_frames) // 3, len(self.camera_frames) % 3)
+
+    def toggle_intrinsics(self):
+        """Beheert de status en het uiterlijk van de Intrinsics Start/Stop knop."""
+        if self.ui.btn_cap_intrinsics_start.isChecked():
+            # Knop is ingedrukt (Actief) -> Blauw maken en tekst veranderen naar Stop
+            self.ui.btn_cap_intrinsics_start.setStyleSheet("background-color: #0078d7; color: white; font-weight: bold;")
+            self.ui.btn_cap_intrinsics_start.setText("Stop")
+            # TIP: Voeg hier eventueel je code toe om de intrinsieke kalibratie te STARTEN
+        else:
+            # Knop is weer uitgeschakeld -> Terug naar standaard
+            self.ui.btn_cap_intrinsics_start.setStyleSheet("")
+            self.ui.btn_cap_intrinsics_start.setText("Start")
+            # TIP: Voeg hier eventueel je code toe om de intrinsieke kalibratie te STOPPEN
+
+    def toggle_extrinsics(self):
+        """Beheert de status en het uiterlijk van de Extrinsics Start/Stop knop."""
+        if self.ui.btn_cap_extrinsics_start.isChecked():
+            # Knop is ingedrukt (Actief) -> Blauw maken en tekst veranderen naar Stop
+            self.ui.btn_cap_extrinsics_start.setStyleSheet("background-color: #0078d7; color: white; font-weight: bold;")
+            self.ui.btn_cap_extrinsics_start.setText("Stop")
+            # TIP: Voeg hier eventueel je code toe om de extrinsieke kalibratie te STARTEN
+        else:
+            # Knop is weer uitgeschakeld -> Terug naar standaard
+            self.ui.btn_cap_extrinsics_start.setStyleSheet("")
+            self.ui.btn_cap_extrinsics_start.setText("Start")
+            # TIP: Voeg hier eventueel je code toe om de extrinsieke kalibratie te STOPPEN
+
+    def reset_calibration_buttons(self):
+        """Zet beide kalibratieknoppen terug in hun originele (niet-ingedrukte) staat."""
+        # Zet de check-status terug naar False
+        self.ui.btn_cap_intrinsics_start.setChecked(False)
+        self.ui.btn_cap_extrinsics_start.setChecked(False)
+        
+        # Herstel de stylesheet naar standaard (leeg)
+        self.ui.btn_cap_intrinsics_start.setStyleSheet("")
+        self.ui.btn_cap_extrinsics_start.setStyleSheet("")
+        
+        # Herstel de tekst naar 'Start'
+        self.ui.btn_cap_intrinsics_start.setText("Start")
+        self.ui.btn_cap_extrinsics_start.setText("Start")
+
+    def log_to_console(self, text):
+        """Hulpfunctie om tekst met een tijdstempel naar de console te sturen."""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
+        self.ui.plaintextedit_console.appendPlainText(f"{timestamp} {text}")
+
+    def calculate_intrinsics(self):
+        """Wordt uitgevoerd als je op Calculate bij Intrinsics drukt."""
+        # Log het startbericht naar de console
+        self.log_to_console("Systeem: Starten van berekening intrinsieke kalibratie...")
+        
+        # --- HIER KOMT DE ECHTE BEREKENING (OpenCV code) ---
+        # Bijvoorbeeld:
+        # success = self.logic.perform_intrinsics_math()
+        
+        # Voor nu simuleren we dat het gelukt is:
+        self.log_to_console("Systeem: Intrinsieke kalibratie succesvol afgerond!")
+
+    def calculate_extrinsics(self):
+        """Wordt uitgevoerd als je op Calculate bij Extrinsics drukt."""
+        # Log het startbericht naar de console
+        self.log_to_console("Systeem: Starten van berekening extrinsieke kalibratie...")
+        
+        # --- HIER KOMT DE ECHTE BEREKENING (OpenCV code) ---
+        
+        # Voor nu simuleren we dat het gelukt is:
+        self.log_to_console("Systeem: Extrinsieke kalibratie succesvol afgerond!")

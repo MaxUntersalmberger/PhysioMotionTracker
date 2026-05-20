@@ -43,7 +43,7 @@
     <item row="1" column="3" colspan="3">
      <widget class="QFrame" name="frame_pages">
       <property name="frameShape">
-       <enum>QFrame::NoFrame</enum>
+       <enum>QFrame::Shape::NoFrame</enum>
       </property>
       <layout class="QGridLayout" name="gridLayout_2">
        <item row="0" column="1">
@@ -127,16 +127,16 @@
            <item row="0" column="1">
             <widget class="QLabel" name="label_main_text">
              <property name="layoutDirection">
-              <enum>Qt::LeftToRight</enum>
+              <enum>Qt::LayoutDirection::LeftToRight</enum>
              </property>
              <property name="text">
               <string>Hallo!!</string>
              </property>
              <property name="textFormat">
-              <enum>Qt::PlainText</enum>
+              <enum>Qt::TextFormat::PlainText</enum>
              </property>
              <property name="alignment">
-              <set>Qt::AlignCenter</set>
+              <set>Qt::AlignmentFlag::AlignCenter</set>
              </property>
             </widget>
            </item>
@@ -153,10 +153,10 @@
               </sizepolicy>
              </property>
              <property name="frameShape">
-              <enum>QFrame::StyledPanel</enum>
+              <enum>QFrame::Shape::StyledPanel</enum>
              </property>
              <property name="frameShadow">
-              <enum>QFrame::Raised</enum>
+              <enum>QFrame::Shadow::Raised</enum>
              </property>
              <layout class="QGridLayout" name="gridLayout_9">
               <item row="4" column="0" rowspan="2">
@@ -168,10 +168,10 @@
                  </sizepolicy>
                 </property>
                 <property name="frameShape">
-                 <enum>QFrame::StyledPanel</enum>
+                 <enum>QFrame::Shape::StyledPanel</enum>
                 </property>
                 <property name="frameShadow">
-                 <enum>QFrame::Raised</enum>
+                 <enum>QFrame::Shadow::Raised</enum>
                 </property>
                 <layout class="QGridLayout" name="gridLayout_10">
                  <item row="0" column="0">
@@ -182,44 +182,20 @@
                   </widget>
                  </item>
                  <item row="2" column="0">
-                  <widget class="QPushButton" name="btn_cap_capture_frame_intrinsics">
+                  <widget class="QPushButton" name="btn_cap_calculate_intrinsics">
                    <property name="text">
-                    <string>Capture Frame Intrinsics</string>
+                    <string>Calculate</string>
                    </property>
                   </widget>
                  </item>
                  <item row="1" column="0">
-                  <widget class="QCheckBox" name="check_cap_auto_capture">
+                  <widget class="QPushButton" name="btn_cap_intrinsics_start">
                    <property name="text">
-                    <string>Auto-Capture (Toggle)</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="4" column="0">
-                  <widget class="QPushButton" name="btn_cap_calculate_intrinsics">
-                   <property name="text">
-                    <string>Calculate Intrinsics</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="0">
-                  <widget class="QLabel" name="lab_cap_intrinsics_number_good_captures">
-                   <property name="text">
-                    <string>Number of good Captures: 0/20</string>
+                    <string>Start</string>
                    </property>
                   </widget>
                  </item>
                 </layout>
-               </widget>
-              </item>
-              <item row="0" column="1">
-               <widget class="QSpinBox" name="spin_cap_fps">
-                <property name="maximum">
-                 <number>120</number>
-                </property>
-                <property name="value">
-                 <number>30</number>
-                </property>
                </widget>
               </item>
               <item row="0" column="0">
@@ -227,61 +203,6 @@
                 <property name="text">
                  <string>FPS</string>
                 </property>
-               </widget>
-              </item>
-              <item row="4" column="1" rowspan="2">
-               <widget class="QFrame" name="frame_3">
-                <property name="sizePolicy">
-                 <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                  <horstretch>0</horstretch>
-                  <verstretch>0</verstretch>
-                 </sizepolicy>
-                </property>
-                <property name="frameShape">
-                 <enum>QFrame::StyledPanel</enum>
-                </property>
-                <property name="frameShadow">
-                 <enum>QFrame::Raised</enum>
-                </property>
-                <layout class="QGridLayout" name="gridLayout_11">
-                 <item row="2" column="0">
-                  <widget class="QPushButton" name="btn_cap_capture_extrinsics">
-                   <property name="text">
-                    <string>Capture Extrinsics</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="4" column="0">
-                  <widget class="QPushButton" name="btn_cap_calculate_extrinsics">
-                   <property name="text">
-                    <string>Calculate Extrinsics</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="1" column="0">
-                  <widget class="QLabel" name="lab_cap_extrinsics">
-                   <property name="sizePolicy">
-                    <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                     <horstretch>0</horstretch>
-                     <verstretch>0</verstretch>
-                    </sizepolicy>
-                   </property>
-                   <property name="text">
-                    <string>Extrinsics</string>
-                   </property>
-                   <property name="alignment">
-                    <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="3" column="0">
-                  <widget class="QLabel" name="label_2">
-                   <property name="text">
-                    <string>Number of good Captures: 0/1</string>
-                   </property>
-                  </widget>
-                 </item>
-                </layout>
                </widget>
               </item>
               <item row="10" column="0" colspan="2">
@@ -312,10 +233,68 @@
                 </item>
                </widget>
               </item>
+              <item row="4" column="1" rowspan="2">
+               <widget class="QFrame" name="frame_3">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="frameShape">
+                 <enum>QFrame::Shape::StyledPanel</enum>
+                </property>
+                <property name="frameShadow">
+                 <enum>QFrame::Shadow::Raised</enum>
+                </property>
+                <layout class="QGridLayout" name="gridLayout_11">
+                 <item row="3" column="0">
+                  <widget class="QPushButton" name="btn_cap_calculate_extrinsics">
+                   <property name="text">
+                    <string>Calculate</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="0">
+                  <widget class="QLabel" name="lab_cap_extrinsics">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="text">
+                    <string>Extrinsics</string>
+                   </property>
+                   <property name="alignment">
+                    <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="0">
+                  <widget class="QPushButton" name="btn_cap_extrinsics_start">
+                   <property name="text">
+                    <string>Start</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </widget>
+              </item>
               <item row="2" column="0" colspan="2">
-               <widget class="QPushButton" name="ptn_cap_startstop">
+               <widget class="QPushButton" name="ptn_cap_recording_start">
                 <property name="text">
                  <string>I/O</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QSpinBox" name="spin_cap_fps">
+                <property name="maximum">
+                 <number>120</number>
+                </property>
+                <property name="value">
+                 <number>30</number>
                 </property>
                </widget>
               </item>
@@ -325,7 +304,7 @@
            <item row="1" column="0" colspan="2">
             <widget class="QFrame" name="frame_cam">
              <property name="frameShape">
-              <enum>QFrame::NoFrame</enum>
+              <enum>QFrame::Shape::NoFrame</enum>
              </property>
              <layout class="QGridLayout" name="gridLayout_6"/>
             </widget>
@@ -358,7 +337,7 @@
            <item row="0" column="0">
             <widget class="QFrame" name="frame_directory">
              <property name="frameShape">
-              <enum>QFrame::NoFrame</enum>
+              <enum>QFrame::Shape::NoFrame</enum>
              </property>
             </widget>
            </item>
@@ -398,7 +377,7 @@
        </size>
       </property>
       <property name="frameShape">
-       <enum>QFrame::NoFrame</enum>
+       <enum>QFrame::Shape::NoFrame</enum>
       </property>
       <layout class="QVBoxLayout" name="verticalLayout">
        <item>
@@ -416,7 +395,7 @@
           </size>
          </property>
          <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
+          <enum>QFrame::Shape::NoFrame</enum>
          </property>
          <property name="text">
           <string/>
@@ -431,16 +410,22 @@
          <property name="enabled">
           <bool>true</bool>
          </property>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="minimumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>16777215</width>
+           <height>16777215</height>
           </size>
          </property>
          <property name="mouseTracking">
@@ -453,16 +438,22 @@
        </item>
        <item>
         <widget class="QPushButton" name="btn_cameras">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="minimumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>16777215</width>
+           <height>16777215</height>
           </size>
          </property>
          <property name="mouseTracking">
@@ -476,16 +467,22 @@ Kalibratie</string>
        </item>
        <item>
         <widget class="QPushButton" name="btn_results">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="minimumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>16777215</width>
+           <height>16777215</height>
           </size>
          </property>
          <property name="sizeIncrement">
@@ -505,16 +502,22 @@ Export</string>
        </item>
        <item>
         <widget class="QPushButton" name="btn_directory">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="minimumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>16777215</width>
+           <height>16777215</height>
           </size>
          </property>
          <property name="sizeIncrement">
@@ -533,16 +536,22 @@ Export</string>
        </item>
        <item>
         <widget class="QPushButton" name="btn_diagnostics">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="minimumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>16777215</width>
+           <height>16777215</height>
           </size>
          </property>
          <property name="mouseTracking">
@@ -555,16 +564,22 @@ Export</string>
        </item>
        <item>
         <widget class="QPushButton" name="btn_advanced_settings">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="minimumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>0</width>
+           <height>0</height>
           </size>
          </property>
          <property name="maximumSize">
           <size>
-           <width>80</width>
-           <height>80</height>
+           <width>16777215</width>
+           <height>16777215</height>
           </size>
          </property>
          <property name="text">
@@ -576,7 +591,7 @@ instellingen</string>
        <item>
         <spacer name="verticalSpacer">
          <property name="orientation">
-          <enum>Qt::Vertical</enum>
+          <enum>Qt::Orientation::Vertical</enum>
          </property>
          <property name="sizeHint" stdset="0">
           <size>
@@ -597,7 +612,7 @@ instellingen</string>
      <x>0</x>
      <y>0</y>
      <width>988</width>
-     <height>21</height>
+     <height>33</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
