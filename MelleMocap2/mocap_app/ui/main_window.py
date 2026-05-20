@@ -80,10 +80,7 @@ class MainWindow(QMainWindow):
             selected=self._calibration_pattern,
         )
         self._calibration_panel.set_workflow_mode("intrinsics")
-        self._calibration_panel.set_sync_threshold_values(
-            min_quality=self._calibration_manager.sync_min_quality_score,
-            min_coverage_ratio=self._calibration_manager.sync_min_coverage_ratio,
-        )
+        self._refresh_threshold_controls_for_mode()
 
         self._load_existing_calibration()
         self._seed_startup_source_slots()
@@ -127,7 +124,7 @@ class MainWindow(QMainWindow):
         self._calibration_panel.load_profile_requested.connect(self._on_load_calibration_profile)
         self._calibration_panel.undistort_toggled.connect(self._on_undistort_toggle_changed)
         self._calibration_panel.pattern_changed.connect(self._on_calibration_pattern_changed)
-        self._calibration_panel.sync_thresholds_changed.connect(self._on_sync_thresholds_changed)
+        self._calibration_panel.acceptance_thresholds_changed.connect(self._on_acceptance_thresholds_changed)
         self._calibration_panel.workflow_mode_changed.connect(self._on_calibration_workflow_mode_changed)
 
     def _set_display_timer_hz(self, hz: float) -> None:
@@ -289,10 +286,15 @@ class MainWindow(QMainWindow):
             )
         else:
             warnings.append(
-                "Workflow mode: Intrinsics. Captures are stored per camera using strict intrinsics thresholds."
+                "Workflow mode: Intrinsics. Captures are stored per camera using the configured intrinsics thresholds."
             )
         warnings.append(
-            "Synchronized capture thresholds: "
+            "Intrinsics thresholds: "
+            f"quality >= {self._calibration_manager.min_quality_score:.2f}, "
+            f"coverage >= {self._calibration_manager.min_coverage_ratio * 100.0:.1f}%."
+        )
+        warnings.append(
+            "Sync thresholds: "
             f"quality >= {self._calibration_manager.sync_min_quality_score:.2f}, "
             f"coverage >= {self._calibration_manager.sync_min_coverage_ratio * 100.0:.1f}%."
         )
@@ -305,6 +307,18 @@ class MainWindow(QMainWindow):
 
     def _calibration_workflow_mode(self) -> str:
         return self._calibration_panel.current_workflow_mode()
+
+    def _refresh_threshold_controls_for_mode(self) -> None:
+        if self._calibration_workflow_mode() == "sync_extrinsics":
+            self._calibration_panel.set_acceptance_threshold_values(
+                min_quality=self._calibration_manager.sync_min_quality_score,
+                min_coverage_ratio=self._calibration_manager.sync_min_coverage_ratio,
+            )
+            return
+        self._calibration_panel.set_acceptance_threshold_values(
+            min_quality=self._calibration_manager.min_quality_score,
+            min_coverage_ratio=self._calibration_manager.min_coverage_ratio,
+        )
 
     def _auto_capture_idle_text(self) -> str:
         if self._calibration_workflow_mode() == "sync_extrinsics":
@@ -347,6 +361,7 @@ class MainWindow(QMainWindow):
                     previews[source_id] = self._calibration_manager.draw_detection_overlay(
                         preview,
                         detection=detection,
+                        sample_count=sample_counts.get(source_id, 0),
                     )
 
             self._latest_calibration_detections = detections
@@ -361,6 +376,7 @@ class MainWindow(QMainWindow):
                     previews[source_id] = self._calibration_manager.draw_detection_overlay(
                         preview,
                         detection=detection,
+                        sample_count=sample_counts.get(source_id, 0),
                     )
         elif not detection_needed and self._latest_calibration_detections:
             self._latest_calibration_detections.clear()
@@ -481,6 +497,7 @@ class MainWindow(QMainWindow):
             preview,
             detection=detection,
             accepted=accepted,
+            sample_count=self._calibration_manager.observation_count(source_id, include_sync_only=False),
         )
 
     def _apply_calibration_capture_feedback(
@@ -782,21 +799,32 @@ class MainWindow(QMainWindow):
             )
         else:
             message = (
-                "Calibration workflow set to Intrinsics: strict per-camera samples are stored for intrinsics solve."
+                "Calibration workflow set to Intrinsics: per-camera samples use the intrinsics thresholds."
             )
+        self._refresh_threshold_controls_for_mode()
         self._calibration_panel.show_feedback(message, success=True)
         self._refresh_calibration_panel(force=True)
         self._update_calibration_preview(force=True)
 
-    def _on_sync_thresholds_changed(self, min_quality: float, min_coverage_ratio: float) -> None:
-        self._calibration_manager.set_sync_acceptance_thresholds(
-            min_quality_score=min_quality,
-            min_coverage_ratio=min_coverage_ratio,
-        )
-        message = (
-            "Synchronized capture thresholds updated (used in Sync / Extrinsics mode): "
-            f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
-        )
+    def _on_acceptance_thresholds_changed(self, min_quality: float, min_coverage_ratio: float) -> None:
+        if self._calibration_workflow_mode() == "sync_extrinsics":
+            self._calibration_manager.set_sync_acceptance_thresholds(
+                min_quality_score=min_quality,
+                min_coverage_ratio=min_coverage_ratio,
+            )
+            message = (
+                "Sync thresholds updated: "
+                f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
+            )
+        else:
+            self._calibration_manager.set_intrinsics_acceptance_thresholds(
+                min_quality_score=min_quality,
+                min_coverage_ratio=min_coverage_ratio,
+            )
+            message = (
+                "Intrinsics thresholds updated: "
+                f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
+            )
         self._calibration_panel.show_feedback(message, success=True)
         self._refresh_calibration_panel(force=True)
         self._update_calibration_preview(force=True)

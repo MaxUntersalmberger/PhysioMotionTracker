@@ -200,7 +200,7 @@ class CalibrationPanelWidget(QWidget):
     load_profile_requested = Signal()
     undistort_toggled = Signal(str, bool)
     pattern_changed = Signal(str)
-    sync_thresholds_changed = Signal(float, float)
+    acceptance_thresholds_changed = Signal(float, float)
     workflow_mode_changed = Signal(str)
 
     def __init__(self, default_camera_csv: str = "0,1", default_fps: float = 20.0) -> None:
@@ -285,6 +285,8 @@ class CalibrationPanelWidget(QWidget):
         self._sync_coverage_spin.setSingleStep(0.2)
         self._sync_coverage_spin.setSuffix(" %")
         self._sync_coverage_spin.setValue(1.8)
+        self._threshold_quality_label = QLabel("Intrinsics Min Quality")
+        self._threshold_coverage_label = QLabel("Intrinsics Min Coverage")
         self._auto_status = QLabel("Auto capture off.")
         self._auto_status.setStyleSheet("color: #475569;")
 
@@ -351,9 +353,9 @@ class CalibrationPanelWidget(QWidget):
         auto_toolbar.addWidget(QLabel("Cooldown (s)"))
         auto_toolbar.addWidget(self._auto_capture_cooldown_spin)
         auto_toolbar.addWidget(self._relaxed_sync_checkbox)
-        auto_toolbar.addWidget(QLabel("Sync Min Quality"))
+        auto_toolbar.addWidget(self._threshold_quality_label)
         auto_toolbar.addWidget(self._sync_quality_spin)
-        auto_toolbar.addWidget(QLabel("Sync Min Coverage"))
+        auto_toolbar.addWidget(self._threshold_coverage_label)
         auto_toolbar.addWidget(self._sync_coverage_spin)
         auto_toolbar.addWidget(self._auto_status, stretch=1)
         auto_toolbar.addStretch(1)
@@ -422,8 +424,8 @@ class CalibrationPanelWidget(QWidget):
         self._pattern_combo.currentIndexChanged.connect(self._emit_pattern_changed)
         self._workflow_mode_combo.currentIndexChanged.connect(self._emit_workflow_mode_changed)
         self._overlay_checkbox.toggled.connect(self._emit_runtime_tuning_changed)
-        self._sync_quality_spin.valueChanged.connect(self._emit_sync_thresholds_changed)
-        self._sync_coverage_spin.valueChanged.connect(self._emit_sync_thresholds_changed)
+        self._sync_quality_spin.valueChanged.connect(self._emit_acceptance_thresholds_changed)
+        self._sync_coverage_spin.valueChanged.connect(self._emit_acceptance_thresholds_changed)
         self._apply_workflow_mode_ui()
 
         for widget in [
@@ -604,7 +606,7 @@ class CalibrationPanelWidget(QWidget):
     def set_auto_capture_status(self, message: str) -> None:
         self._auto_status.setText(message)
 
-    def set_sync_threshold_values(self, min_quality: float, min_coverage_ratio: float) -> None:
+    def set_acceptance_threshold_values(self, min_quality: float, min_coverage_ratio: float) -> None:
         self._sync_quality_spin.blockSignals(True)
         self._sync_coverage_spin.blockSignals(True)
         self._sync_quality_spin.setValue(min_quality)
@@ -612,7 +614,7 @@ class CalibrationPanelWidget(QWidget):
         self._sync_quality_spin.blockSignals(False)
         self._sync_coverage_spin.blockSignals(False)
 
-    def sync_threshold_values(self) -> tuple[float, float]:
+    def acceptance_threshold_values(self) -> tuple[float, float]:
         return float(self._sync_quality_spin.value()), float(self._sync_coverage_spin.value()) / 100.0
 
     def set_pattern_options(self, pattern_names: list[str], selected: str) -> None:
@@ -747,9 +749,9 @@ class CalibrationPanelWidget(QWidget):
     def _emit_pattern_changed(self) -> None:
         self.pattern_changed.emit(self.current_pattern())
 
-    def _emit_sync_thresholds_changed(self) -> None:
-        quality, coverage_ratio = self.sync_threshold_values()
-        self.sync_thresholds_changed.emit(quality, coverage_ratio)
+    def _emit_acceptance_thresholds_changed(self) -> None:
+        quality, coverage_ratio = self.acceptance_threshold_values()
+        self.acceptance_thresholds_changed.emit(quality, coverage_ratio)
 
     def _emit_runtime_tuning_changed(self) -> None:
         self.runtime_tuning_changed.emit(self.runtime_tuning())
@@ -773,10 +775,12 @@ class CalibrationPanelWidget(QWidget):
         mode = self.current_workflow_mode()
         sync_controls_enabled = mode == "sync_extrinsics"
         self._relaxed_sync_checkbox.setEnabled(sync_controls_enabled)
-        self._sync_quality_spin.setEnabled(sync_controls_enabled)
-        self._sync_coverage_spin.setEnabled(sync_controls_enabled)
 
         if mode == "sync_extrinsics":
             self._capture_button.setText("Capture Sync Set(s)")
+            self._threshold_quality_label.setText("Sync Min Quality")
+            self._threshold_coverage_label.setText("Sync Min Coverage")
         else:
             self._capture_button.setText("Capture Intrinsics Sample(s)")
+            self._threshold_quality_label.setText("Intrinsics Min Quality")
+            self._threshold_coverage_label.setText("Intrinsics Min Coverage")

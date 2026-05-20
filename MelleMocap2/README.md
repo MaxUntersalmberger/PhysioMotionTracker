@@ -8,6 +8,7 @@ PySide6 desktopapp voor camera-kalibratie. De applicatie is bewust ingeperkt tot
 - camera detectie/scannen
 - checkerboard- en Charuco-detectie wanneer OpenCV dat ondersteunt
 - intrinsics sample capture met kwaliteitscontrole
+- instelbare quality- en coverage-thresholds voor intrinsics en sync capture
 - intrinsics solve met reprojection error
 - undistortion preview per camera
 - gesynchroniseerde multi-camera extrinsics solve
@@ -41,12 +42,13 @@ python run.py
 5. Kies `Chessboard` of `Charuco`.
 6. Beweeg het kalibratiebord door verschillende posities, hoeken en afstanden.
 7. Klik `Capture Intrinsics Sample(s)` of zet `Auto Capture Valid Samples` aan.
-8. Klik `Solve Intrinsics`.
-9. Gebruik `Sync / Extrinsics` en `Solve Extrinsics` voor multi-camera extrinsics.
-10. Sla het profiel op met `Save Profile`.
-11. Zet `Show Detection Overlay` uit als de live preview sneller moet blijven reageren.
-12. Klik `Open Window` op een camera-preview als je de feed groter in een los venster wilt zien.
-13. Klik `New Project` om samples, geladen kalibratie en de automatisch herlaadde huidige kalibratie te wissen.
+8. Verlaag eventueel `Intrinsics Min Quality` of `Intrinsics Min Coverage` als captures te streng worden afgekeurd.
+9. Klik `Solve Intrinsics`.
+10. Gebruik `Sync / Extrinsics` en `Solve Extrinsics` voor multi-camera extrinsics.
+11. Sla het profiel op met `Save Profile`.
+12. Zet `Show Detection Overlay` uit als de live preview sneller moet blijven reageren.
+13. Klik `Open Window` op een camera-preview als je de feed groter in een los venster wilt zien.
+14. Klik `New Project` om samples, geladen kalibratie en de automatisch herlaadde huidige kalibratie te wissen.
 
 ## Projectstructuur
 

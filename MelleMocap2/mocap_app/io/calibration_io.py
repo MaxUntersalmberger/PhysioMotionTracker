@@ -245,6 +245,14 @@ class CalibrationManager:
         self._sync_min_quality_score = float(np.clip(min_quality_score, 0.0, 1.0))
         self._sync_min_coverage_ratio = float(np.clip(min_coverage_ratio, 0.0, 1.0))
 
+    def set_intrinsics_acceptance_thresholds(
+        self,
+        min_quality_score: float,
+        min_coverage_ratio: float,
+    ) -> None:
+        self._min_quality_score = float(np.clip(min_quality_score, 0.0, 1.0))
+        self._min_coverage_ratio = float(np.clip(min_coverage_ratio, 0.0, 1.0))
+
     def reset(self) -> None:
         """Remove all captured calibration samples."""
         self._samples.clear()
@@ -1468,6 +1476,7 @@ class CalibrationManager:
         frame_bgr: U8Array,
         detection: ChessboardDetectionResult,
         accepted: bool | None = None,
+        sample_count: int | None = None,
     ) -> U8Array:
         """Render detection and diagnostics overlay for calibration preview."""
         rendered = frame_bgr.copy()
@@ -1493,10 +1502,12 @@ class CalibrationManager:
         if accepted is False:
             color = (60, 100, 255)
 
+        sample_text = f" | samples={sample_count}" if sample_count is not None else ""
         cv2.putText(
             rendered,
             (
-                f"{detection.pattern_type} | {status_text} | corners={detection.detected_corners} "
+                f"{detection.source_id}{sample_text} | {detection.pattern_type} | {status_text} "
+                f"| corners={detection.detected_corners} "
                 f"| q={detection.quality_score:.2f} c={detection.coverage_ratio * 100:.1f}%"
             ),
             (12, 22),
