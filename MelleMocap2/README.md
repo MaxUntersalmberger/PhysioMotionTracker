@@ -7,6 +7,7 @@ PySide6 desktopapp voor camera-kalibratie. De applicatie is bewust ingeperkt tot
 - optionele detectie-overlay zodat live preview sneller kan blijven
 - camera detectie/scannen
 - checkerboard- en Charuco-detectie wanneer OpenCV dat ondersteunt
+- expliciete board-instellingen voor chessboard en ChArUco
 - intrinsics sample capture met kwaliteitscontrole
 - instelbare quality- en coverage-thresholds voor intrinsics en sync capture
 - intrinsics solve met reprojection error
@@ -14,6 +15,7 @@ PySide6 desktopapp voor camera-kalibratie. De applicatie is bewust ingeperkt tot
 - gesynchroniseerde multi-camera extrinsics solve
 - kalibratieprofielen laden en opslaan als JSON
 - een nieuw project starten om alle actieve kalibratie te vergeten
+- JSON-profielen bevatten units en validatiehints in `metadata.units` en `metadata.validation_guidance`
 
 Opname, mocap-reconstructie, pose-detectie, sessie-playback en analyse zijn niet meer bereikbaar vanuit de app.
 
@@ -40,15 +42,17 @@ python run.py
 3. Kies FPS, resolutie en detectiefrequentie.
 4. Klik `Start Live`.
 5. Kies `Chessboard` of `Charuco`.
-6. Beweeg het kalibratiebord door verschillende posities, hoeken en afstanden.
-7. Klik `Capture Intrinsics Sample(s)` of zet `Auto Capture Valid Samples` aan.
-8. Verlaag eventueel `Intrinsics Min Quality` of `Intrinsics Min Coverage` als captures te streng worden afgekeurd.
-9. Klik `Solve Intrinsics`.
-10. Gebruik `Sync / Extrinsics` en `Solve Extrinsics` voor multi-camera extrinsics.
-11. Sla het profiel op met `Save Profile`.
-12. Zet `Show Detection Overlay` uit als de live preview sneller moet blijven reageren.
-13. Klik `Open Window` op een camera-preview als je de feed groter in een los venster wilt zien.
-14. Klik `New Project` om samples, geladen kalibratie en de automatisch herlaadde huidige kalibratie te wissen.
+6. Vul de echte board-instellingen in en klik `Apply Board Settings`.
+7. Beweeg het kalibratiebord door verschillende posities, hoeken en afstanden.
+8. Klik `Capture Intrinsics Sample(s)` of zet `Auto Capture Valid Samples` aan.
+9. Stel eventueel `Max Samples` in om auto-capture vanzelf te laten stoppen.
+10. Verlaag eventueel `Intrinsics Min Quality` of `Intrinsics Min Coverage` als captures te streng worden afgekeurd.
+11. Klik `Solve Intrinsics`.
+12. Gebruik `Sync / Extrinsics` en `Solve Extrinsics` voor multi-camera extrinsics.
+13. Sla het profiel op met `Save Profile`.
+14. Zet `Show Detection Overlay` uit als de live preview sneller moet blijven reageren.
+15. Klik `Open Window` op een camera-preview als je de feed groter in een los venster wilt zien.
+16. Klik `New Project` om samples, geladen kalibratie en de automatisch herlaadde huidige kalibratie te wissen.
 
 ## Projectstructuur
 

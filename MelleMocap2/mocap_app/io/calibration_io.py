@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from mocap_app.models.types import CalibrationBundle, CameraCalibration
+from mocap_app.models.types import CalibrationBoardSettings, CalibrationBundle, CameraCalibration
 
 
 LOGGER = logging.getLogger(__name__)
@@ -207,6 +207,41 @@ class CalibrationManager:
     def square_size_m(self) -> float:
         return self._square_size_m
 
+    def board_settings(self) -> CalibrationBoardSettings:
+        return CalibrationBoardSettings(
+            chessboard_cols=self._board_shape[0],
+            chessboard_rows=self._board_shape[1],
+            chessboard_square_size_m=self._square_size_m,
+            charuco_squares_x=self._charuco_squares_x,
+            charuco_squares_y=self._charuco_squares_y,
+            charuco_square_size_m=self._charuco_square_size_m,
+            charuco_marker_size_m=self._charuco_marker_size_m,
+        )
+
+    def apply_board_settings(self, settings: CalibrationBoardSettings) -> bool:
+        current = self.board_settings()
+        if current == settings:
+            return False
+
+        self._board_shape = (
+            max(2, int(settings.chessboard_cols)),
+            max(2, int(settings.chessboard_rows)),
+        )
+        self._square_size_m = max(0.0001, float(settings.chessboard_square_size_m))
+        self._charuco_squares_x = max(2, int(settings.charuco_squares_x))
+        self._charuco_squares_y = max(2, int(settings.charuco_squares_y))
+        self._charuco_square_size_m = max(0.0001, float(settings.charuco_square_size_m))
+        self._charuco_marker_size_m = max(0.0001, float(settings.charuco_marker_size_m))
+        if self._charuco_marker_size_m >= self._charuco_square_size_m:
+            self._charuco_marker_size_m = self._charuco_square_size_m * 0.75
+
+        self._object_template = self._build_object_points()
+        self._charuco_dict = None
+        self._charuco_board = None
+        self._init_charuco()
+        self.reset_all()
+        return True
+
     @property
     def min_samples_per_camera(self) -> int:
         return self._min_samples_per_camera
@@ -336,6 +371,35 @@ class CalibrationManager:
             self._charuco_available = False
             self._charuco_dict = None
             self._charuco_board = None
+
+    def _metadata_units(self) -> dict[str, str]:
+        return {
+            "all_length_fields": "meters",
+            "calibration_board.square_size_m": "meters",
+            "calibration_board.marker_size_m": "meters",
+            "cameras.*.intrinsics": "pixels",
+            "cameras.*.distortion": "unitless OpenCV distortion coefficients",
+            "cameras.*.rotation": "unitless 3x3 row-major world-to-camera rotation matrix",
+            "cameras.*.translation": "meters, world-to-camera translation",
+            "cameras.*.reprojection_error": "pixels",
+            "metadata.extrinsics.*.baseline_m": "meters",
+            "metadata.extrinsics.*.stereo_rms": "pixels",
+            "image_size": "pixels [width, height]",
+        }
+
+    def _metadata_validation_guidance(self) -> list[str]:
+        return [
+            "Measure the printed calibration board with a ruler or caliper. ChArUco square_size_m is one full square edge in meters; marker_size_m is the black marker edge in meters.",
+            "Measure camera lens-center to lens-center distance and compare it with metadata.extrinsics.<camera>.baseline_m. A large scale mismatch usually means the board square/marker size was entered incorrectly.",
+            "Check cameras.*.reprojection_error and metadata.extrinsics.*.stereo_rms in pixels. Values below about 1 px are usually a good sign; higher values suggest blur, weak coverage, wrong board settings, or mismatched samples.",
+            "Move the board through the full image area and multiple angles. Low coverage warnings mean the calibration may fit the center but extrapolate poorly near the edges.",
+            "Confirm the active_pattern and calibration_board block match the physical board before trusting translation or baseline values in meters.",
+        ]
+
+    def _attach_metadata_help(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        metadata["units"] = self._metadata_units()
+        metadata["validation_guidance"] = self._metadata_validation_guidance()
+        return metadata
 
     def detect_pattern(
         self,
@@ -960,10 +1024,12 @@ class CalibrationManager:
         """Solve intrinsics per camera and include diagnostics/reprojection metrics."""
         cameras: dict[str, CameraCalibration] = {}
         notes: list[str] = []
+        used_pattern_types: set[str] = set()
 
         for source_id in self.sources():
             all_samples = self._samples.get(source_id, [])
             samples = [sample for sample in all_samples if sample.accepted_for_intrinsics]
+            used_pattern_types.update(sample.pattern_type for sample in samples)
             diagnostics: list[str] = []
             image_sizes = {sample.image_size for sample in all_samples}
             sample_count = len(samples)
@@ -1145,23 +1211,56 @@ class CalibrationManager:
             "provided separately from intrinsics solve."
         )
 
+        if len(used_pattern_types) == 1:
+            active_pattern = next(iter(used_pattern_types))
+        elif used_pattern_types:
+            active_pattern = "mixed"
+        else:
+            active_pattern = self._default_pattern
+
+        if active_pattern == "charuco":
+            calibration_board = {
+                "type": "charuco",
+                "squares": [self._charuco_squares_x, self._charuco_squares_y],
+                "square_size_m": self._charuco_square_size_m,
+                "marker_size_m": self._charuco_marker_size_m,
+            }
+        elif active_pattern == "chessboard":
+            calibration_board = {
+                "type": "chessboard",
+                "inner_corners": list(self._board_shape),
+                "square_size_m": self._square_size_m,
+            }
+        else:
+            calibration_board = {
+                "type": "mixed",
+                "chessboard": {
+                    "inner_corners": list(self._board_shape),
+                    "square_size_m": self._square_size_m,
+                },
+                "charuco": {
+                    "squares": [self._charuco_squares_x, self._charuco_squares_y],
+                    "square_size_m": self._charuco_square_size_m,
+                    "marker_size_m": self._charuco_marker_size_m,
+                },
+            }
+
         bundle = CalibrationBundle(
             cameras=cameras,
             notes=notes,
-            metadata={
-                "schema_version": CALIBRATION_SCHEMA_VERSION,
-                "board_shape": self._board_shape,
-                "square_size_m": self._square_size_m,
-                "min_samples_per_camera": self._min_samples_per_camera,
-                "min_quality_score": self._min_quality_score,
-                "min_coverage_ratio": self._min_coverage_ratio,
-                "charuco_available": self._charuco_available and self._charuco_board is not None,
-                "charuco_squares_x": self._charuco_squares_x,
-                "charuco_squares_y": self._charuco_squares_y,
-                "charuco_square_size_m": self._charuco_square_size_m,
-                "charuco_marker_size_m": self._charuco_marker_size_m,
-                "solved_at_iso": datetime.now().isoformat(),
-            },
+            metadata=self._attach_metadata_help(
+                {
+                    "schema_version": CALIBRATION_SCHEMA_VERSION,
+                    "active_pattern": active_pattern,
+                    "pattern_types": sorted(used_pattern_types),
+                    "calibration_board": calibration_board,
+                    "min_samples_per_camera": self._min_samples_per_camera,
+                    "min_quality_score": self._min_quality_score,
+                    "min_coverage_ratio": self._min_coverage_ratio,
+                    "charuco_available": self._charuco_available and self._charuco_board is not None,
+                    "solved_at_iso": datetime.now().isoformat(),
+                }
+            ),
         )
         self._last_solution = bundle
         return bundle
@@ -1325,6 +1424,7 @@ class CalibrationManager:
         working_bundle.metadata["extrinsics"] = metadata_extrinsics
         working_bundle.metadata["extrinsics_reference_source_id"] = reference_id
         working_bundle.metadata["extrinsics_solved_at_iso"] = solved_at_iso
+        self._attach_metadata_help(working_bundle.metadata)
         working_bundle.notes = self._dedupe_strings(notes)
         self._last_solution = working_bundle
         return working_bundle

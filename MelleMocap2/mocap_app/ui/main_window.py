@@ -15,6 +15,7 @@ from mocap_app.io.calibration_io import (
     ChessboardDetectionResult,
 )
 from mocap_app.models.types import (
+    CalibrationBoardSettings,
     CalibrationBundle,
     CameraProbeResult,
     CameraSourceConfig,
@@ -22,6 +23,7 @@ from mocap_app.models.types import (
     RuntimeTuning,
 )
 from mocap_app.ui.widgets.calibration_panel import CalibrationPanelWidget
+from mocap_app.workers.calibration_solve_worker import IntrinsicsSolveWorker
 from mocap_app.workers.camera_probe_worker import CameraProbeWorker
 from mocap_app.workers.capture_worker import LiveCaptureWorker
 
@@ -52,6 +54,7 @@ class MainWindow(QMainWindow):
 
         self._live_worker: LiveCaptureWorker | None = None
         self._camera_probe_worker: CameraProbeWorker | None = None
+        self._intrinsics_solve_worker: IntrinsicsSolveWorker | None = None
         self._active_sources: list[CameraSourceConfig] = []
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
@@ -79,6 +82,7 @@ class MainWindow(QMainWindow):
             pattern_names=self._calibration_manager.available_patterns(),
             selected=self._calibration_pattern,
         )
+        self._calibration_panel.set_board_settings(self._calibration_manager.board_settings())
         self._calibration_panel.set_workflow_mode("intrinsics")
         self._refresh_threshold_controls_for_mode()
 
@@ -124,6 +128,7 @@ class MainWindow(QMainWindow):
         self._calibration_panel.load_profile_requested.connect(self._on_load_calibration_profile)
         self._calibration_panel.undistort_toggled.connect(self._on_undistort_toggle_changed)
         self._calibration_panel.pattern_changed.connect(self._on_calibration_pattern_changed)
+        self._calibration_panel.board_settings_applied.connect(self._on_board_settings_applied)
         self._calibration_panel.acceptance_thresholds_changed.connect(self._on_acceptance_thresholds_changed)
         self._calibration_panel.workflow_mode_changed.connect(self._on_calibration_workflow_mode_changed)
 
@@ -200,6 +205,8 @@ class MainWindow(QMainWindow):
 
     def _load_existing_calibration(self) -> None:
         bundle = self._calibration_repo.load(self._calibration_path)
+        if bundle is not None:
+            self._apply_board_settings_from_bundle_metadata(bundle)
         self._set_current_calibration_bundle(bundle)
         if bundle is not None:
             self._set_status(f"Loaded calibration: {self._calibration_path.name}")
@@ -208,6 +215,73 @@ class MainWindow(QMainWindow):
         self._current_calibration_bundle = bundle
         self._calibration_loaded = bundle is not None
         self._refresh_calibration_panel(force=True)
+
+    def _board_settings_from_metadata(self, metadata: dict[str, Any]) -> CalibrationBoardSettings | None:
+        try:
+            board = metadata.get("calibration_board")
+            if isinstance(board, dict):
+                active_type = str(board.get("type", "")).lower().strip()
+                current = self._calibration_manager.board_settings()
+                if active_type == "charuco":
+                    squares = board.get("squares", [current.charuco_squares_x, current.charuco_squares_y])
+                    return CalibrationBoardSettings(
+                        chessboard_cols=current.chessboard_cols,
+                        chessboard_rows=current.chessboard_rows,
+                        chessboard_square_size_m=current.chessboard_square_size_m,
+                        charuco_squares_x=int(squares[0]),
+                        charuco_squares_y=int(squares[1]),
+                        charuco_square_size_m=float(board.get("square_size_m", current.charuco_square_size_m)),
+                        charuco_marker_size_m=float(board.get("marker_size_m", current.charuco_marker_size_m)),
+                    )
+                if active_type == "chessboard":
+                    corners = board.get("inner_corners", [current.chessboard_cols, current.chessboard_rows])
+                    return CalibrationBoardSettings(
+                        chessboard_cols=int(corners[0]),
+                        chessboard_rows=int(corners[1]),
+                        chessboard_square_size_m=float(board.get("square_size_m", current.chessboard_square_size_m)),
+                        charuco_squares_x=current.charuco_squares_x,
+                        charuco_squares_y=current.charuco_squares_y,
+                        charuco_square_size_m=current.charuco_square_size_m,
+                        charuco_marker_size_m=current.charuco_marker_size_m,
+                    )
+                if active_type == "mixed":
+                    chessboard = board.get("chessboard", {})
+                    charuco = board.get("charuco", {})
+                    corners = chessboard.get("inner_corners", [9, 6])
+                    squares = charuco.get("squares", [5, 7])
+                    return CalibrationBoardSettings(
+                        chessboard_cols=int(corners[0]),
+                        chessboard_rows=int(corners[1]),
+                        chessboard_square_size_m=float(chessboard.get("square_size_m", 0.024)),
+                        charuco_squares_x=int(squares[0]),
+                        charuco_squares_y=int(squares[1]),
+                        charuco_square_size_m=float(charuco.get("square_size_m", 0.032)),
+                        charuco_marker_size_m=float(charuco.get("marker_size_m", 0.024)),
+                    )
+
+            board_shape = metadata.get("board_shape", [9, 6])
+            return CalibrationBoardSettings(
+                chessboard_cols=int(board_shape[0]),
+                chessboard_rows=int(board_shape[1]),
+                chessboard_square_size_m=float(metadata.get("square_size_m", 0.024)),
+                charuco_squares_x=int(metadata.get("charuco_squares_x", 5)),
+                charuco_squares_y=int(metadata.get("charuco_squares_y", 7)),
+                charuco_square_size_m=float(metadata.get("charuco_square_size_m", 0.032)),
+                charuco_marker_size_m=float(metadata.get("charuco_marker_size_m", 0.024)),
+            )
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _apply_board_settings_from_bundle_metadata(self, bundle: CalibrationBundle) -> None:
+        settings = self._board_settings_from_metadata(bundle.metadata)
+        if settings is None:
+            return
+        self._calibration_manager.apply_board_settings(settings)
+        self._calibration_panel.set_board_settings(self._calibration_manager.board_settings())
+        self._calibration_panel.set_pattern_options(
+            pattern_names=self._calibration_manager.available_patterns(),
+            selected=self._calibration_pattern,
+        )
 
     def _set_status(self, message: str) -> None:
         self.statusBar().showMessage(message)
@@ -321,9 +395,54 @@ class MainWindow(QMainWindow):
         )
 
     def _auto_capture_idle_text(self) -> str:
+        limit = self._calibration_panel.auto_capture_max_samples()
+        limit_text = f" Max {limit}." if limit > 0 else ""
         if self._calibration_workflow_mode() == "sync_extrinsics":
-            return "Auto capture armed (sync mode). Hold the board visible in at least 2 cameras."
-        return "Auto capture armed (intrinsics mode). Move the board through new per-camera poses."
+            return "Auto capture armed (sync mode). Hold the board visible in at least 2 cameras." + limit_text
+        return "Auto capture armed (intrinsics mode). Move the board through new per-camera poses." + limit_text
+
+    def _auto_capture_stop_message_if_limit_reached(self) -> str | None:
+        limit = self._calibration_panel.auto_capture_max_samples()
+        if limit <= 0:
+            return None
+        if self._calibration_workflow_mode() == "sync_extrinsics":
+            sync_count = self._calibration_manager.synchronized_capture_count()
+            if sync_count >= limit:
+                return f"Auto capture stopped at {sync_count}/{limit} synchronized set(s)."
+            return None
+
+        source_ids = self._active_source_ids()
+        if not source_ids:
+            return None
+        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
+        if all(sample_counts.get(source_id, 0) >= limit for source_id in source_ids):
+            counts_text = ", ".join(
+                f"{source_id}={sample_counts.get(source_id, 0)}"
+                for source_id in source_ids
+            )
+            return f"Auto capture stopped at {limit} sample(s) per camera ({counts_text})."
+        return None
+
+    def _stop_auto_capture_if_limit_reached(self) -> bool:
+        message = self._auto_capture_stop_message_if_limit_reached()
+        if message is None:
+            return False
+        self._calibration_panel.set_auto_capture_enabled(False)
+        self._calibration_panel.set_auto_capture_status(message)
+        self._calibration_panel.show_feedback(message, success=True)
+        self._set_status(message)
+        return True
+
+    def _auto_capture_intrinsics_candidates(self, source_ids: list[str]) -> list[str]:
+        limit = self._calibration_panel.auto_capture_max_samples()
+        if limit <= 0 or self._calibration_workflow_mode() != "intrinsics":
+            return list(source_ids)
+        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
+        return [
+            source_id
+            for source_id in source_ids
+            if sample_counts.get(source_id, 0) < limit
+        ]
 
     def _update_calibration_preview(self, force: bool = False) -> None:
         if not self._latest_frames:
@@ -596,6 +715,17 @@ class MainWindow(QMainWindow):
             if detections
             else {}
         )
+        if auto_trigger and workflow_mode == "intrinsics":
+            allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(self._latest_frames.keys())))
+            if not allowed_source_ids:
+                self._stop_auto_capture_if_limit_reached()
+                return False
+            if active_detections:
+                active_detections = {
+                    source_id: detection
+                    for source_id, detection in active_detections.items()
+                    if source_id in allowed_source_ids
+                }
         if active_detections:
             feedback_by_source = self._calibration_manager.try_add_detection_set(
                 detections_by_source=active_detections,
@@ -604,8 +734,22 @@ class MainWindow(QMainWindow):
                 workflow_mode=workflow_mode,
             )
         else:
+            frames_by_source = {
+                source_id: frame.frame_bgr
+                for source_id, frame in self._latest_frames.items()
+            }
+            if auto_trigger and workflow_mode == "intrinsics":
+                allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(frames_by_source.keys())))
+                frames_by_source = {
+                    source_id: frame
+                    for source_id, frame in frames_by_source.items()
+                    if source_id in allowed_source_ids
+                }
+                if not frames_by_source:
+                    self._stop_auto_capture_if_limit_reached()
+                    return False
             feedback_by_source = self._calibration_manager.try_add_observation_set(
-                frames_by_source={source_id: frame.frame_bgr for source_id, frame in self._latest_frames.items()},
+                frames_by_source=frames_by_source,
                 pattern=self._calibration_pattern,
                 allow_relaxed_sync=allow_relaxed_sync,
                 workflow_mode=workflow_mode,
@@ -622,19 +766,57 @@ class MainWindow(QMainWindow):
         self,
         detections: dict[str, ChessboardDetectionResult],
     ) -> bool:
+        if self._intrinsics_solve_worker is not None:
+            return False
         if not self._calibration_panel.auto_capture_enabled():
+            return False
+        if self._stop_auto_capture_if_limit_reached():
             return False
         now = time.perf_counter()
         if now - self._last_calibration_auto_capture_at < self._calibration_panel.auto_capture_cooldown_sec():
             return False
-        return self._capture_calibration_samples(auto_trigger=True, detections=detections)
+        captured = self._capture_calibration_samples(auto_trigger=True, detections=detections)
+        if captured:
+            self._stop_auto_capture_if_limit_reached()
+        return captured
 
     def _on_capture_calibration(self) -> None:
+        if self._intrinsics_solve_worker is not None:
+            self._calibration_panel.show_feedback(
+                "Intrinsics solve is running; capture is paused until it finishes.",
+                success=False,
+            )
+            return
         detections = self._latest_calibration_detections if self._latest_calibration_detections else None
         self._capture_calibration_samples(auto_trigger=False, detections=detections)
 
     def _on_solve_calibration(self) -> None:
-        bundle = self._calibration_manager.solve_intrinsics()
+        if self._intrinsics_solve_worker is not None:
+            self._calibration_panel.show_feedback("Intrinsics solve is already running.", success=False)
+            return
+
+        worker = IntrinsicsSolveWorker(calibration_manager=self._calibration_manager)
+        worker.result_ready.connect(self._on_intrinsics_solve_result)
+        worker.error.connect(self._on_intrinsics_solve_error)
+        worker.state_changed.connect(lambda state: LOGGER.info("Intrinsics solve state: %s", state))
+        worker.finished.connect(self._on_intrinsics_solve_finished)
+        self._intrinsics_solve_worker = worker
+        total_samples = sum(self._calibration_manager.observations_summary(include_sync_only=False).values())
+        progress_message = f"Solving intrinsics ({total_samples} samples)..."
+        self._calibration_panel.set_intrinsics_solve_running(True, progress_message)
+        self._calibration_panel.show_feedback(
+            f"Solving intrinsics in the background ({total_samples} samples)...",
+            success=True,
+        )
+        self._set_status("Solving intrinsics...")
+        worker.start()
+
+    def _on_intrinsics_solve_result(self, bundle_obj: object) -> None:
+        if not isinstance(bundle_obj, CalibrationBundle):
+            self._on_intrinsics_solve_error("Intrinsics solve returned an unexpected result.")
+            return
+
+        bundle = bundle_obj
         self._calibration_repo.save(bundle, self._calibration_path)
         self._set_current_calibration_bundle(bundle)
 
@@ -654,7 +836,26 @@ class MainWindow(QMainWindow):
         for note in bundle.notes:
             LOGGER.info("Calibration note: %s", note)
 
+    def _on_intrinsics_solve_error(self, message: str) -> None:
+        LOGGER.error("Intrinsics solve error: %s", message)
+        self._calibration_panel.show_feedback(f"Intrinsics solve failed: {message}", success=False)
+        self._set_status(f"Intrinsics solve failed: {message}")
+
+    def _on_intrinsics_solve_finished(self) -> None:
+        worker = self._intrinsics_solve_worker
+        self._intrinsics_solve_worker = None
+        self._calibration_panel.set_intrinsics_solve_running(False)
+        self._refresh_calibration_panel(force=True)
+        if worker is not None:
+            worker.deleteLater()
+
     def _on_solve_extrinsics(self) -> None:
+        if self._intrinsics_solve_worker is not None:
+            self._calibration_panel.show_feedback(
+                "Wait for the intrinsics solve to finish before solving extrinsics.",
+                success=False,
+            )
+            return
         base_bundle = self._current_calibration_bundle or self._calibration_manager.last_solution()
         if base_bundle is None:
             if not self._calibration_manager.sources():
@@ -789,6 +990,73 @@ class MainWindow(QMainWindow):
         self._calibration_panel.show_feedback(f"Calibration pattern set to {normalized}.", success=True)
         self._update_calibration_preview(force=True)
 
+    def _on_board_settings_applied(self, settings_obj: object) -> None:
+        if not isinstance(settings_obj, CalibrationBoardSettings):
+            return
+        if self._intrinsics_solve_worker is not None:
+            self._calibration_panel.show_feedback(
+                "Wait for the intrinsics solve to finish before changing board settings.",
+                success=False,
+            )
+            return
+        if settings_obj.charuco_marker_size_m >= settings_obj.charuco_square_size_m:
+            self._show_warning("ChArUco marker size must be smaller than ChArUco square size.")
+            return
+        if settings_obj == self._calibration_manager.board_settings():
+            self._calibration_panel.show_feedback("Board settings already active.", success=True)
+            return
+
+        has_existing_work = (
+            bool(self._calibration_manager.sources())
+            or self._calibration_manager.synchronized_capture_count() > 0
+            or self._current_calibration_bundle is not None
+        )
+        if has_existing_work:
+            reply = QMessageBox.question(
+                self,
+                "Apply Board Settings",
+                (
+                    "Changing board settings clears captured samples and unloads the active calibration. "
+                    "Continue?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._calibration_panel.set_board_settings(self._calibration_manager.board_settings())
+                return
+
+        self._calibration_manager.apply_board_settings(settings_obj)
+        active_settings = self._calibration_manager.board_settings()
+        self._calibration_panel.set_board_settings(active_settings)
+        self._calibration_panel.set_pattern_options(
+            pattern_names=self._calibration_manager.available_patterns(),
+            selected=self._calibration_pattern,
+        )
+        self._current_calibration_bundle = None
+        self._calibration_loaded = False
+        self._latest_calibration_detections.clear()
+        self._last_rendered_frame_indices.clear()
+        self._calibration_path = self._default_calibration_path()
+        try:
+            if self._calibration_path.exists():
+                self._calibration_path.unlink()
+        except OSError as exc:
+            LOGGER.warning("Could not remove current calibration file %s: %s", self._calibration_path, exc)
+
+        message = (
+            "Board settings applied. Samples and active calibration were reset "
+            f"(chessboard={active_settings.chessboard_cols}x{active_settings.chessboard_rows}, "
+            f"square={active_settings.chessboard_square_size_m * 1000.0:.2f}mm; "
+            f"charuco={active_settings.charuco_squares_x}x{active_settings.charuco_squares_y}, "
+            f"square={active_settings.charuco_square_size_m * 1000.0:.2f}mm, "
+            f"marker={active_settings.charuco_marker_size_m * 1000.0:.2f}mm)."
+        )
+        self._calibration_panel.show_feedback(message, success=True)
+        self._set_status("Board settings applied")
+        self._refresh_calibration_panel(force=True)
+        self._update_calibration_preview(force=True)
+
     def _on_calibration_workflow_mode_changed(self, mode: str) -> None:
         normalized = mode.lower().strip()
         if normalized not in {"intrinsics", "sync_extrinsics"}:
@@ -837,6 +1105,14 @@ class MainWindow(QMainWindow):
         self._update_calibration_preview()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self._intrinsics_solve_worker is not None and self._intrinsics_solve_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Intrinsics Solve",
+                "Intrinsics solve is still running. Wait until it finishes before closing the app.",
+            )
+            event.ignore()
+            return
         self._on_stop_live()
         self._stop_camera_probe_worker()
         super().closeEvent(event)

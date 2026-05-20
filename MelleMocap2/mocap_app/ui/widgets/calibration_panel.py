@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QSpinBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from mocap_app.io.calibration_io import ChessboardDetectionResult
 from mocap_app.models.types import (
+    CalibrationBoardSettings,
     CalibrationBundle,
     CameraCalibration,
     CameraProbeResult,
@@ -200,6 +202,7 @@ class CalibrationPanelWidget(QWidget):
     load_profile_requested = Signal()
     undistort_toggled = Signal(str, bool)
     pattern_changed = Signal(str)
+    board_settings_applied = Signal(object)
     acceptance_thresholds_changed = Signal(float, float)
     workflow_mode_changed = Signal(str)
 
@@ -239,6 +242,34 @@ class CalibrationPanelWidget(QWidget):
         self._calib_detect_hz_spin.setDecimals(1)
         self._calib_detect_hz_spin.setValue(4.0)
         self._calib_detect_hz_spin.setSingleStep(0.5)
+        self._chessboard_cols_spin = QSpinBox()
+        self._chessboard_cols_spin.setRange(2, 30)
+        self._chessboard_cols_spin.setValue(9)
+        self._chessboard_rows_spin = QSpinBox()
+        self._chessboard_rows_spin.setRange(2, 30)
+        self._chessboard_rows_spin.setValue(6)
+        self._chessboard_square_mm_spin = QDoubleSpinBox()
+        self._chessboard_square_mm_spin.setRange(1.0, 500.0)
+        self._chessboard_square_mm_spin.setDecimals(2)
+        self._chessboard_square_mm_spin.setValue(24.0)
+        self._chessboard_square_mm_spin.setSuffix(" mm")
+        self._charuco_squares_x_spin = QSpinBox()
+        self._charuco_squares_x_spin.setRange(2, 30)
+        self._charuco_squares_x_spin.setValue(5)
+        self._charuco_squares_y_spin = QSpinBox()
+        self._charuco_squares_y_spin.setRange(2, 30)
+        self._charuco_squares_y_spin.setValue(7)
+        self._charuco_square_mm_spin = QDoubleSpinBox()
+        self._charuco_square_mm_spin.setRange(1.0, 500.0)
+        self._charuco_square_mm_spin.setDecimals(2)
+        self._charuco_square_mm_spin.setValue(32.0)
+        self._charuco_square_mm_spin.setSuffix(" mm")
+        self._charuco_marker_mm_spin = QDoubleSpinBox()
+        self._charuco_marker_mm_spin.setRange(1.0, 500.0)
+        self._charuco_marker_mm_spin.setDecimals(2)
+        self._charuco_marker_mm_spin.setValue(24.0)
+        self._charuco_marker_mm_spin.setSuffix(" mm")
+        self._apply_board_button = QPushButton("Apply Board Settings")
         self._start_live_button = QPushButton("Start Live")
         self._stop_live_button = QPushButton("Stop Live")
         self._probe_button = QPushButton("Detect Cameras")
@@ -274,6 +305,11 @@ class CalibrationPanelWidget(QWidget):
         self._auto_capture_cooldown_spin.setDecimals(1)
         self._auto_capture_cooldown_spin.setSingleStep(0.1)
         self._auto_capture_cooldown_spin.setValue(1.0)
+        self._auto_capture_max_spin = QSpinBox()
+        self._auto_capture_max_spin.setRange(0, 1000)
+        self._auto_capture_max_spin.setValue(0)
+        self._auto_capture_max_spin.setSpecialValueText("No limit")
+        self._auto_capture_max_spin.setSuffix(" samples")
         self._sync_quality_spin = QDoubleSpinBox()
         self._sync_quality_spin.setRange(0.0, 1.0)
         self._sync_quality_spin.setDecimals(2)
@@ -290,10 +326,31 @@ class CalibrationPanelWidget(QWidget):
         self._auto_status = QLabel("Auto capture off.")
         self._auto_status.setStyleSheet("color: #475569;")
 
+        for spin in [
+            self._chessboard_cols_spin,
+            self._chessboard_rows_spin,
+            self._charuco_squares_x_spin,
+            self._charuco_squares_y_spin,
+            self._probe_max_spin,
+        ]:
+            spin.setMaximumWidth(86)
+
+        for spin in [
+            self._chessboard_square_mm_spin,
+            self._charuco_square_mm_spin,
+            self._charuco_marker_mm_spin,
+            self._auto_capture_cooldown_spin,
+            self._auto_capture_max_spin,
+            self._sync_quality_spin,
+            self._sync_coverage_spin,
+        ]:
+            spin.setMaximumWidth(118)
+
         for button in [
             self._start_live_button,
             self._stop_live_button,
             self._probe_button,
+            self._apply_board_button,
             self._capture_button,
             self._solve_button,
             self._solve_extrinsics_button,
@@ -317,6 +374,35 @@ class CalibrationPanelWidget(QWidget):
         live_form.addRow("Preview Width", self._preview_resolution_combo)
         live_form.addRow("Calibration Detect Hz", self._calib_detect_hz_spin)
 
+        chessboard_shape = QWidget()
+        chessboard_shape_layout = QGridLayout(chessboard_shape)
+        chessboard_shape_layout.setContentsMargins(0, 0, 0, 0)
+        chessboard_shape_layout.setSpacing(6)
+        chessboard_shape_layout.addWidget(QLabel("Cols"), 0, 0)
+        chessboard_shape_layout.addWidget(self._chessboard_cols_spin, 0, 1)
+        chessboard_shape_layout.addWidget(QLabel("Rows"), 0, 2)
+        chessboard_shape_layout.addWidget(self._chessboard_rows_spin, 0, 3)
+        chessboard_shape_layout.addWidget(QLabel("Square"), 0, 4)
+        chessboard_shape_layout.addWidget(self._chessboard_square_mm_spin, 0, 5)
+        chessboard_shape_layout.setColumnStretch(6, 1)
+        live_form.addRow("Chessboard", chessboard_shape)
+
+        charuco_shape = QWidget()
+        charuco_shape_layout = QGridLayout(charuco_shape)
+        charuco_shape_layout.setContentsMargins(0, 0, 0, 0)
+        charuco_shape_layout.setSpacing(6)
+        charuco_shape_layout.addWidget(QLabel("Squares X"), 0, 0)
+        charuco_shape_layout.addWidget(self._charuco_squares_x_spin, 0, 1)
+        charuco_shape_layout.addWidget(QLabel("Y"), 0, 2)
+        charuco_shape_layout.addWidget(self._charuco_squares_y_spin, 0, 3)
+        charuco_shape_layout.addWidget(QLabel("Square"), 1, 0)
+        charuco_shape_layout.addWidget(self._charuco_square_mm_spin, 1, 1)
+        charuco_shape_layout.addWidget(QLabel("Marker"), 1, 2)
+        charuco_shape_layout.addWidget(self._charuco_marker_mm_spin, 1, 3)
+        charuco_shape_layout.setColumnStretch(4, 1)
+        live_form.addRow("ChArUco", charuco_shape)
+        live_form.addRow("", self._apply_board_button)
+
         live_buttons = QHBoxLayout()
         live_buttons.setSpacing(8)
         live_buttons.addWidget(self._start_live_button)
@@ -331,34 +417,42 @@ class CalibrationPanelWidget(QWidget):
         live_status.addWidget(self._cams_label)
         live_status.addWidget(self._probe_label, stretch=1)
 
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
-        toolbar.addWidget(QLabel("Workflow"))
-        toolbar.addWidget(self._workflow_mode_combo)
-        toolbar.addWidget(QLabel("Pattern"))
-        toolbar.addWidget(self._pattern_combo)
-        toolbar.addWidget(self._capture_button)
-        toolbar.addWidget(self._solve_button)
-        toolbar.addWidget(self._solve_extrinsics_button)
-        toolbar.addWidget(self._reset_button)
-        toolbar.addStretch(1)
-        toolbar.addWidget(self._new_project_button)
-        toolbar.addWidget(self._save_button)
-        toolbar.addWidget(self._load_button)
+        toolbar_controls = QWidget()
+        toolbar = QGridLayout(toolbar_controls)
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setHorizontalSpacing(8)
+        toolbar.setVerticalSpacing(4)
+        toolbar.addWidget(QLabel("Workflow"), 0, 0)
+        toolbar.addWidget(self._workflow_mode_combo, 0, 1)
+        toolbar.addWidget(QLabel("Pattern"), 0, 2)
+        toolbar.addWidget(self._pattern_combo, 0, 3)
+        toolbar.addWidget(self._new_project_button, 0, 5)
+        toolbar.addWidget(self._save_button, 0, 6)
+        toolbar.addWidget(self._load_button, 0, 7)
+        toolbar.addWidget(self._capture_button, 1, 0, 1, 2)
+        toolbar.addWidget(self._solve_button, 1, 2)
+        toolbar.addWidget(self._solve_extrinsics_button, 1, 3)
+        toolbar.addWidget(self._reset_button, 1, 4)
+        toolbar.setColumnStretch(4, 1)
 
-        auto_toolbar = QHBoxLayout()
-        auto_toolbar.setSpacing(8)
-        auto_toolbar.addWidget(self._overlay_checkbox)
-        auto_toolbar.addWidget(self._auto_capture_checkbox)
-        auto_toolbar.addWidget(QLabel("Cooldown (s)"))
-        auto_toolbar.addWidget(self._auto_capture_cooldown_spin)
-        auto_toolbar.addWidget(self._relaxed_sync_checkbox)
-        auto_toolbar.addWidget(self._threshold_quality_label)
-        auto_toolbar.addWidget(self._sync_quality_spin)
-        auto_toolbar.addWidget(self._threshold_coverage_label)
-        auto_toolbar.addWidget(self._sync_coverage_spin)
-        auto_toolbar.addWidget(self._auto_status, stretch=1)
-        auto_toolbar.addStretch(1)
+        auto_controls = QWidget()
+        auto_toolbar = QGridLayout(auto_controls)
+        auto_toolbar.setContentsMargins(0, 0, 0, 0)
+        auto_toolbar.setHorizontalSpacing(8)
+        auto_toolbar.setVerticalSpacing(4)
+        auto_toolbar.addWidget(self._overlay_checkbox, 0, 0)
+        auto_toolbar.addWidget(self._auto_capture_checkbox, 0, 1)
+        auto_toolbar.addWidget(QLabel("Cooldown"), 0, 2)
+        auto_toolbar.addWidget(self._auto_capture_cooldown_spin, 0, 3)
+        auto_toolbar.addWidget(QLabel("Max"), 0, 4)
+        auto_toolbar.addWidget(self._auto_capture_max_spin, 0, 5)
+        auto_toolbar.addWidget(self._relaxed_sync_checkbox, 0, 6)
+        auto_toolbar.addWidget(self._threshold_quality_label, 1, 0)
+        auto_toolbar.addWidget(self._sync_quality_spin, 1, 1)
+        auto_toolbar.addWidget(self._threshold_coverage_label, 1, 2)
+        auto_toolbar.addWidget(self._sync_coverage_spin, 1, 3)
+        auto_toolbar.addWidget(self._auto_status, 1, 4, 1, 3)
+        auto_toolbar.setColumnStretch(7, 1)
 
         self._preview_container = QWidget()
         self._preview_layout = QGridLayout(self._preview_container)
@@ -381,6 +475,11 @@ class CalibrationPanelWidget(QWidget):
         self._feedback = QLabel("Calibration feedback will appear here.")
         self._feedback.setWordWrap(True)
         self._feedback.setStyleSheet("color: #1f2937;")
+        self._solve_progress = QProgressBar()
+        self._solve_progress.setRange(0, 0)
+        self._solve_progress.setTextVisible(True)
+        self._solve_progress.setFormat("Solving intrinsics...")
+        self._solve_progress.hide()
 
         self._warnings = QTextEdit()
         self._warnings.setReadOnly(True)
@@ -392,6 +491,7 @@ class CalibrationPanelWidget(QWidget):
         right_layout.setSpacing(6)
         right_layout.addWidget(self._table, stretch=2)
         right_layout.addWidget(self._feedback)
+        right_layout.addWidget(self._solve_progress)
         right_layout.addWidget(self._warnings, stretch=1)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -407,8 +507,8 @@ class CalibrationPanelWidget(QWidget):
         root.addWidget(live_controls)
         root.addLayout(live_buttons)
         root.addLayout(live_status)
-        root.addLayout(toolbar)
-        root.addLayout(auto_toolbar)
+        root.addWidget(toolbar_controls)
+        root.addWidget(auto_controls)
         root.addWidget(split, stretch=1)
 
         self._start_live_button.clicked.connect(self._emit_start_live)
@@ -422,6 +522,7 @@ class CalibrationPanelWidget(QWidget):
         self._save_button.clicked.connect(self.save_profile_requested)
         self._load_button.clicked.connect(self.load_profile_requested)
         self._pattern_combo.currentIndexChanged.connect(self._emit_pattern_changed)
+        self._apply_board_button.clicked.connect(self._emit_board_settings_applied)
         self._workflow_mode_combo.currentIndexChanged.connect(self._emit_workflow_mode_changed)
         self._overlay_checkbox.toggled.connect(self._emit_runtime_tuning_changed)
         self._sync_quality_spin.valueChanged.connect(self._emit_acceptance_thresholds_changed)
@@ -466,6 +567,18 @@ class CalibrationPanelWidget(QWidget):
                 background: #ffffff;
                 color: #1f2937;
                 border: 1px solid #d4dde8;
+            }
+            QProgressBar {
+                background: #eef3f9;
+                color: #1f2937;
+                border: 1px solid #cfd8e3;
+                border-radius: 4px;
+                min-height: 18px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: #2563eb;
+                border-radius: 3px;
             }
             """
         )
@@ -568,6 +681,25 @@ class CalibrationPanelWidget(QWidget):
         if csv:
             self._camera_input.setText(csv)
 
+    def set_intrinsics_solve_running(self, running: bool, message: str = "Solving intrinsics...") -> None:
+        self._solve_progress.setVisible(running)
+        self._solve_button.setEnabled(not running)
+        self._solve_extrinsics_button.setEnabled(not running)
+        self._capture_button.setEnabled(not running)
+        self._reset_button.setEnabled(not running)
+        self._new_project_button.setEnabled(not running)
+        self._load_button.setEnabled(not running)
+        self._workflow_mode_combo.setEnabled(not running)
+        self._pattern_combo.setEnabled(not running)
+        self._auto_capture_checkbox.setEnabled(not running)
+        self._auto_capture_max_spin.setEnabled(not running)
+        self._apply_board_button.setEnabled(not running)
+        self._sync_quality_spin.setEnabled(not running)
+        self._sync_coverage_spin.setEnabled(not running)
+        self._relaxed_sync_checkbox.setEnabled((not running) and self.current_workflow_mode() == "sync_extrinsics")
+        if running:
+            self._solve_progress.setFormat(message)
+
     def undistort_enabled_for(self, source_id: str) -> bool:
         tile = self._tiles.get(source_id)
         return tile.undistort_enabled() if tile else False
@@ -575,6 +707,26 @@ class CalibrationPanelWidget(QWidget):
     def current_pattern(self) -> str:
         data = self._pattern_combo.currentData()
         return str(data if data is not None else "chessboard").lower()
+
+    def board_settings(self) -> CalibrationBoardSettings:
+        return CalibrationBoardSettings(
+            chessboard_cols=int(self._chessboard_cols_spin.value()),
+            chessboard_rows=int(self._chessboard_rows_spin.value()),
+            chessboard_square_size_m=float(self._chessboard_square_mm_spin.value()) / 1000.0,
+            charuco_squares_x=int(self._charuco_squares_x_spin.value()),
+            charuco_squares_y=int(self._charuco_squares_y_spin.value()),
+            charuco_square_size_m=float(self._charuco_square_mm_spin.value()) / 1000.0,
+            charuco_marker_size_m=float(self._charuco_marker_mm_spin.value()) / 1000.0,
+        )
+
+    def set_board_settings(self, settings: CalibrationBoardSettings) -> None:
+        self._chessboard_cols_spin.setValue(int(settings.chessboard_cols))
+        self._chessboard_rows_spin.setValue(int(settings.chessboard_rows))
+        self._chessboard_square_mm_spin.setValue(float(settings.chessboard_square_size_m) * 1000.0)
+        self._charuco_squares_x_spin.setValue(int(settings.charuco_squares_x))
+        self._charuco_squares_y_spin.setValue(int(settings.charuco_squares_y))
+        self._charuco_square_mm_spin.setValue(float(settings.charuco_square_size_m) * 1000.0)
+        self._charuco_marker_mm_spin.setValue(float(settings.charuco_marker_size_m) * 1000.0)
 
     def current_workflow_mode(self) -> Literal["intrinsics", "sync_extrinsics"]:
         data = self._workflow_mode_combo.currentData()
@@ -594,11 +746,17 @@ class CalibrationPanelWidget(QWidget):
     def auto_capture_enabled(self) -> bool:
         return self._auto_capture_checkbox.isChecked()
 
+    def set_auto_capture_enabled(self, enabled: bool) -> None:
+        self._auto_capture_checkbox.setChecked(enabled)
+
     def overlay_enabled(self) -> bool:
         return self._overlay_checkbox.isChecked()
 
     def auto_capture_cooldown_sec(self) -> float:
         return float(self._auto_capture_cooldown_spin.value())
+
+    def auto_capture_max_samples(self) -> int:
+        return int(self._auto_capture_max_spin.value())
 
     def relaxed_sync_enabled(self) -> bool:
         return self._relaxed_sync_checkbox.isChecked()
@@ -748,6 +906,9 @@ class CalibrationPanelWidget(QWidget):
 
     def _emit_pattern_changed(self) -> None:
         self.pattern_changed.emit(self.current_pattern())
+
+    def _emit_board_settings_applied(self) -> None:
+        self.board_settings_applied.emit(self.board_settings())
 
     def _emit_acceptance_thresholds_changed(self) -> None:
         quality, coverage_ratio = self.acceptance_threshold_values()

@@ -86,6 +86,17 @@ class CalibrationBundle:
 
 
 @dataclass(slots=True)
+class CalibrationBoardSettings:
+    chessboard_cols: int = 9
+    chessboard_rows: int = 6
+    chessboard_square_size_m: float = 0.024
+    charuco_squares_x: int = 5
+    charuco_squares_y: int = 7
+    charuco_square_size_m: float = 0.032
+    charuco_marker_size_m: float = 0.024
+
+
+@dataclass(slots=True)
 class SessionManifest:
     version: int
     session_id: str
