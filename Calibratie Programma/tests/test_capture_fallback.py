@@ -33,14 +33,55 @@ class CaptureFallbackTests(unittest.TestCase):
             session.close()
             capture_backend.cv2 = original_cv2
 
+    def test_capture_continues_when_one_selected_webcam_is_unavailable(self) -> None:
+        original_cv2 = capture_backend.cv2
+        capture_backend.cv2 = _FakeCv2(failed_uris={1})
+        try:
+            session = capture_backend.OpenCVCaptureSession(
+                [
+                    CameraSourceConfig(source_id="cam0", kind="webcam", uri=0),
+                    CameraSourceConfig(source_id="cam1", kind="webcam", uri=1),
+                ],
+                requested_fps=30.0,
+            )
+
+            probes = session.open()
+            batch = session.read_batch()
+
+            self.assertTrue(probes["cam0"].opened)
+            self.assertFalse(probes["cam1"].opened)
+            self.assertIn("cam0", batch.frames)
+            self.assertEqual(batch.dropped_sources, ["cam1"])
+        finally:
+            session.close()
+            capture_backend.cv2 = original_cv2
+
+    def test_capture_fails_when_no_selected_webcam_opens(self) -> None:
+        original_cv2 = capture_backend.cv2
+        capture_backend.cv2 = _FakeCv2(failed_uris={0, 1})
+        try:
+            session = capture_backend.OpenCVCaptureSession(
+                [
+                    CameraSourceConfig(source_id="cam0", kind="webcam", uri=0),
+                    CameraSourceConfig(source_id="cam1", kind="webcam", uri=1),
+                ],
+                requested_fps=30.0,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Could not open any capture source"):
+                session.open()
+        finally:
+            session.close()
+            capture_backend.cv2 = original_cv2
+
 
 class _FakeFrame:
     shape = (480, 640, 3)
 
 
 class _FakeCapture:
-    def __init__(self) -> None:
-        self._opened = True
+    def __init__(self, opened: bool = True) -> None:
+        self._opened = opened
         self._released = False
         self._requested_size = False
 
@@ -79,8 +120,11 @@ class _FakeCv2:
     CAP_PROP_FPS = 5
     INTER_AREA = 3
 
-    def VideoCapture(self, _uri, _backend=None) -> _FakeCapture:
-        return _FakeCapture()
+    def __init__(self, failed_uris: set[int] | None = None) -> None:
+        self._failed_uris = set(failed_uris or set())
+
+    def VideoCapture(self, uri, _backend=None) -> _FakeCapture:
+        return _FakeCapture(opened=uri not in self._failed_uris)
 
     def VideoWriter_fourcc(self, *_codec: str) -> int:
         return 1234

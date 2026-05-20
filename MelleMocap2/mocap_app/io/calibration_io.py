@@ -1,0 +1,1546 @@
+from __future__ import annotations
+
+import copy
+import json
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Literal
+
+import cv2
+import numpy as np
+from numpy.typing import NDArray
+
+from mocap_app.models.types import CalibrationBundle, CameraCalibration
+
+
+LOGGER = logging.getLogger(__name__)
+CALIBRATION_SCHEMA_VERSION = 2
+
+FloatArray = NDArray[np.float32]
+U8Array = NDArray[np.uint8]
+
+
+@dataclass(slots=True)
+class ChessboardDetectionResult:
+    """Result of a chessboard detection pass on a single frame."""
+
+    source_id: str
+    found: bool
+    image_size: tuple[int, int]
+    pattern_type: Literal["chessboard", "charuco"] = "chessboard"
+    corners: FloatArray | None = None
+    charuco_ids: NDArray[np.int32] | None = None
+    detected_corners: int = 0
+    quality_score: float = 0.0
+    coverage_ratio: float = 0.0
+    sharpness_score: float = 0.0
+    diagnostics: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CalibrationSample:
+    """Accepted calibration sample with quality metrics."""
+
+    pattern_type: Literal["chessboard", "charuco"]
+    object_points: FloatArray
+    image_points: FloatArray
+    charuco_ids: NDArray[np.int32] | None
+    image_size: tuple[int, int]
+    quality_score: float
+    coverage_ratio: float
+    sharpness_score: float
+    captured_at_iso: str
+    capture_group_id: str | None = None
+    accepted_for_intrinsics: bool = True
+
+
+@dataclass(slots=True)
+class CalibrationCaptureSet:
+    """Synchronized multi-camera capture used for pairwise extrinsics solving."""
+
+    capture_group_id: str
+    pattern_type: Literal["chessboard", "charuco"]
+    samples_by_source: dict[str, CalibrationSample]
+    captured_at_iso: str
+
+
+@dataclass(slots=True)
+class CalibrationCaptureFeedback:
+    """User-facing feedback after attempting to capture a sample."""
+
+    source_id: str
+    accepted: bool
+    sample_count: int
+    message: str
+    detection: ChessboardDetectionResult
+
+
+class CalibrationRepository:
+    """Reads and writes calibration profiles using an explicit JSON schema."""
+
+    def save(self, bundle: CalibrationBundle, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
+            "saved_at_iso": datetime.now().isoformat(),
+            "metadata": dict(bundle.metadata),
+            "notes": list(bundle.notes),
+            "cameras": {
+                source_id: {
+                    "source_id": camera.source_id,
+                    "status": camera.status,
+                    "num_samples": camera.num_samples,
+                    "image_size": list(camera.image_size) if camera.image_size else None,
+                    "intrinsics": camera.intrinsics,
+                    "distortion": camera.distortion,
+                    "rotation": camera.rotation,
+                    "translation": camera.translation,
+                    "reprojection_error": camera.reprojection_error,
+                    "diagnostics": list(camera.diagnostics),
+                    "calibrated_at_iso": camera.calibrated_at_iso,
+                }
+                for source_id, camera in bundle.cameras.items()
+            },
+        }
+
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        LOGGER.info("Calibration saved: %s", path)
+
+    def load(self, path: Path) -> CalibrationBundle | None:
+        if not path.exists():
+            return None
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        schema = int(payload.get("schema_version", 1))
+
+        if schema >= 2:
+            cameras = {
+                source_id: CameraCalibration(
+                    source_id=str(camera_data.get("source_id", source_id)),
+                    status=str(camera_data.get("status", "unsolved")),
+                    num_samples=int(camera_data.get("num_samples", 0)),
+                    image_size=tuple(camera_data["image_size"]) if camera_data.get("image_size") else None,
+                    intrinsics=camera_data.get("intrinsics"),
+                    distortion=camera_data.get("distortion"),
+                    rotation=camera_data.get("rotation"),
+                    translation=camera_data.get("translation"),
+                    reprojection_error=(
+                        float(camera_data["reprojection_error"])
+                        if camera_data.get("reprojection_error") is not None
+                        else None
+                    ),
+                    diagnostics=list(camera_data.get("diagnostics", [])),
+                    calibrated_at_iso=camera_data.get("calibrated_at_iso"),
+                )
+                for source_id, camera_data in payload.get("cameras", {}).items()
+            }
+            return CalibrationBundle(
+                cameras=cameras,
+                notes=list(payload.get("notes", [])),
+                metadata=dict(payload.get("metadata", {})),
+            )
+
+        # Legacy MVP format compatibility.
+        cameras = {
+            source_id: CameraCalibration(**camera_data)
+            for source_id, camera_data in payload.get("cameras", {}).items()
+        }
+        return CalibrationBundle(
+            cameras=cameras,
+            notes=list(payload.get("notes", [])),
+            metadata=dict(payload.get("metadata", {})),
+        )
+
+
+class CalibrationManager:
+    """Calibration solve logic independent from Qt UI widgets."""
+
+    def __init__(
+        self,
+        board_shape: tuple[int, int] = (9, 6),
+        square_size_m: float = 0.024,
+        min_samples_per_camera: int = 8,
+        min_quality_score: float = 0.45,
+        min_coverage_ratio: float = 0.07,
+        sync_min_quality_score: float = 0.2,
+        sync_min_coverage_ratio: float = 0.018,
+        default_pattern: Literal["chessboard", "charuco"] = "chessboard",
+        charuco_squares_x: int = 5,
+        charuco_squares_y: int = 7,
+        charuco_square_size_m: float = 0.032,
+        charuco_marker_size_m: float = 0.024,
+        min_charuco_corners: int = 8,
+        min_sample_novelty_px: float = 14.0,
+    ) -> None:
+        self._board_shape = board_shape
+        self._square_size_m = square_size_m
+        self._min_samples_per_camera = min_samples_per_camera
+        self._min_quality_score = min_quality_score
+        self._min_coverage_ratio = min_coverage_ratio
+        self._sync_min_quality_score = min(sync_min_quality_score, min_quality_score)
+        self._sync_min_coverage_ratio = min(sync_min_coverage_ratio, min_coverage_ratio)
+        self._default_pattern: Literal["chessboard", "charuco"] = default_pattern
+        self._charuco_squares_x = max(2, charuco_squares_x)
+        self._charuco_squares_y = max(2, charuco_squares_y)
+        self._charuco_square_size_m = charuco_square_size_m
+        self._charuco_marker_size_m = charuco_marker_size_m
+        self._min_charuco_corners = max(4, min_charuco_corners)
+        self._min_sample_novelty_px = max(2.0, min_sample_novelty_px)
+
+        self._object_template = self._build_object_points()
+        self._charuco_available = hasattr(cv2, "aruco")
+        self._charuco_dict: Any | None = None
+        self._charuco_board: Any | None = None
+        self._init_charuco()
+        self._samples: dict[str, list[CalibrationSample]] = {}
+        self._capture_sets: list[CalibrationCaptureSet] = []
+        self._last_solution: CalibrationBundle | None = None
+
+    @property
+    def board_shape(self) -> tuple[int, int]:
+        return self._board_shape
+
+    @property
+    def square_size_m(self) -> float:
+        return self._square_size_m
+
+    @property
+    def min_samples_per_camera(self) -> int:
+        return self._min_samples_per_camera
+
+    @property
+    def min_quality_score(self) -> float:
+        return self._min_quality_score
+
+    @property
+    def min_coverage_ratio(self) -> float:
+        return self._min_coverage_ratio
+
+    @property
+    def sync_min_quality_score(self) -> float:
+        return self._sync_min_quality_score
+
+    @property
+    def sync_min_coverage_ratio(self) -> float:
+        return self._sync_min_coverage_ratio
+
+    @property
+    def default_pattern(self) -> Literal["chessboard", "charuco"]:
+        return self._default_pattern
+
+    def available_patterns(self) -> list[str]:
+        patterns = ["chessboard"]
+        if self._charuco_available and self._charuco_board is not None:
+            patterns.append("charuco")
+        return patterns
+
+    def set_sync_acceptance_thresholds(
+        self,
+        min_quality_score: float,
+        min_coverage_ratio: float,
+    ) -> None:
+        self._sync_min_quality_score = float(np.clip(min_quality_score, 0.0, 1.0))
+        self._sync_min_coverage_ratio = float(np.clip(min_coverage_ratio, 0.0, 1.0))
+
+    def reset(self) -> None:
+        """Remove all captured calibration samples."""
+        self._samples.clear()
+        self._capture_sets.clear()
+
+    def reset_all(self) -> None:
+        """Remove captured samples and forget the last solved calibration."""
+        self.reset()
+        self._last_solution = None
+
+    def sources(self) -> list[str]:
+        return sorted(self._samples.keys())
+
+    def observation_count(self, source_id: str, include_sync_only: bool = True) -> int:
+        samples = self._samples.get(source_id, [])
+        if include_sync_only:
+            return len(samples)
+        return sum(1 for sample in samples if sample.accepted_for_intrinsics)
+
+    def observations_summary(self, include_sync_only: bool = True) -> dict[str, int]:
+        return {
+            source_id: self.observation_count(source_id, include_sync_only=include_sync_only)
+            for source_id in self._samples
+        }
+
+    def observations_breakdown_summary(self) -> dict[str, dict[str, int]]:
+        summary: dict[str, dict[str, int]] = {}
+        for source_id, samples in self._samples.items():
+            total = len(samples)
+            intrinsics = sum(1 for sample in samples if sample.accepted_for_intrinsics)
+            synchronized = sum(1 for sample in samples if sample.capture_group_id is not None)
+            sync_only = sum(
+                1
+                for sample in samples
+                if sample.capture_group_id is not None and not sample.accepted_for_intrinsics
+            )
+            summary[source_id] = {
+                "total": total,
+                "intrinsics": intrinsics,
+                "synchronized": synchronized,
+                "sync_only": sync_only,
+            }
+        return summary
+
+    def last_solution(self) -> CalibrationBundle | None:
+        return self._last_solution
+
+    def synchronized_capture_count(self) -> int:
+        return len(self._capture_sets)
+
+    def _init_charuco(self) -> None:
+        if not self._charuco_available:
+            return
+        try:
+            aruco = cv2.aruco  # type: ignore[attr-defined]
+            dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+            board = None
+            if hasattr(aruco, "CharucoBoard"):
+                try:
+                    board = aruco.CharucoBoard(
+                        (self._charuco_squares_x, self._charuco_squares_y),
+                        self._charuco_square_size_m,
+                        self._charuco_marker_size_m,
+                        dictionary,
+                    )
+                except Exception:
+                    board = None
+            if board is None and hasattr(aruco, "CharucoBoard_create"):
+                board = aruco.CharucoBoard_create(
+                    self._charuco_squares_x,
+                    self._charuco_squares_y,
+                    self._charuco_square_size_m,
+                    self._charuco_marker_size_m,
+                    dictionary,
+                )
+            self._charuco_dict = dictionary
+            self._charuco_board = board
+            if self._charuco_board is None:
+                self._charuco_available = False
+        except Exception:
+            self._charuco_available = False
+            self._charuco_dict = None
+            self._charuco_board = None
+
+    def detect_pattern(
+        self,
+        source_id: str,
+        frame_bgr: U8Array,
+        pattern: Literal["chessboard", "charuco"] | str,
+    ) -> ChessboardDetectionResult:
+        normalized = str(pattern).lower().strip()
+        if normalized == "charuco":
+            return self.detect_charuco(source_id=source_id, frame_bgr=frame_bgr)
+        return self.detect_chessboard(source_id=source_id, frame_bgr=frame_bgr)
+
+    def detect_chessboard(self, source_id: str, frame_bgr: U8Array) -> ChessboardDetectionResult:
+        """Run checkerboard detection and quality analysis for preview/capture gating."""
+        height, width = frame_bgr.shape[:2]
+        image_size = (width, height)
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        corners: FloatArray | None = None
+        found = False
+
+        if hasattr(cv2, "findChessboardCornersSB"):
+            flags_sb = cv2.CALIB_CB_EXHAUSTIVE + cv2.CALIB_CB_ACCURACY
+            found, corners_sb = cv2.findChessboardCornersSB(gray, self._board_shape, flags=flags_sb)
+            if found and corners_sb is not None:
+                corners = corners_sb.astype(np.float32)
+
+        if not found or corners is None:
+            flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
+            found, corners_raw = cv2.findChessboardCorners(gray, self._board_shape, flags=flags)
+            if found and corners_raw is not None:
+                refined = cv2.cornerSubPix(
+                    gray,
+                    corners_raw,
+                    (11, 11),
+                    (-1, -1),
+                    criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 35, 0.0008),
+                )
+                corners = refined.astype(np.float32)
+
+        if corners is None or not found:
+            return ChessboardDetectionResult(
+                source_id=source_id,
+                pattern_type="chessboard",
+                found=False,
+                image_size=image_size,
+                diagnostics=["Chessboard not detected."],
+            )
+
+        quality_score, coverage_ratio, sharpness_score = self._compute_quality_metrics(
+            gray=gray,
+            corners=corners,
+            expected_corner_count=self._board_shape[0] * self._board_shape[1],
+        )
+        diagnostics: list[str] = []
+        if coverage_ratio < self._min_coverage_ratio:
+            diagnostics.append(
+                "Coverage below intrinsics target "
+                f"({coverage_ratio * 100:.1f}% < {self._min_coverage_ratio * 100:.1f}%)."
+            )
+        if quality_score < self._min_quality_score:
+            diagnostics.append(
+                "Quality below intrinsics target "
+                f"({quality_score:.2f} < {self._min_quality_score:.2f})."
+            )
+
+        return ChessboardDetectionResult(
+            source_id=source_id,
+            pattern_type="chessboard",
+            found=True,
+            image_size=image_size,
+            corners=corners,
+            detected_corners=int(corners.shape[0]),
+            quality_score=quality_score,
+            coverage_ratio=coverage_ratio,
+            sharpness_score=sharpness_score,
+            diagnostics=diagnostics,
+        )
+
+    def detect_charuco(self, source_id: str, frame_bgr: U8Array) -> ChessboardDetectionResult:
+        height, width = frame_bgr.shape[:2]
+        image_size = (width, height)
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+        if not self._charuco_available or self._charuco_dict is None or self._charuco_board is None:
+            return ChessboardDetectionResult(
+                source_id=source_id,
+                pattern_type="charuco",
+                found=False,
+                image_size=image_size,
+                diagnostics=["Charuco unavailable: install OpenCV build with cv2.aruco support."],
+            )
+
+        aruco = cv2.aruco  # type: ignore[attr-defined]
+        marker_corners, marker_ids, _ = aruco.detectMarkers(gray, self._charuco_dict)
+        if marker_ids is None or len(marker_ids) < 4:
+            return ChessboardDetectionResult(
+                source_id=source_id,
+                pattern_type="charuco",
+                found=False,
+                image_size=image_size,
+                diagnostics=["Charuco markers not reliably detected."],
+            )
+
+        _, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
+            marker_corners,
+            marker_ids,
+            gray,
+            self._charuco_board,
+        )
+        if charuco_corners is None or charuco_ids is None:
+            return ChessboardDetectionResult(
+                source_id=source_id,
+                pattern_type="charuco",
+                found=False,
+                image_size=image_size,
+                diagnostics=["Charuco interpolation failed."],
+            )
+
+        corner_count = int(charuco_corners.shape[0])
+        diagnostics: list[str] = []
+        if corner_count < self._min_charuco_corners:
+            diagnostics.append(
+                f"Charuco corners below intrinsics target ({corner_count}/{self._min_charuco_corners})."
+            )
+
+        expected = max(1, (self._charuco_squares_x - 1) * (self._charuco_squares_y - 1))
+        quality_score, coverage_ratio, sharpness_score = self._compute_quality_metrics(
+            gray=gray,
+            corners=charuco_corners.astype(np.float32),
+            expected_corner_count=expected,
+        )
+        if coverage_ratio < self._min_coverage_ratio:
+            diagnostics.append(
+                "Coverage below intrinsics target "
+                f"({coverage_ratio * 100:.1f}% < {self._min_coverage_ratio * 100:.1f}%)."
+            )
+        if quality_score < self._min_quality_score:
+            diagnostics.append(
+                "Quality below intrinsics target "
+                f"({quality_score:.2f} < {self._min_quality_score:.2f})."
+            )
+
+        return ChessboardDetectionResult(
+            source_id=source_id,
+            pattern_type="charuco",
+            found=True,
+            image_size=image_size,
+            corners=charuco_corners.astype(np.float32),
+            charuco_ids=charuco_ids.astype(np.int32),
+            detected_corners=corner_count,
+            quality_score=quality_score,
+            coverage_ratio=coverage_ratio,
+            sharpness_score=sharpness_score,
+            diagnostics=diagnostics,
+        )
+
+    def _compute_quality_metrics(
+        self,
+        gray: U8Array,
+        corners: FloatArray,
+        expected_corner_count: int,
+    ) -> tuple[float, float, float]:
+        points = corners.reshape(-1, 2)
+        width = gray.shape[1]
+        height = gray.shape[0]
+        hull = cv2.convexHull(points)
+        board_area = float(cv2.contourArea(hull))
+        image_area = float(width * height) if width and height else 1.0
+        coverage_ratio = board_area / image_area
+
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        sharpness_score = float(np.clip(lap_var / 220.0, 0.0, 1.0))
+        coverage_score = float(np.clip(coverage_ratio / 0.18, 0.0, 1.0))
+        corner_ratio = float(np.clip(points.shape[0] / max(expected_corner_count, 1), 0.0, 1.0))
+        quality_score = 0.52 * coverage_score + 0.28 * sharpness_score + 0.20 * corner_ratio
+        return quality_score, coverage_ratio, sharpness_score
+
+    def try_add_observation(
+        self,
+        source_id: str,
+        frame_bgr: U8Array,
+        pattern: Literal["chessboard", "charuco"] | str | None = None,
+    ) -> CalibrationCaptureFeedback:
+        """Attempt to store a sample only when detection quality and consistency are valid."""
+        selected_pattern = self._normalize_pattern_name(pattern)
+        detection = self.detect_pattern(
+            source_id=source_id,
+            frame_bgr=frame_bgr,
+            pattern=selected_pattern,
+        )
+        current_count = self.observation_count(source_id, include_sync_only=True)
+        sample, message, rejection_reasons = self._build_sample_from_detection(
+            source_id=source_id,
+            detection=detection,
+            selected_pattern=selected_pattern,
+            acceptance_mode="intrinsics",
+        )
+        if sample is None:
+            self._append_unique_diagnostics(detection, rejection_reasons)
+            return CalibrationCaptureFeedback(
+                source_id=source_id,
+                accepted=False,
+                sample_count=current_count,
+                message=message,
+                detection=detection,
+            )
+
+        sample_count = self._append_sample(source_id=source_id, sample=sample)
+        return CalibrationCaptureFeedback(
+            source_id=source_id,
+            accepted=True,
+            sample_count=sample_count,
+            message=message,
+            detection=detection,
+        )
+
+    def try_add_detection_set(
+        self,
+        detections_by_source: dict[str, ChessboardDetectionResult],
+        pattern: Literal["chessboard", "charuco"] | str | None = None,
+        allow_relaxed_sync: bool = True,
+        workflow_mode: Literal["hybrid", "intrinsics", "sync_extrinsics"] = "hybrid",
+    ) -> dict[str, CalibrationCaptureFeedback]:
+        """Store single-camera samples and synchronized capture sets from precomputed detections."""
+        selected_pattern = self._normalize_pattern_name(pattern)
+        mode = str(workflow_mode).lower().strip()
+        if mode not in {"hybrid", "intrinsics", "sync_extrinsics"}:
+            mode = "hybrid"
+        strict_candidates: dict[str, CalibrationSample] = {}
+        relaxed_candidates: dict[str, CalibrationSample] = {}
+        sync_candidates: dict[str, CalibrationSample] = {}
+        strict_messages: dict[str, str] = {}
+        relaxed_messages: dict[str, str] = {}
+        sync_messages: dict[str, str] = {}
+        rejected_messages: dict[str, tuple[str, list[str]]] = {}
+
+        for source_id, detection in detections_by_source.items():
+            strict_sample, strict_message, strict_reasons = self._build_sample_from_detection(
+                source_id=source_id,
+                detection=detection,
+                selected_pattern=selected_pattern,
+                acceptance_mode="intrinsics",
+            )
+
+            if mode == "intrinsics":
+                if strict_sample is not None:
+                    strict_candidates[source_id] = strict_sample
+                    strict_messages[source_id] = strict_message
+                else:
+                    rejected_messages[source_id] = (strict_message, strict_reasons)
+                continue
+
+            if mode == "sync_extrinsics":
+                sync_sample: CalibrationSample | None = None
+                sync_message = strict_message
+                sync_reasons = strict_reasons
+
+                if strict_sample is not None:
+                    strict_sample.accepted_for_intrinsics = False
+                    sync_sample = strict_sample
+                    sync_message = (
+                        f"{source_id}: accepted sync candidate "
+                        f"(pattern={selected_pattern}, quality={sync_sample.quality_score:.2f}, "
+                        f"coverage={sync_sample.coverage_ratio * 100:.1f}%)."
+                    )
+                    sync_reasons = []
+                elif allow_relaxed_sync:
+                    relaxed_sample, relaxed_message, relaxed_reasons = self._build_sample_from_detection(
+                        source_id=source_id,
+                        detection=detection,
+                        selected_pattern=selected_pattern,
+                        acceptance_mode="synchronized_relaxed",
+                    )
+                    if relaxed_sample is not None:
+                        relaxed_sample.accepted_for_intrinsics = False
+                        sync_sample = relaxed_sample
+                        sync_message = (
+                            f"{source_id}: accepted sync candidate "
+                            f"(pattern={selected_pattern}, quality={sync_sample.quality_score:.2f}, "
+                            f"coverage={sync_sample.coverage_ratio * 100:.1f}%) | relaxed thresholds."
+                        )
+                        sync_reasons = []
+                    else:
+                        sync_message = relaxed_message
+                        sync_reasons = relaxed_reasons
+
+                if sync_sample is not None:
+                    sync_candidates[source_id] = sync_sample
+                    sync_messages[source_id] = sync_message
+                else:
+                    rejected_messages[source_id] = (sync_message, sync_reasons)
+                continue
+
+            if strict_sample is not None:
+                strict_candidates[source_id] = strict_sample
+                strict_messages[source_id] = strict_message
+                continue
+
+            if allow_relaxed_sync:
+                relaxed_sample, relaxed_message, relaxed_reasons = self._build_sample_from_detection(
+                    source_id=source_id,
+                    detection=detection,
+                    selected_pattern=selected_pattern,
+                    acceptance_mode="synchronized_relaxed",
+                )
+                if relaxed_sample is not None:
+                    relaxed_candidates[source_id] = relaxed_sample
+                    relaxed_messages[source_id] = relaxed_message
+                    continue
+                rejected_messages[source_id] = (relaxed_message, relaxed_reasons)
+                continue
+
+            rejected_messages[source_id] = (strict_message, strict_reasons)
+
+        accepted_samples: dict[str, CalibrationSample] = dict(strict_candidates)
+        accepted_messages: dict[str, str] = dict(strict_messages)
+        capture_group_id: str | None = None
+        captured_at_iso = datetime.now().isoformat()
+
+        if mode == "intrinsics":
+            accepted_samples = dict(strict_candidates)
+            accepted_messages = dict(strict_messages)
+        elif mode == "sync_extrinsics":
+            accepted_samples = {}
+            accepted_messages = {}
+            if len(sync_candidates) >= 2:
+                accepted_samples = dict(sync_candidates)
+                accepted_messages = dict(sync_messages)
+        elif len(strict_candidates) + len(relaxed_candidates) >= 2:
+            accepted_samples.update(relaxed_candidates)
+            accepted_messages.update(relaxed_messages)
+
+        if mode == "sync_extrinsics":
+            if len(accepted_samples) >= 2:
+                capture_group_id = f"sync_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        elif mode == "hybrid":
+            if len(accepted_samples) >= 2:
+                capture_group_id = f"sync_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+        feedbacks: dict[str, CalibrationCaptureFeedback] = {}
+        for source_id, detection in detections_by_source.items():
+            current_count = self.observation_count(source_id, include_sync_only=True)
+            sample = accepted_samples.get(source_id)
+            if sample is None:
+                if mode == "sync_extrinsics" and source_id in sync_candidates:
+                    wait_reason = "Waiting for at least one more camera with a synchronized valid view."
+                    self._append_unique_diagnostics(detection, [wait_reason])
+                    feedbacks[source_id] = CalibrationCaptureFeedback(
+                        source_id=source_id,
+                        accepted=False,
+                        sample_count=current_count,
+                        message=f"{source_id}: sync candidate detected but not stored yet ({wait_reason.lower()})",
+                        detection=detection,
+                    )
+                    continue
+
+                if mode == "hybrid" and source_id in relaxed_candidates:
+                    wait_reason = "Waiting for at least one more camera with a synchronized valid view."
+                    self._append_unique_diagnostics(detection, [wait_reason])
+                    feedbacks[source_id] = CalibrationCaptureFeedback(
+                        source_id=source_id,
+                        accepted=False,
+                        sample_count=current_count,
+                        message=f"{source_id}: detected but not stored yet ({wait_reason.lower()})",
+                        detection=detection,
+                    )
+                    continue
+
+                rejected_message, rejected_reasons = rejected_messages.get(
+                    source_id,
+                    (
+                        f"{source_id}: sample rejected.",
+                        ["Sample rejected."],
+                    ),
+                )
+                self._append_unique_diagnostics(detection, rejected_reasons)
+                feedbacks[source_id] = CalibrationCaptureFeedback(
+                    source_id=source_id,
+                    accepted=False,
+                    sample_count=current_count,
+                    message=rejected_message,
+                    detection=detection,
+                )
+                continue
+
+            sample.capture_group_id = capture_group_id
+            sample_count = self._append_sample(source_id=source_id, sample=sample)
+            sync_suffix = ""
+            if capture_group_id is not None:
+                sync_suffix = f" | synchronized set with {len(accepted_samples)} camera(s)"
+            if not sample.accepted_for_intrinsics:
+                self._append_unique_diagnostics(
+                    detection,
+                    ["Accepted for synchronized multi-camera capture with relaxed thresholds."],
+                )
+            feedbacks[source_id] = CalibrationCaptureFeedback(
+                source_id=source_id,
+                accepted=True,
+                sample_count=sample_count,
+                message=accepted_messages[source_id] + sync_suffix,
+                detection=detection,
+            )
+
+        if capture_group_id is not None:
+            self._capture_sets.append(
+                CalibrationCaptureSet(
+                    capture_group_id=capture_group_id,
+                    pattern_type=selected_pattern,
+                    samples_by_source=dict(accepted_samples),
+                    captured_at_iso=captured_at_iso,
+                )
+            )
+
+        return feedbacks
+
+    def try_add_observation_set(
+        self,
+        frames_by_source: dict[str, U8Array],
+        pattern: Literal["chessboard", "charuco"] | str | None = None,
+        allow_relaxed_sync: bool = True,
+        workflow_mode: Literal["hybrid", "intrinsics", "sync_extrinsics"] = "hybrid",
+    ) -> dict[str, CalibrationCaptureFeedback]:
+        """Capture a synchronized multi-camera observation set when multiple views are valid."""
+        selected_pattern = self._normalize_pattern_name(pattern)
+        detections = {
+            source_id: self.detect_pattern(
+                source_id=source_id,
+                frame_bgr=frame_bgr,
+                pattern=selected_pattern,
+            )
+            for source_id, frame_bgr in frames_by_source.items()
+        }
+        return self.try_add_detection_set(
+            detections_by_source=detections,
+            pattern=selected_pattern,
+            allow_relaxed_sync=allow_relaxed_sync,
+            workflow_mode=workflow_mode,
+        )
+
+    def add_chessboard_observation(self, source_id: str, frame_bgr: U8Array) -> bool:
+        """Backward-compatible helper used by older UI hooks."""
+        feedback = self.try_add_observation(source_id, frame_bgr)
+        return feedback.accepted
+
+    def sample_statistics(self, source_id: str) -> dict[str, float]:
+        """Return quality and coverage stats for a camera's accepted samples."""
+        samples = self._samples.get(source_id, [])
+        if not samples:
+            return {"count": 0.0, "mean_quality": 0.0, "mean_coverage": 0.0}
+        qualities = np.array([sample.quality_score for sample in samples], dtype=np.float32)
+        coverages = np.array([sample.coverage_ratio for sample in samples], dtype=np.float32)
+        return {
+            "count": float(len(samples)),
+            "mean_quality": float(np.mean(qualities)),
+            "mean_coverage": float(np.mean(coverages)),
+        }
+
+    def _normalize_pattern_name(self, pattern: Literal["chessboard", "charuco"] | str | None) -> str:
+        selected_pattern = str(pattern or self._default_pattern).lower().strip()
+        if selected_pattern not in {"chessboard", "charuco"}:
+            return "chessboard"
+        return selected_pattern
+
+    def _build_sample_from_detection(
+        self,
+        source_id: str,
+        detection: ChessboardDetectionResult,
+        selected_pattern: str,
+        acceptance_mode: Literal["intrinsics", "synchronized_relaxed"],
+    ) -> tuple[CalibrationSample | None, str, list[str]]:
+        current_count = self.observation_count(source_id, include_sync_only=True)
+        if not detection.found or detection.corners is None:
+            rejection = [f"{selected_pattern} not detected."]
+            return None, f"{source_id}: {selected_pattern} not detected.", rejection
+
+        existing_samples = self._samples.get(source_id, [])
+        if existing_samples and any(sample.pattern_type != selected_pattern for sample in existing_samples):
+            rejection = ["Mixed calibration patterns for one camera are not supported."]
+            return None, f"{source_id}: rejected due to mixed pattern usage.", rejection
+
+        size_set = {sample.image_size for sample in existing_samples}
+        if size_set and detection.image_size not in size_set:
+            rejection = ["Image size mismatch with previous samples."]
+            return None, f"{source_id}: rejected due to inconsistent image size {detection.image_size}.", rejection
+
+        rejection_reasons = self._capture_rejection_reasons(
+            detection=detection,
+            selected_pattern=selected_pattern,
+            acceptance_mode=acceptance_mode,
+        )
+        if rejection_reasons:
+            return None, f"{source_id}: sample rejected ({'; '.join(rejection_reasons)}).", rejection_reasons
+
+        if selected_pattern == "charuco" and detection.charuco_ids is None:
+            rejection = ["Charuco IDs missing after interpolation."]
+            return None, f"{source_id}: sample rejected (Charuco IDs missing).", rejection
+
+        if not self._is_sample_novel(existing_samples, detection):
+            rejection = ["Sample too similar to existing captures; move/rotate board more."]
+            return None, f"{source_id}: sample rejected (low novelty).", rejection
+
+        object_points = self._object_template.copy()
+        charuco_ids: NDArray[np.int32] | None = None
+        if selected_pattern == "charuco" and detection.charuco_ids is not None:
+            object_points = self._charuco_object_points_for_ids(detection.charuco_ids)
+            charuco_ids = detection.charuco_ids.copy()
+
+        sample = CalibrationSample(
+            pattern_type=selected_pattern,  # type: ignore[arg-type]
+            object_points=object_points,
+            image_points=detection.corners.copy(),
+            charuco_ids=charuco_ids,
+            image_size=detection.image_size,
+            quality_score=detection.quality_score,
+            coverage_ratio=detection.coverage_ratio,
+            sharpness_score=detection.sharpness_score,
+            captured_at_iso=datetime.now().isoformat(),
+            accepted_for_intrinsics=acceptance_mode == "intrinsics",
+        )
+        acceptance_suffix = ""
+        if acceptance_mode == "synchronized_relaxed":
+            acceptance_suffix = " | relaxed synchronized thresholds | sync-only"
+        return (
+            sample,
+            (
+                f"{source_id}: accepted sample #{current_count + 1} "
+                f"(pattern={selected_pattern}, quality={detection.quality_score:.2f}, "
+                f"coverage={detection.coverage_ratio * 100:.1f}%){acceptance_suffix}."
+            ),
+            [],
+        )
+
+    def _append_sample(self, source_id: str, sample: CalibrationSample) -> int:
+        samples = self._samples.setdefault(source_id, [])
+        samples.append(sample)
+        return len(samples)
+
+    def _is_sample_novel(self, samples: list[CalibrationSample], detection: ChessboardDetectionResult) -> bool:
+        if not samples or detection.corners is None:
+            return True
+        current_points = detection.corners.reshape(-1, 2)
+        current_centroid = np.mean(current_points, axis=0)
+        recent = samples[-10:]
+        for sample in recent:
+            previous_points = sample.image_points.reshape(-1, 2)
+            previous_centroid = np.mean(previous_points, axis=0)
+            centroid_dist = float(np.linalg.norm(current_centroid - previous_centroid))
+            coverage_delta = abs(detection.coverage_ratio - sample.coverage_ratio)
+            if centroid_dist < self._min_sample_novelty_px and coverage_delta < 0.015:
+                return False
+        return True
+
+    def _capture_rejection_reasons(
+        self,
+        detection: ChessboardDetectionResult,
+        selected_pattern: str,
+        acceptance_mode: Literal["intrinsics", "synchronized_relaxed"],
+    ) -> list[str]:
+        reasons: list[str] = []
+        if acceptance_mode == "intrinsics":
+            min_quality = self._min_quality_score
+            min_coverage = self._min_coverage_ratio
+            min_charuco_corners = self._min_charuco_corners
+            mode_label = "intrinsics"
+        else:
+            min_quality = self._sync_min_quality_score
+            min_coverage = self._sync_min_coverage_ratio
+            min_charuco_corners = max(6, self._min_charuco_corners - 2)
+            mode_label = "synchronized multi-camera capture"
+
+        if detection.quality_score < min_quality:
+            reasons.append(
+                f"Quality too low for {mode_label} ({detection.quality_score:.2f} < {min_quality:.2f})."
+            )
+        if detection.coverage_ratio < min_coverage:
+            reasons.append(
+                "Coverage too low for "
+                f"{mode_label} ({detection.coverage_ratio * 100:.1f}% < {min_coverage * 100:.1f}%)."
+            )
+        if selected_pattern == "charuco" and detection.detected_corners < min_charuco_corners:
+            reasons.append(
+                f"Too few Charuco corners for {mode_label} "
+                f"({detection.detected_corners}/{min_charuco_corners})."
+            )
+        return reasons
+
+    def _append_unique_diagnostics(
+        self,
+        detection: ChessboardDetectionResult,
+        reasons: list[str],
+    ) -> None:
+        for reason in reasons:
+            normalized = reason.strip()
+            if normalized and normalized not in detection.diagnostics:
+                detection.diagnostics.append(normalized)
+
+    def _charuco_object_points_for_ids(self, ids: NDArray[np.int32]) -> FloatArray:
+        board_corners = self._charuco_board_corners()
+        if board_corners.size == 0:
+            return np.zeros((0, 3), np.float32)
+        flat_ids = ids.flatten()
+        points: list[np.ndarray] = []
+        for corner_id in flat_ids:
+            if 0 <= int(corner_id) < board_corners.shape[0]:
+                points.append(board_corners[int(corner_id)])
+        if not points:
+            return np.zeros((0, 3), np.float32)
+        return np.array(points, dtype=np.float32)
+
+    def _charuco_board_corners(self) -> FloatArray:
+        if self._charuco_board is None:
+            return np.zeros((0, 3), np.float32)
+        if hasattr(self._charuco_board, "getChessboardCorners"):
+            corners = self._charuco_board.getChessboardCorners()
+            return np.array(corners, dtype=np.float32).reshape(-1, 3)
+        corners = getattr(self._charuco_board, "chessboardCorners", None)
+        if corners is None:
+            return np.zeros((0, 3), np.float32)
+        return np.array(corners, dtype=np.float32).reshape(-1, 3)
+
+    def solve_intrinsics(self) -> CalibrationBundle:
+        """Solve intrinsics per camera and include diagnostics/reprojection metrics."""
+        cameras: dict[str, CameraCalibration] = {}
+        notes: list[str] = []
+
+        for source_id in self.sources():
+            all_samples = self._samples.get(source_id, [])
+            samples = [sample for sample in all_samples if sample.accepted_for_intrinsics]
+            diagnostics: list[str] = []
+            image_sizes = {sample.image_size for sample in all_samples}
+            sample_count = len(samples)
+            sync_only_count = len(all_samples) - sample_count
+
+            if sync_only_count > 0:
+                diagnostics.append(
+                    f"Ignoring {sync_only_count} synchronized-only sample(s) accepted with relaxed thresholds."
+                )
+
+            if not all_samples:
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status="unsolved",
+                    num_samples=0,
+                    diagnostics=["No calibration samples captured."],
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+                continue
+
+            if sample_count == 0:
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status="insufficient_data",
+                    num_samples=0,
+                    image_size=next(iter(image_sizes)) if image_sizes else None,
+                    diagnostics=diagnostics
+                    + ["No intrinsics-grade samples captured yet. Capture larger board views per camera."],
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+                continue
+
+            if len(image_sizes) > 1:
+                diag = "Inconsistent image sizes across samples."
+                diagnostics.append(diag)
+                notes.append(f"Camera {source_id}: {diag}")
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status="failed",
+                    num_samples=sample_count,
+                    image_size=next(iter(image_sizes)),
+                    diagnostics=diagnostics,
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+                continue
+
+            image_size = next(iter(image_sizes))
+            mean_coverage = float(np.mean([sample.coverage_ratio for sample in samples]))
+
+            if sample_count < self._min_samples_per_camera:
+                warning = (
+                    f"Too few frames ({sample_count}/{self._min_samples_per_camera}). "
+                    "Calibration may be unstable."
+                )
+                diagnostics.append(warning)
+                notes.append(f"Camera {source_id}: {warning}")
+
+            if mean_coverage < self._min_coverage_ratio * 1.3:
+                warning = (
+                    f"Insufficient coverage (mean {mean_coverage * 100:.1f}%). "
+                    "Capture wider board positions."
+                )
+                diagnostics.append(warning)
+                notes.append(f"Camera {source_id}: {warning}")
+
+            if sample_count < 3:
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status="insufficient_data",
+                    num_samples=sample_count,
+                    image_size=image_size,
+                    diagnostics=diagnostics,
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+                continue
+
+            pattern_types = {sample.pattern_type for sample in samples}
+            if len(pattern_types) > 1:
+                diag = "Mixed sample pattern types in one camera set."
+                diagnostics.append(diag)
+                notes.append(f"Camera {source_id}: {diag}")
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status="failed",
+                    num_samples=sample_count,
+                    image_size=image_size,
+                    diagnostics=diagnostics,
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+                continue
+            pattern_type = next(iter(pattern_types)) if pattern_types else "chessboard"
+            diagnostics.append(f"Pattern: {pattern_type}")
+
+            try:
+                if pattern_type == "charuco":
+                    if not self._charuco_available or self._charuco_board is None:
+                        raise RuntimeError("cv2.aruco unavailable for Charuco calibration.")
+                    aruco = cv2.aruco  # type: ignore[attr-defined]
+                    charuco_corners = [sample.image_points for sample in samples if sample.charuco_ids is not None]
+                    charuco_ids = [sample.charuco_ids for sample in samples if sample.charuco_ids is not None]
+                    if len(charuco_corners) < 3:
+                        cameras[source_id] = CameraCalibration(
+                            source_id=source_id,
+                            status="insufficient_data",
+                            num_samples=sample_count,
+                            image_size=image_size,
+                            diagnostics=diagnostics
+                            + ["Need at least 3 valid Charuco captures with interpolated corners."],
+                            calibrated_at_iso=datetime.now().isoformat(),
+                        )
+                        continue
+                    retval, camera_matrix, dist_coeffs, rvecs, tvecs = aruco.calibrateCameraCharuco(
+                        charuco_corners,
+                        charuco_ids,  # type: ignore[arg-type]
+                        self._charuco_board,
+                        image_size,
+                        None,
+                        None,
+                    )
+                    reprojection_error = float(retval)
+                else:
+                    object_points = [sample.object_points for sample in samples]
+                    image_points = [sample.image_points for sample in samples]
+                    _, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+                        object_points,
+                        image_points,
+                        image_size,
+                        None,
+                        None,
+                    )
+                    reprojection_error = self._compute_reprojection_error(
+                        object_points=object_points,
+                        image_points=image_points,
+                        rvecs=rvecs,
+                        tvecs=tvecs,
+                        camera_matrix=camera_matrix,
+                        distortion=dist_coeffs,
+                    )
+                status = "solved_with_warnings" if diagnostics else "solved"
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status=status,
+                    num_samples=sample_count,
+                    intrinsics=camera_matrix.tolist(),
+                    distortion=dist_coeffs.flatten().tolist(),
+                    # Intrinsics solve does not determine global camera extrinsics.
+                    rotation=None,
+                    translation=None,
+                    image_size=image_size,
+                    reprojection_error=reprojection_error,
+                    diagnostics=diagnostics
+                    + [
+                        "Extrinsics not solved in this step. "
+                        "Load/provide world-referenced rotation+translation for real triangulation."
+                    ],
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+            except Exception as exc:
+                failure = f"Calibration failed ({exc})."
+                diagnostics.append(failure)
+                notes.append(f"Camera {source_id}: {failure}")
+                cameras[source_id] = CameraCalibration(
+                    source_id=source_id,
+                    status="failed",
+                    num_samples=sample_count,
+                    image_size=image_size,
+                    diagnostics=diagnostics,
+                    calibrated_at_iso=datetime.now().isoformat(),
+                )
+
+        if not cameras:
+            notes.append("No observations available. Capture chessboard or Charuco samples first.")
+
+        notes.append("Next step: solve synchronized multi-camera extrinsics from shared calibration captures.")
+        notes.append("TODO: Add bundle-adjustment refinement over intrinsics+extrinsics.")
+        notes.append("TODO: Add pairwise baseline diagnostics and epipolar residual plots.")
+        notes.append(
+            "Triangulation assumption: camera rotation/translation must be world-to-camera extrinsics "
+            "provided separately from intrinsics solve."
+        )
+
+        bundle = CalibrationBundle(
+            cameras=cameras,
+            notes=notes,
+            metadata={
+                "schema_version": CALIBRATION_SCHEMA_VERSION,
+                "board_shape": self._board_shape,
+                "square_size_m": self._square_size_m,
+                "min_samples_per_camera": self._min_samples_per_camera,
+                "min_quality_score": self._min_quality_score,
+                "min_coverage_ratio": self._min_coverage_ratio,
+                "charuco_available": self._charuco_available and self._charuco_board is not None,
+                "charuco_squares_x": self._charuco_squares_x,
+                "charuco_squares_y": self._charuco_squares_y,
+                "charuco_square_size_m": self._charuco_square_size_m,
+                "charuco_marker_size_m": self._charuco_marker_size_m,
+                "solved_at_iso": datetime.now().isoformat(),
+            },
+        )
+        self._last_solution = bundle
+        return bundle
+
+    def solve_extrinsics(
+        self,
+        base_bundle: CalibrationBundle | None = None,
+        reference_source_id: str | None = None,
+    ) -> CalibrationBundle:
+        """Solve pairwise extrinsics against a reference camera using synchronized capture sets."""
+        working_bundle = copy.deepcopy(base_bundle or self._last_solution or self.solve_intrinsics())
+        working_bundle.metadata = dict(working_bundle.metadata)
+        cameras = working_bundle.cameras
+        solved_at_iso = datetime.now().isoformat()
+        notes = self._strip_extrinsics_placeholder_notes(working_bundle.notes)
+
+        solved_intrinsics_ids = [
+            source_id
+            for source_id, camera in cameras.items()
+            if camera.intrinsics is not None and camera.distortion is not None
+        ]
+        if len(solved_intrinsics_ids) < 2:
+            notes.append("Extrinsics solve requires at least two cameras with valid intrinsics.")
+            working_bundle.notes = self._dedupe_strings(notes)
+            self._last_solution = working_bundle
+            return working_bundle
+
+        if not self._capture_sets:
+            notes.append("No synchronized calibration capture sets available for extrinsics solve.")
+            working_bundle.notes = self._dedupe_strings(notes)
+            self._last_solution = working_bundle
+            return working_bundle
+
+        reference_id = (
+            reference_source_id
+            if reference_source_id in solved_intrinsics_ids
+            else sorted(solved_intrinsics_ids)[0]
+        )
+        reference_camera = cameras[reference_id]
+        reference_camera.rotation = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        reference_camera.translation = [0.0, 0.0, 0.0]
+        reference_camera.status = self._status_with_extrinsics(reference_camera.status, has_warning=False)
+        reference_camera.calibrated_at_iso = solved_at_iso
+        reference_camera.diagnostics = self._dedupe_strings(
+            [
+                diag
+                for diag in reference_camera.diagnostics
+                if not diag.startswith("Extrinsics not solved in this step.")
+            ]
+            + [f"Reference camera for extrinsics solve: {reference_id}."]
+        )
+
+        metadata_extrinsics: dict[str, object] = {
+            "reference_source_id": reference_id,
+            "solved_at_iso": solved_at_iso,
+            reference_id: {
+                "rotation": list(reference_camera.rotation),
+                "translation": list(reference_camera.translation),
+                "stereo_rms": 0.0,
+                "baseline_m": 0.0,
+                "pair_count": 0,
+                "status": "reference_camera",
+            },
+        }
+
+        solved_pairs = 0
+        for source_id in sorted(solved_intrinsics_ids):
+            if source_id == reference_id:
+                continue
+
+            pair_data = self._collect_stereo_observations(
+                reference_source_id=reference_id,
+                target_source_id=source_id,
+            )
+            camera = cameras[source_id]
+            if pair_data is None:
+                message = (
+                    f"No usable synchronized capture sets shared by {reference_id} and {source_id} "
+                    "for extrinsics solve."
+                )
+                camera.diagnostics = self._dedupe_strings(camera.diagnostics + [message])
+                if camera.status.startswith("solved"):
+                    camera.status = "solved_with_warnings"
+                notes.append(f"Camera {source_id}: {message}")
+                continue
+
+            object_points, image_points_ref, image_points_target, image_size, pair_notes = pair_data
+            reference_matrix = np.array(reference_camera.intrinsics, dtype=np.float64)
+            reference_distortion = np.array(reference_camera.distortion, dtype=np.float64).reshape(-1, 1)
+            camera_matrix = np.array(camera.intrinsics, dtype=np.float64)
+            distortion = np.array(camera.distortion, dtype=np.float64).reshape(-1, 1)
+
+            try:
+                retval, _, _, _, _, rotation_matrix, translation_vec, _, _ = cv2.stereoCalibrate(
+                    object_points,
+                    image_points_ref,
+                    image_points_target,
+                    reference_matrix.copy(),
+                    reference_distortion.copy(),
+                    camera_matrix.copy(),
+                    distortion.copy(),
+                    image_size,
+                    criteria=(
+                        cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+                        100,
+                        1e-6,
+                    ),
+                    flags=cv2.CALIB_FIX_INTRINSIC,
+                )
+            except Exception as exc:
+                message = f"Stereo extrinsics solve failed ({exc})."
+                camera.diagnostics = self._dedupe_strings(camera.diagnostics + [message])
+                if camera.status.startswith("solved"):
+                    camera.status = "solved_with_warnings"
+                notes.append(f"Camera {source_id}: {message}")
+                continue
+
+            baseline_m = float(np.linalg.norm(np.array(translation_vec, dtype=np.float64).reshape(3)))
+            solve_summary = (
+                f"Extrinsics solved relative to {reference_id}: stereo RMS {float(retval):.4f}, "
+                f"baseline {baseline_m:.3f} m, synchronized sets {len(object_points)}."
+            )
+            has_warning = bool(pair_notes) or float(retval) > 1.2 or len(object_points) < 3
+
+            camera.rotation = np.array(rotation_matrix, dtype=np.float64).reshape(-1).tolist()
+            camera.translation = np.array(translation_vec, dtype=np.float64).reshape(-1).tolist()
+            camera.status = self._status_with_extrinsics(camera.status, has_warning=has_warning)
+            camera.calibrated_at_iso = solved_at_iso
+            camera.diagnostics = self._dedupe_strings(
+                [
+                    diag
+                    for diag in camera.diagnostics
+                    if not diag.startswith("Extrinsics not solved in this step.")
+                ]
+                + pair_notes
+                + [solve_summary]
+            )
+
+            metadata_extrinsics[source_id] = {
+                "rotation": list(camera.rotation),
+                "translation": list(camera.translation),
+                "stereo_rms": float(retval),
+                "baseline_m": baseline_m,
+                "pair_count": len(object_points),
+                "status": camera.status,
+            }
+            notes.append(f"Camera {source_id}: {solve_summary}")
+            solved_pairs += 1
+
+        if solved_pairs == 0:
+            notes.append("Extrinsics solve completed without any usable camera pairs.")
+        else:
+            notes.append(
+                f"Extrinsics solved for {solved_pairs + 1} camera(s) with {reference_id} as reference."
+            )
+        notes.append(
+            f"World coordinate frame is anchored to reference camera {reference_id} "
+            "(world-to-camera extrinsics stored per camera)."
+        )
+
+        working_bundle.metadata["extrinsics"] = metadata_extrinsics
+        working_bundle.metadata["extrinsics_reference_source_id"] = reference_id
+        working_bundle.metadata["extrinsics_solved_at_iso"] = solved_at_iso
+        working_bundle.notes = self._dedupe_strings(notes)
+        self._last_solution = working_bundle
+        return working_bundle
+
+    def _collect_stereo_observations(
+        self,
+        reference_source_id: str,
+        target_source_id: str,
+    ) -> tuple[list[FloatArray], list[FloatArray], list[FloatArray], tuple[int, int], list[str]] | None:
+        object_points: list[FloatArray] = []
+        image_points_ref: list[FloatArray] = []
+        image_points_target: list[FloatArray] = []
+        image_size: tuple[int, int] | None = None
+        skipped_sets = 0
+
+        for capture_set in self._capture_sets:
+            reference_sample = capture_set.samples_by_source.get(reference_source_id)
+            target_sample = capture_set.samples_by_source.get(target_source_id)
+            if reference_sample is None or target_sample is None:
+                continue
+
+            pair = self._build_stereo_observation_pair(
+                reference_sample=reference_sample,
+                target_sample=target_sample,
+            )
+            if pair is None:
+                skipped_sets += 1
+                continue
+
+            pair_object_points, pair_ref_points, pair_target_points = pair
+            object_points.append(pair_object_points)
+            image_points_ref.append(pair_ref_points)
+            image_points_target.append(pair_target_points)
+            image_size = reference_sample.image_size
+
+        if not object_points or image_size is None:
+            return None
+
+        notes: list[str] = []
+        if len(object_points) < 3:
+            notes.append(
+                f"Only {len(object_points)} synchronized set(s) available; extrinsics may be unstable."
+            )
+        if skipped_sets > 0:
+            notes.append(f"Skipped {skipped_sets} synchronized capture set(s) due to mismatched detections.")
+        return object_points, image_points_ref, image_points_target, image_size, notes
+
+    def _build_stereo_observation_pair(
+        self,
+        reference_sample: CalibrationSample,
+        target_sample: CalibrationSample,
+    ) -> tuple[FloatArray, FloatArray, FloatArray] | None:
+        if reference_sample.pattern_type != target_sample.pattern_type:
+            return None
+
+        if reference_sample.pattern_type == "charuco":
+            return self._match_charuco_pair(reference_sample=reference_sample, target_sample=target_sample)
+
+        reference_points = reference_sample.image_points.astype(np.float32)
+        target_points = target_sample.image_points.astype(np.float32)
+        object_points = reference_sample.object_points.astype(np.float32)
+        if reference_points.shape[0] != target_points.shape[0]:
+            return None
+        if object_points.shape[0] != reference_points.shape[0]:
+            return None
+        if object_points.shape[0] < 4:
+            return None
+        return object_points, reference_points, target_points
+
+    def _match_charuco_pair(
+        self,
+        reference_sample: CalibrationSample,
+        target_sample: CalibrationSample,
+    ) -> tuple[FloatArray, FloatArray, FloatArray] | None:
+        if reference_sample.charuco_ids is None or target_sample.charuco_ids is None:
+            return None
+
+        reference_ids = reference_sample.charuco_ids.reshape(-1)
+        target_ids = target_sample.charuco_ids.reshape(-1)
+        reference_points = reference_sample.image_points.reshape(-1, 2)
+        target_points = target_sample.image_points.reshape(-1, 2)
+
+        reference_map = {int(corner_id): reference_points[idx] for idx, corner_id in enumerate(reference_ids)}
+        target_map = {int(corner_id): target_points[idx] for idx, corner_id in enumerate(target_ids)}
+        shared_ids = sorted(set(reference_map.keys()) & set(target_map.keys()))
+        if len(shared_ids) < 4:
+            return None
+
+        ids_array = np.array(shared_ids, dtype=np.int32).reshape(-1, 1)
+        object_points = self._charuco_object_points_for_ids(ids_array)
+        if object_points.shape[0] != len(shared_ids):
+            return None
+
+        matched_reference = np.array([reference_map[corner_id] for corner_id in shared_ids], dtype=np.float32)
+        matched_target = np.array([target_map[corner_id] for corner_id in shared_ids], dtype=np.float32)
+        return (
+            object_points.astype(np.float32),
+            matched_reference.reshape(-1, 1, 2),
+            matched_target.reshape(-1, 1, 2),
+        )
+
+    def _status_with_extrinsics(self, current_status: str, has_warning: bool) -> str:
+        if not current_status.startswith("solved"):
+            return current_status
+        if has_warning or "warning" in current_status:
+            return "solved_with_warnings_extrinsics"
+        return "solved_extrinsics"
+
+    def _strip_extrinsics_placeholder_notes(self, notes: list[str]) -> list[str]:
+        drop_prefixes = (
+            "TODO: Add synchronized multi-camera extrinsics",
+            "Next step: solve synchronized multi-camera extrinsics",
+            "Triangulation assumption:",
+            "World coordinate frame is anchored to reference camera",
+            "Extrinsics solved for ",
+        )
+        return [note for note in notes if not note.startswith(drop_prefixes)]
+
+    def _dedupe_strings(self, items: list[str]) -> list[str]:
+        output: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            output.append(normalized)
+            seen.add(normalized)
+        return output
+
+    def undistort_frame(
+        self,
+        source_id: str,
+        frame_bgr: U8Array,
+        bundle: CalibrationBundle | None,
+    ) -> U8Array:
+        """Apply undistortion for preview if intrinsics exist for this camera."""
+        if bundle is None:
+            return frame_bgr
+        camera = bundle.cameras.get(source_id)
+        if camera is None or camera.intrinsics is None or camera.distortion is None:
+            return frame_bgr
+
+        matrix = np.array(camera.intrinsics, dtype=np.float64)
+        distortion = np.array(camera.distortion, dtype=np.float64)
+        return cv2.undistort(frame_bgr, matrix, distortion)
+
+    def draw_detection_overlay(
+        self,
+        frame_bgr: U8Array,
+        detection: ChessboardDetectionResult,
+        accepted: bool | None = None,
+    ) -> U8Array:
+        """Render detection and diagnostics overlay for calibration preview."""
+        rendered = frame_bgr.copy()
+        if detection.found and detection.corners is not None:
+            if detection.pattern_type == "charuco" and self._charuco_available and detection.charuco_ids is not None:
+                aruco = cv2.aruco  # type: ignore[attr-defined]
+                aruco.drawDetectedCornersCharuco(
+                    rendered,
+                    detection.corners,
+                    detection.charuco_ids,
+                    (80, 230, 140),
+                )
+            else:
+                cv2.drawChessboardCorners(rendered, self._board_shape, detection.corners, True)
+
+        status_text = "Detected" if detection.found else "Not detected"
+        if accepted is True:
+            status_text = "Accepted"
+        elif accepted is False:
+            status_text = "Rejected"
+
+        color = (70, 220, 120) if detection.found else (80, 120, 255)
+        if accepted is False:
+            color = (60, 100, 255)
+
+        cv2.putText(
+            rendered,
+            (
+                f"{detection.pattern_type} | {status_text} | corners={detection.detected_corners} "
+                f"| q={detection.quality_score:.2f} c={detection.coverage_ratio * 100:.1f}%"
+            ),
+            (12, 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.56,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+        if detection.diagnostics:
+            cv2.putText(
+                rendered,
+                detection.diagnostics[0],
+                (12, 44),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (120, 180, 255),
+                1,
+                cv2.LINE_AA,
+            )
+        return rendered
+
+    def _build_object_points(self) -> FloatArray:
+        cols, rows = self._board_shape
+        grid = np.zeros((cols * rows, 3), np.float32)
+        grid[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
+        return grid * self._square_size_m
+
+    def _compute_reprojection_error(
+        self,
+        object_points: list[FloatArray],
+        image_points: list[FloatArray],
+        rvecs: tuple[NDArray[np.float64], ...] | list[NDArray[np.float64]],
+        tvecs: tuple[NDArray[np.float64], ...] | list[NDArray[np.float64]],
+        camera_matrix: NDArray[np.float64],
+        distortion: NDArray[np.float64],
+    ) -> float:
+        total_error = 0.0
+        total_views = 0
+        for obj, img, rvec, tvec in zip(object_points, image_points, rvecs, tvecs):
+            projected, _ = cv2.projectPoints(obj, rvec, tvec, camera_matrix, distortion)
+            error = cv2.norm(img, projected, cv2.NORM_L2) / max(len(projected), 1)
+            total_error += float(error)
+            total_views += 1
+        if total_views == 0:
+            return 0.0
+        return total_error / total_views

@@ -80,11 +80,14 @@ class OpenCVCaptureSession:
         try:
             for index, source in enumerate(self._sources):
                 capture, probe = self._open_source(source, index)
+                self._probe_results[source.source_id] = probe
                 if not probe.opened:
                     capture.release()
-                    raise RuntimeError(f"Could not open source '{source.source_id}' ({source.uri}).")
+                    continue
                 self._captures[source.source_id] = capture
-                self._probe_results[source.source_id] = probe
+            if not self._captures:
+                failed_sources = ", ".join(f"{source.source_id} ({source.uri})" for source in self._sources)
+                raise RuntimeError(f"Could not open any capture source: {failed_sources}.")
             return dict(self._probe_results)
         except Exception:
             self.close()
