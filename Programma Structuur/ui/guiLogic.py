@@ -21,8 +21,8 @@ class Logic:
         self.nav_buttons = [
             self.window.btn_home,
             self.window.btn_cameras,
-            self.window.btn_directory,
             self.window.btn_results,
+            self.window.btn_directory,
             self.window.btn_diagnostics,
             self.window.btn_advanced_settings
         ]

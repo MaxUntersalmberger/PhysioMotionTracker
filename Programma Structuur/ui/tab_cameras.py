@@ -145,21 +145,17 @@ class CameraFrame(QtWidgets.QFrame):
         self.combo_select_cam.blockSignals(False)
 
     def manage_thread(self):
-        # Stop bestaande thread
+        # Stop bestaande thread als die er al is
         if self.thread:
             self.thread.stop()
             self.thread = None
 
-        # Start alleen als de globale I/O knop 'aan' staat
-        if self.parent_tab and not self.parent_tab.is_running:
-            self.video_label.setText("Systeem staat uit (druk op I/O)")
-            return
-
         opencv_idx = self.combo_select_cam.currentData()
         if opencv_idx is not None and opencv_idx != -1:
-            # Haal FPS op uit de centrale UI via de parent_tab
+            # Haal direct de FPS op uit de spinbox in de GUI
             global_fps = self.parent_tab.ui.spin_cap_fps.value()
             
+            # Maak de thread aan en start hem direct
             self.thread = CameraThread(
                 camera_index=opencv_idx, 
                 width=self.spin_width.value(), 
@@ -219,9 +215,6 @@ class TabCameras:
         
         self.scroll_area.setWidget(self.scroll_content)
         self.main_layout.addWidget(self.scroll_area)
-        
-        # Koppel de I/O knop uit de GUI
-        self.ui.ptn_cap_recording_start.clicked.connect(self.toggle_system)
 
         # --- NIEUW: Maak de Intrinsics & Extrinsics knoppen checkable ---
         self.ui.btn_cap_intrinsics_start.setCheckable(True)
@@ -247,27 +240,6 @@ class TabCameras:
         layout.addWidget(self.btn_plus)
         self.update_grid()
 
-    def toggle_system(self):
-        """Beheert de globale Start/Stop status en de kleur van de knop."""
-        self.is_running = not self.is_running
-        
-        if self.is_running:
-            # Knop blauw maken
-            self.ui.ptn_cap_recording_start.setStyleSheet("")
-            # Start alle threads met de huidige FPS van de spinbox
-            for frame in self.camera_frames:
-                frame.manage_thread()
-        else:
-            # Knop herstellen naar standaard (grijs)
-            self.ui.ptn_cap_recording_start.setStyleSheet("")
-            # Stop alle threads
-            for frame in self.camera_frames:
-                if frame.thread:
-                    frame.thread.stop()
-                    frame.thread = None
-                    frame.video_label.clear()
-                    frame.video_label.setText("Systeem staat uit")
-
     def add_new_camera(self):
         available_cameras = QCameraInfo.availableCameras()
         camera_to_use_idx = -1
@@ -287,9 +259,8 @@ class TabCameras:
         
         new_cam.combo_select_cam.setCurrentIndex(camera_to_use_idx + 1)
         
-        # Als het systeem al aan stond, start de nieuwe camera direct
-        if self.is_running:
-            new_cam.manage_thread()
+        # Start de nieuwe camera direct op zonder ergens op te wachten
+        new_cam.manage_thread()
             
         self.update_grid()
 
