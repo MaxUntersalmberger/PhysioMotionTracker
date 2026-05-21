@@ -320,6 +320,7 @@ class TabCameras:
         self.logic = logic_instance
         self.ui = logic_instance.window
         self.camera_frames = []
+        self.extrinsic_captures = 0
 
     def setup(self):
         self.main_layout = self.ui.gridLayout_6
@@ -333,6 +334,16 @@ class TabCameras:
         
         self.scroll_area.setWidget(self.scroll_content)
         self.main_layout.addWidget(self.scroll_area)
+
+        # --- NIEUW: Extrinsics Balk toevoegen onderaan het hoofdframe (frame_cam / main_layout) ---
+        self.progress_extrinsics = QtWidgets.QProgressBar()
+        self.progress_extrinsics.setRange(0, 20)
+        self.progress_extrinsics.setValue(0)
+        self.progress_extrinsics.setAlignment(QtCore.Qt.AlignCenter)
+        self.update_extrinsics_text()
+        
+        # Voeg de balk onderaan de hoofdlayout toe
+        self.main_layout.addWidget(self.progress_extrinsics)
 
         # --- NIEUW: Maak de Intrinsics & Extrinsics knoppen checkable ---
         self.ui.btn_cap_intrinsics_start.setCheckable(True)
@@ -348,6 +359,16 @@ class TabCameras:
         self.ui.btn_cap_calculate_extrinsics.clicked.connect(self.calculate_extrinsics)
         
         self.setup_add_button()
+
+    def update_extrinsics_text(self):
+        self.progress_extrinsics.setFormat(f"Totale Extrinsics Progressie: {self.extrinsic_captures}/20")
+
+    def add_extrinsic_capture(self):
+        """Hoogt de centrale extrinsics balk op"""
+        self.extrinsic_captures += 1
+        visual_value = min(self.extrinsic_captures, 20)
+        self.progress_extrinsics.setValue(visual_value)
+        self.update_extrinsics_text()
 
     def setup_add_button(self):
         self.add_frame = QtWidgets.QFrame()
@@ -448,6 +469,11 @@ class TabCameras:
 
         for frame in self.camera_frames:
             frame.reset_intrinsic_captures()
+        
+        # 2. VOLLEDIGE RESET VAN DE EXTRINSICS (Nieuw & opgelost!)
+        self.extrinsic_captures = 0
+        self.progress_extrinsics.setValue(0)
+        self.update_extrinsics_text()
 
     def log_to_console(self, text):
         """Hulpfunctie om tekst met een tijdstempel naar de console te sturen."""
@@ -499,3 +525,5 @@ class TabCameras:
             self.log_to_console(f"Systeem: Intrinsics capture toegevoegd aan camera {cam_idx} ({cam_name})!")
         else:
             self.log_to_console(f"Fout: Camera index {cam_idx} bestaat niet. Actieve indexen zijn 0 tot {len(active_frames)-1}.")
+    
+    

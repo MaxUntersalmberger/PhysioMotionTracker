@@ -96,7 +96,10 @@ class Logic:
                         self.tab_cameras.log_to_console("Fout: Cameranummer moet een geldig getal zijn. (Bijv: capture intrinsics 0)")
                 else:
                     self.tab_cameras.log_to_console("Fout: Ongeldig commando. Gebruik: capture intrinsics <nummer>")
-
+            # Controleer op capture extrinsics (Nu globaal!)
+            elif command.startswith("capture extrinsics"):
+                self.tab_cameras.add_extrinsic_capture()
+                self.tab_cameras.log_to_console("Systeem: Globale Extrinsics capture toegevoegd!")
             elif command == "home":
                  self.switch_page(0)
             elif command == "cameras":
