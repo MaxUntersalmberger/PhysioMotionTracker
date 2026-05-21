@@ -80,6 +80,9 @@ class CameraFrame(QtWidgets.QFrame):
         self.parent_tab = None # Wordt later gezet
 
         self.intrinsic_captures = 0
+        # Status of deze camera momenteel gemaximaliseerd is
+        self.is_maximized = False
+        self.popout_window = None
         
         self.setFrameShape(QtWidgets.QFrame.Box)
         self.setMinimumSize(250, 200)
@@ -92,6 +95,11 @@ class CameraFrame(QtWidgets.QFrame):
         self.combo_select_cam = QtWidgets.QComboBox()
         self.refresh_camera_list() 
         self.combo_select_cam.currentIndexChanged.connect(self.manage_thread)
+
+        self.btn_maximize = QtWidgets.QPushButton("⛶")
+        self.btn_maximize.setFixedSize(30, 30)
+        self.btn_maximize.setToolTip("Vergroot / Verklein deze camera")
+        self.btn_maximize.clicked.connect(self.toggle_maximize)
         
         self.btn_settings = QtWidgets.QPushButton("⋮")
         self.btn_settings.setFixedSize(30, 30)
@@ -103,6 +111,7 @@ class CameraFrame(QtWidgets.QFrame):
         self.btn_delete.clicked.connect(self.full_cleanup)
 
         self.controls_layout.addWidget(self.combo_select_cam, 1)
+        self.controls_layout.addWidget(self.btn_maximize)
         self.controls_layout.addWidget(self.btn_settings)
         self.controls_layout.addWidget(self.btn_delete)
         self.main_layout.addLayout(self.controls_layout)
@@ -201,13 +210,6 @@ class CameraFrame(QtWidgets.QFrame):
                 exposure=self.spin_exposure.value()
             )
 
-    def update_frame(self, img):
-        if not self.btn_settings.isChecked():
-            pixmap = QtGui.QPixmap.fromImage(img)
-            self.video_label.setPixmap(pixmap.scaled(
-                self.video_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
-            ))
-
     def toggle_view(self):
         self.stacked.setCurrentIndex(1 if self.btn_settings.isChecked() else 0)
 
@@ -215,15 +217,103 @@ class CameraFrame(QtWidgets.QFrame):
         if self.thread: self.thread.stop()
         self.on_delete_callback(self)
 
-    def resizeEvent(self, event):
-        self.setFixedHeight(int(self.width() * 0.75))
-        super().resizeEvent(event)
-
     def reset_intrinsic_captures(self):
         """Zet de intrinsics teller en de progressiebalk volledig terug naar 0."""
         self.intrinsic_captures = 0
         self.progress_intrinsics.setValue(0)
         self.update_progress_text()
+
+    def toggle_maximize(self):
+        """Opent een nieuw los venster voor deze camera met een live feed."""
+        if not self.is_maximized:
+            # Controleer eerst of er wel een camera is geselecteerd
+            if self.combo_select_cam.currentData() == -1 or not self.thread:
+                QtWidgets.QMessageBox.warning(self, "Geen actieve camera", 
+                    "Selecteer eerst een werkende camera voordat je deze vergroot.")
+                return
+
+            self.is_maximized = True
+            
+            # Maak een nieuw los venster aan
+            self.popout_window = QtWidgets.QDialog(self)
+            cam_title = self.combo_select_cam.currentText()
+            self.popout_window.setWindowTitle(f"Live Feed - {cam_title}")
+            self.popout_window.resize(800, 600)
+            
+            # Maak de layout voor het losse venster
+            layout = QtWidgets.QVBoxLayout(self.popout_window)
+            layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Maak het videolabel aan
+            self.popout_window.label_video = QtWidgets.QLabel("Live video stream start...")
+            self.popout_window.label_video.setAlignment(QtCore.Qt.AlignCenter)
+            self.popout_window.label_video.setStyleSheet("background-color: black;")
+            
+            # CRUCIALE FIX: Sta toe dat het label krimpt naar 1x1 pixel. 
+            # Hierdoor kun je het venster te allen tijde kleiner slepen!
+            self.popout_window.label_video.setMinimumSize(1, 1)
+            
+            layout.addWidget(self.popout_window.label_video)
+            
+            # We slaan het laatste QImage frame op in de class om te gebruiken bij resizen
+            self.last_img_frame = None
+            
+            # Zorg dat het beeld direct vloeiend meeschaalt (zowel groter als kleiner)
+            def popout_resize_event(event):
+                if hasattr(self, 'last_img_frame') and self.last_img_frame:
+                    pixmap = QtGui.QPixmap.fromImage(self.last_img_frame)
+                    self.popout_window.label_video.setPixmap(pixmap.scaled(
+                        self.popout_window.label_video.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
+                    ))
+                QtWidgets.QDialog.resizeEvent(self.popout_window, event)
+                
+            self.popout_window.resizeEvent = popout_resize_event
+            
+            # Koppel het sluit-signaal
+            self.popout_window.rejected.connect(self.window_closed)
+            
+            # Toon het venster
+            self.popout_window.show()
+            
+            if self.parent_tab:
+                self.parent_tab.log_to_console(f"Systeem: Camera ({cam_title}) geopend in los venster.")
+        else:
+            if self.popout_window:
+                self.popout_window.close()
+
+    def update_frame(self, img):
+        """Verwerkt het binnenkomende OpenCV frame en toont deze op de juiste plek."""
+        # Sla het originele frame op voor de resizeEvent van het grote venster
+        self.last_img_frame = img
+        pixmap = QtGui.QPixmap.fromImage(img)
+        
+        # Als het pop-out venster openstaat, sturen we het beeld daarheen
+        if self.is_maximized and self.popout_window and hasattr(self.popout_window, 'label_video'):
+            self.popout_window.label_video.setPixmap(pixmap.scaled(
+                self.popout_window.label_video.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
+            ))
+            
+            # Laat in het kleine frame achterblijven dat hij gemaximaliseerd is
+            if self.video_label.text() != "Gemaximaliseerd...":
+                self.video_label.setText("Gemaximaliseerd...")
+                
+        elif not self.btn_settings.isChecked():
+            # Anders sturen we het beeld gewoon naar het normale kleine frame in de GUI
+            self.video_label.setPixmap(pixmap.scaled(
+                self.video_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
+            ))
+
+    def window_closed(self):
+        """Wordt aangeroepen als het losse venster wordt gesloten."""
+        self.is_maximized = False
+        self.popout_window = None
+        self.video_label.setText("Video herstelt...")
+        if self.parent_tab:
+            self.parent_tab.log_to_console("Systeem: Los venster gesloten, video hersteld naar grid.")
+
+    def resizeEvent(self, event):
+        self.setFixedHeight(int(self.width() * 0.80))
+        super().resizeEvent(event)
 
 class TabCameras:
     def __init__(self, logic_instance):
