@@ -78,6 +78,8 @@ class CameraFrame(QtWidgets.QFrame):
         self.on_delete_callback = on_delete_callback
         self.thread = None
         self.parent_tab = None # Wordt later gezet
+
+        self.intrinsic_captures = 0
         
         self.setFrameShape(QtWidgets.QFrame.Box)
         self.setMinimumSize(250, 200)
@@ -134,6 +136,27 @@ class CameraFrame(QtWidgets.QFrame):
         self.stacked.addWidget(self.video_label)
         self.stacked.addWidget(self.settings_frame)
         self.main_layout.addWidget(self.stacked)
+
+        # --- Progressiebalk voor Intrinsics Captures (NIEUW) ---
+        self.progress_intrinsics = QtWidgets.QProgressBar()
+        self.progress_intrinsics.setRange(0, 100)
+        self.progress_intrinsics.setValue(0)
+        self.progress_intrinsics.setAlignment(QtCore.Qt.AlignCenter)
+        self.update_progress_text() # Zet de initiële tekst naar "0/100"
+        self.main_layout.addWidget(self.progress_intrinsics)
+
+    def update_progress_text(self):
+        """Zorgt dat de tekst altijd 'aantal/100' toont, ook boven de 100."""
+        self.progress_intrinsics.setFormat(f"{self.intrinsic_captures}/100")
+
+    def add_intrinsic_capture(self):
+        """Hoog de capture teller op en update de progressiebalk."""
+        self.intrinsic_captures += 1
+        
+        # De balk vult tot max 100%, maar de waarde blijft intern stijgen
+        visual_value = min(self.intrinsic_captures, 100)
+        self.progress_intrinsics.setValue(visual_value)
+        self.update_progress_text()
 
     def refresh_camera_list(self):
         self.combo_select_cam.blockSignals(True)
@@ -196,12 +219,17 @@ class CameraFrame(QtWidgets.QFrame):
         self.setFixedHeight(int(self.width() * 0.75))
         super().resizeEvent(event)
 
+    def reset_intrinsic_captures(self):
+        """Zet de intrinsics teller en de progressiebalk volledig terug naar 0."""
+        self.intrinsic_captures = 0
+        self.progress_intrinsics.setValue(0)
+        self.update_progress_text()
+
 class TabCameras:
     def __init__(self, logic_instance):
         self.logic = logic_instance
         self.ui = logic_instance.window
         self.camera_frames = []
-        self.is_running = False # Status van de I/O knop
 
     def setup(self):
         self.main_layout = self.ui.gridLayout_6
@@ -328,6 +356,9 @@ class TabCameras:
         self.ui.btn_cap_intrinsics_start.setText("Start")
         self.ui.btn_cap_extrinsics_start.setText("Start")
 
+        for frame in self.camera_frames:
+            frame.reset_intrinsic_captures()
+
     def log_to_console(self, text):
         """Hulpfunctie om tekst met een tijdstempel naar de console te sturen."""
         import datetime
@@ -355,3 +386,26 @@ class TabCameras:
         
         # Voor nu simuleren we dat het gelukt is:
         self.log_to_console("Systeem: Extrinsieke kalibratie succesvol afgerond!")
+
+    def capture_intrinsics_for_camera(self, cam_idx):
+        """
+        Voegt een intrinsics capture toe aan een specifieke camera op basis van de index 
+        in de lijst van actieve cameraframes.
+        """
+        # Filter eerst de frames die daadwerkelijk een gekoppelde camera hebben (niet op 'Geen Camera' staan)
+        active_frames = [f for f in self.camera_frames if f.combo_select_cam.currentData() != -1]
+        
+        if not active_frames:
+            self.log_to_console("Systeem: Er zijn momenteel geen actieve camera's geopend.")
+            return
+
+        # Controleer of het opgevraagde nummer binnen het bereik van actieve camera's valt
+        if 0 <= cam_idx < len(active_frames):
+            target_frame = active_frames[cam_idx]
+            target_frame.add_intrinsic_capture()
+            
+            # Haal de naam van de camera op voor een duidelijke log
+            cam_name = target_frame.combo_select_cam.currentText()
+            self.log_to_console(f"Systeem: Intrinsics capture toegevoegd aan camera {cam_idx} ({cam_name})!")
+        else:
+            self.log_to_console(f"Fout: Camera index {cam_idx} bestaat niet. Actieve indexen zijn 0 tot {len(active_frames)-1}.")

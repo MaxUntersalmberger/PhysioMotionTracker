@@ -34,10 +34,12 @@ class Logic:
         self.window.btn_diagnostics.clicked.connect(lambda: self.switch_page(4))
         self.window.btn_advanced_settings.clicked.connect(lambda: self.switch_page(5))
         
-        
         # --- HOME ACTION CONNECTIONS ---
         self.window.btn_newproject.clicked.connect(self.create_new_project)
         self.window.btn_loadproject.clicked.connect(self.load_project)
+
+        # --- CONSOLE INPUT CONNECTION ---
+        self.window.lineedit_console_input.returnPressed.connect(self.handle_console_input)
 
         # --- INITIALISEER TABS ---
         self.tab_home = TabHome(self)
@@ -62,6 +64,54 @@ class Logic:
         self.window.actionOpen_documentation.triggered.connect(self.open_documentation)
 
         self.switch_page(0)
+
+    # --- CONSOLE INPUT AFHANDELING ---
+    def handle_console_input(self):
+        """Wordt uitgevoerd wanneer de gebruiker op Enter drukt in de invoerbalk"""
+        # 1. Haal de tekst op uit de QLineEdit en haal onnodige spaties weg
+        input_text = self.window.lineedit_console_input.text().strip()
+        
+        # Controleer of de gebruiker daadwerkelijk iets heeft getypt
+        if input_text:
+            # 2. Toon het getypte commando in het grote log-scherm
+            self.window.plaintextedit_console.appendPlainText(f"> {input_text}")
+            
+            # 3. VERWERK HIER DE TEKST / VOER JE LOGICA UIT
+            command = input_text.lower()
+
+            # Controleer of het commando begint met "capture intrinsics"
+            if command.startswith("capture intrinsics"):
+                # Splits de tekst op spaties om het nummer te achterhalen
+                parts = command.split()
+                
+                # Het commando moet bestaan uit: ['capture', 'intrinsics', 'NUMMER']
+                if len(parts) == 3:
+                    cam_number_str = parts[2]
+                    
+                    if cam_number_str.isdigit():
+                        cam_idx = int(cam_number_str)
+                        # Roep de nieuwe functie aan in tab_cameras
+                        self.tab_cameras.capture_intrinsics_for_camera(cam_idx)
+                    else:
+                        self.tab_cameras.log_to_console("Fout: Cameranummer moet een geldig getal zijn. (Bijv: capture intrinsics 0)")
+                else:
+                    self.tab_cameras.log_to_console("Fout: Ongeldig commando. Gebruik: capture intrinsics <nummer>")
+
+            elif command == "home":
+                 self.switch_page(0)
+            elif command == "cameras":
+                self.switch_page(1)
+            elif command == "results":
+                self.switch_page(2)
+            elif command == "directory":
+                self.switch_page(3)
+            elif command == "diagnostics":
+                self.switch_page(4)
+            elif command == "settings":
+                self.switch_page(5)
+            
+        # 4. Maak de invoerbalk direct leeg zodat je opnieuw kunt typen
+        self.window.lineedit_console_input.clear()
 
     def switch_page(self, index):
         """Wisselt de actieve pagina in het stackedWidget en update de knop-styling"""
