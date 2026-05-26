@@ -25,6 +25,7 @@ class LiveCaptureWorker(QThread):
         sources: list[CameraSourceConfig],
         target_fps: float,
         max_frame_width: int = 0,
+        max_frame_height: int = 0,
         requested_width: int = 0,
         requested_height: int = 0,
     ) -> None:
@@ -32,6 +33,7 @@ class LiveCaptureWorker(QThread):
         self._sources = sources
         self._target_fps = max(1.0, target_fps)
         self._max_frame_width = max(0, int(max_frame_width))
+        self._max_frame_height = max(0, int(max_frame_height))
         self._requested_width = max(0, int(requested_width))
         self._requested_height = max(0, int(requested_height))
         self._stop_event = threading.Event()
@@ -130,15 +132,24 @@ class LiveCaptureWorker(QThread):
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     def _maybe_resize(self, frame):
-        if self._max_frame_width <= 0:
+        if self._max_frame_width <= 0 and self._max_frame_height <= 0:
             return frame
         height, width = frame.shape[:2]
-        if width <= self._max_frame_width or width <= 0:
+        if width <= 0 or height <= 0:
             return frame
-        scale = self._max_frame_width / float(width)
+        scale_candidates: list[float] = []
+        if self._max_frame_width > 0:
+            scale_candidates.append(self._max_frame_width / float(width))
+        if self._max_frame_height > 0:
+            scale_candidates.append(self._max_frame_height / float(height))
+        scale = min(scale_candidates) if scale_candidates else 1.0
+        if scale >= 1.0:
+            return frame
+        target_width = max(1, int(round(width * scale)))
+        target_height = max(1, int(round(height * scale)))
         resized = cv2.resize(
             frame,
-            (self._max_frame_width, max(1, int(height * scale))),
+            (target_width, target_height),
             interpolation=cv2.INTER_AREA,
         )
         return resized

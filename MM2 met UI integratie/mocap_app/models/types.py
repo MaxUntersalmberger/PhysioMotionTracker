@@ -152,6 +152,7 @@ class RuntimeTuning:
     capture_height: int = 0
     preview_fps: float = 20.0
     preview_max_width: int = 1280
+    preview_max_height: int = 720
     calibration_detection_hz: float = 4.0
     overlays_enabled: bool = True
     detection_capture_enabled: bool = False

@@ -146,6 +146,8 @@ class MainWindow(QMainWindow):
         self._calibration_panel.spatial_grid_changed.connect(self._on_spatial_grid_changed)
         if hasattr(self._calibration_panel, "sources_changed"):
             self._calibration_panel.sources_changed.connect(self._on_panel_sources_changed)
+        if hasattr(self._calibration_panel, "preview_options_changed"):
+            self._calibration_panel.preview_options_changed.connect(lambda: self._update_calibration_preview(force=True))
 
     def _set_display_timer_hz(self, hz: float) -> None:
         safe_hz = max(1.0, hz)
@@ -577,7 +579,7 @@ class MainWindow(QMainWindow):
                     pattern=self._calibration_pattern,
                 )
                 detections[source_id] = detection
-                if overlay_enabled:
+                if self._calibration_panel.overlay_enabled_for(source_id):
                     previews[source_id] = self._draw_calibration_preview_overlay(
                         source_id=source_id,
                         frame_bgr=preview,
@@ -593,7 +595,7 @@ class MainWindow(QMainWindow):
         elif overlay_enabled:
             for source_id, preview in list(previews.items()):
                 detection = detections.get(source_id)
-                if detection is not None:
+                if detection is not None and self._calibration_panel.overlay_enabled_for(source_id):
                     previews[source_id] = self._draw_calibration_preview_overlay(
                         source_id=source_id,
                         frame_bgr=preview,
@@ -620,8 +622,8 @@ class MainWindow(QMainWindow):
             bundle=self._current_calibration_bundle,
         )
 
-    def _display_calibration_preview_frame(self, frame_bgr: Any) -> Any:
-        if not self._calibration_panel.mirror_preview_enabled():
+    def _display_calibration_preview_frame(self, source_id: str, frame_bgr: Any) -> Any:
+        if not self._calibration_panel.mirror_preview_enabled_for(source_id):
             return frame_bgr
         return cv2.flip(frame_bgr, 1)
 
@@ -631,19 +633,12 @@ class MainWindow(QMainWindow):
         detections: dict[str, ChessboardDetectionResult],
         overlay_enabled: bool,
     ) -> dict[str, Any]:
-        if not self._calibration_panel.mirror_preview_enabled() and overlay_enabled:
-            return frames_by_source
-        if overlay_enabled:
-            return {
-                source_id: (
-                    frame_bgr
-                    if source_id in detections
-                    else self._display_calibration_preview_frame(frame_bgr)
-                )
-                for source_id, frame_bgr in frames_by_source.items()
-            }
         return {
-            source_id: self._display_calibration_preview_frame(frame_bgr)
+            source_id: (
+                frame_bgr
+                if overlay_enabled and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections
+                else self._display_calibration_preview_frame(source_id, frame_bgr)
+            )
             for source_id, frame_bgr in frames_by_source.items()
         }
 
@@ -655,8 +650,8 @@ class MainWindow(QMainWindow):
         sample_count: int | None = None,
         accepted: bool | None = None,
     ) -> Any:
-        mirror_preview = self._calibration_panel.mirror_preview_enabled()
-        display_frame = self._display_calibration_preview_frame(frame_bgr)
+        mirror_preview = self._calibration_panel.mirror_preview_enabled_for(source_id)
+        display_frame = self._display_calibration_preview_frame(source_id, frame_bgr)
         display_detection = self._mirror_detection_for_preview(detection, frame_bgr) if mirror_preview else detection
         return self._calibration_manager.draw_detection_overlay(
             display_frame,
@@ -851,6 +846,7 @@ class MainWindow(QMainWindow):
             sources=sources,
             target_fps=self._runtime_tuning.capture_fps if self._runtime_tuning.capture_fps > 0 else target_fps,
             max_frame_width=self._runtime_tuning.preview_max_width,
+            max_frame_height=self._runtime_tuning.preview_max_height,
             requested_width=self._runtime_tuning.capture_width,
             requested_height=self._runtime_tuning.capture_height,
         )
@@ -866,8 +862,19 @@ class MainWindow(QMainWindow):
             f"Starting live capture ({len(sources)} sources, "
             f"{self._runtime_tuning.capture_fps:.1f} FPS, "
             f"capture={self._runtime_tuning.capture_width or 'auto'}x{self._runtime_tuning.capture_height or 'auto'}, "
-            f"preview<= {self._runtime_tuning.preview_max_width or 'auto'})..."
+            f"preview<={self._preview_resolution_status_text()})..."
         )
+
+    def _preview_resolution_status_text(self) -> str:
+        width = int(getattr(self._runtime_tuning, "preview_max_width", 0) or 0)
+        height = int(getattr(self._runtime_tuning, "preview_max_height", 0) or 0)
+        if width <= 0 and height <= 0:
+            return "auto"
+        if height <= 0:
+            return f"{width}px wide"
+        if width <= 0:
+            return f"{height}px high"
+        return f"{width}x{height}"
 
     def _on_live_state_changed(self, state: str) -> None:
         self._refresh_live_status(force=True)
@@ -925,8 +932,8 @@ class MainWindow(QMainWindow):
         accepted: bool | None = None,
     ) -> Any:
         preview = self._prepare_calibration_preview_frame(source_id, frame_bgr)
-        if not self._calibration_panel.overlay_enabled():
-            return self._display_calibration_preview_frame(preview)
+        if not self._calibration_panel.overlay_enabled_for(source_id):
+            return self._display_calibration_preview_frame(source_id, preview)
         return self._draw_calibration_preview_overlay(
             source_id=source_id,
             frame_bgr=preview,

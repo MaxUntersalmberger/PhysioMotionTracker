@@ -75,6 +75,8 @@ class ConsoleStream(io.StringIO):
 class DesignedPreviewPopout(QDialog):
     rename_requested = Signal()
     auto_capture_toggled = Signal(bool)
+    overlay_toggled = Signal(bool)
+    mirror_toggled = Signal(bool)
     undistort_toggled = Signal(bool)
     remove_requested = Signal()
 
@@ -90,6 +92,12 @@ class DesignedPreviewPopout(QDialog):
         self._auto_button = QPushButton("Auto")
         self._auto_button.setCheckable(True)
         self._auto_button.setToolTip("Start auto capture")
+        self._overlay_button = QPushButton("Overlay")
+        self._overlay_button.setCheckable(True)
+        self._overlay_button.setToolTip("Toggle detection overlay for this camera")
+        self._mirror_button = QPushButton("Mirror")
+        self._mirror_button.setCheckable(True)
+        self._mirror_button.setToolTip("Mirror this camera preview")
         self._undistort_button = QPushButton("Undistort")
         self._undistort_button.setCheckable(True)
         self._undistort_button.setToolTip("Toggle undistortion preview")
@@ -102,6 +110,8 @@ class DesignedPreviewPopout(QDialog):
         controls.setSpacing(8)
         controls.addWidget(self._title_button, stretch=1)
         controls.addWidget(self._auto_button)
+        controls.addWidget(self._overlay_button)
+        controls.addWidget(self._mirror_button)
         controls.addWidget(self._undistort_button)
         controls.addWidget(self._delete_button)
 
@@ -118,6 +128,8 @@ class DesignedPreviewPopout(QDialog):
 
         self._title_button.clicked.connect(self.rename_requested)
         self._auto_button.toggled.connect(self.auto_capture_toggled)
+        self._overlay_button.toggled.connect(self.overlay_toggled)
+        self._mirror_button.toggled.connect(self.mirror_toggled)
         self._undistort_button.toggled.connect(self.undistort_toggled)
         self._delete_button.clicked.connect(self.remove_requested)
 
@@ -129,6 +141,16 @@ class DesignedPreviewPopout(QDialog):
         self._auto_button.blockSignals(True)
         self._auto_button.setChecked(active)
         self._auto_button.blockSignals(False)
+
+    def set_overlay_active(self, active: bool) -> None:
+        self._overlay_button.blockSignals(True)
+        self._overlay_button.setChecked(active)
+        self._overlay_button.blockSignals(False)
+
+    def set_mirror_active(self, active: bool) -> None:
+        self._mirror_button.blockSignals(True)
+        self._mirror_button.setChecked(active)
+        self._mirror_button.blockSignals(False)
 
     def set_undistort_active(self, active: bool) -> None:
         self._undistort_button.blockSignals(True)
@@ -159,6 +181,7 @@ class DesignedPreviewTile(QFrame):
     undistort_toggled = Signal(str, bool)
     auto_capture_requested = Signal()
     auto_capture_toggled = Signal(bool)
+    preview_options_changed = Signal()
     remove_requested = Signal(str)
     name_changed = Signal(str, str)
 
@@ -180,6 +203,15 @@ class DesignedPreviewTile(QFrame):
         self._auto_button.setToolTip("Start auto capture")
         self._auto_button.setMinimumWidth(58)
         self._auto_button.setCheckable(True)
+        self._overlay_button = QPushButton("Overlay")
+        self._overlay_button.setToolTip("Toggle detection overlay for this camera")
+        self._overlay_button.setMinimumWidth(70)
+        self._overlay_button.setCheckable(True)
+        self._overlay_button.setChecked(True)
+        self._mirror_button = QPushButton("Mirror")
+        self._mirror_button.setToolTip("Mirror this camera preview")
+        self._mirror_button.setMinimumWidth(62)
+        self._mirror_button.setCheckable(True)
         self._undistort = QPushButton("Undistort")
         self._undistort.setToolTip("Toggle undistortion preview")
         self._undistort.setMinimumWidth(82)
@@ -194,6 +226,8 @@ class DesignedPreviewTile(QFrame):
         controls.addWidget(self._title_button, stretch=1)
         controls.addWidget(self._open_button)
         controls.addWidget(self._auto_button)
+        controls.addWidget(self._overlay_button)
+        controls.addWidget(self._mirror_button)
         controls.addWidget(self._undistort)
         controls.addWidget(self._delete_button)
 
@@ -219,13 +253,15 @@ class DesignedPreviewTile(QFrame):
         layout.addWidget(self._progress)
 
         self.setFrameShape(QFrame.Shape.Box)
-        self.setMinimumSize(360, 300)
+        self.setMinimumSize(500, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._title_button.clicked.connect(self._rename_camera)
         self._open_button.clicked.connect(self._toggle_popout)
         self._auto_button.clicked.connect(self._toggle_auto_capture)
         self._delete_button.clicked.connect(lambda: self.remove_requested.emit(self._source_id))
+        self._overlay_button.toggled.connect(self._toggle_overlay)
+        self._mirror_button.toggled.connect(self._toggle_mirror)
         self._undistort.toggled.connect(self._toggle_undistort)
 
     @property
@@ -234,6 +270,12 @@ class DesignedPreviewTile(QFrame):
 
     def undistort_enabled(self) -> bool:
         return self._undistort.isChecked()
+
+    def overlay_enabled(self) -> bool:
+        return self._overlay_button.isChecked()
+
+    def mirror_enabled(self) -> bool:
+        return self._mirror_button.isChecked()
 
     def display_name(self) -> str:
         return self._display_name.strip() or self._source_id
@@ -267,6 +309,22 @@ class DesignedPreviewTile(QFrame):
         self._auto_button.blockSignals(False)
         if self._popout is not None:
             self._popout.set_auto_active(active)
+
+    def set_overlay_active(self, active: bool) -> None:
+        self._overlay_button.blockSignals(True)
+        self._overlay_button.setChecked(active)
+        self._overlay_button.blockSignals(False)
+        if self._popout is not None:
+            self._popout.set_overlay_active(active)
+        self.preview_options_changed.emit()
+
+    def set_mirror_active(self, active: bool) -> None:
+        self._mirror_button.blockSignals(True)
+        self._mirror_button.setChecked(active)
+        self._mirror_button.blockSignals(False)
+        if self._popout is not None:
+            self._popout.set_mirror_active(active)
+        self.preview_options_changed.emit()
 
     def set_sample_count(self, count: int) -> None:
         self._progress.setValue(min(max(int(count), 0), 100))
@@ -307,12 +365,36 @@ class DesignedPreviewTile(QFrame):
         if self._popout is not None:
             self._popout.set_undistort_active(checked)
         self.undistort_toggled.emit(self._source_id, checked)
+        self.preview_options_changed.emit()
+
+    def _toggle_overlay(self, checked: bool) -> None:
+        if self._popout is not None:
+            self._popout.set_overlay_active(checked)
+        self.preview_options_changed.emit()
+
+    def _toggle_mirror(self, checked: bool) -> None:
+        if self._popout is not None:
+            self._popout.set_mirror_active(checked)
+        self.preview_options_changed.emit()
 
     def _set_undistort_from_popout(self, checked: bool) -> None:
         self._undistort.blockSignals(True)
         self._undistort.setChecked(checked)
         self._undistort.blockSignals(False)
         self.undistort_toggled.emit(self._source_id, checked)
+        self.preview_options_changed.emit()
+
+    def _set_overlay_from_popout(self, checked: bool) -> None:
+        self._overlay_button.blockSignals(True)
+        self._overlay_button.setChecked(checked)
+        self._overlay_button.blockSignals(False)
+        self.preview_options_changed.emit()
+
+    def _set_mirror_from_popout(self, checked: bool) -> None:
+        self._mirror_button.blockSignals(True)
+        self._mirror_button.setChecked(checked)
+        self._mirror_button.blockSignals(False)
+        self.preview_options_changed.emit()
 
     def close_popout(self) -> None:
         if self._popout is not None:
@@ -323,10 +405,14 @@ class DesignedPreviewTile(QFrame):
             self._popout = DesignedPreviewPopout(f"Live Feed - {self.display_name()}", self.display_name(), self)
             self._popout.rename_requested.connect(self._rename_camera)
             self._popout.auto_capture_toggled.connect(self._toggle_auto_capture)
+            self._popout.overlay_toggled.connect(self._set_overlay_from_popout)
+            self._popout.mirror_toggled.connect(self._set_mirror_from_popout)
             self._popout.undistort_toggled.connect(self._set_undistort_from_popout)
             self._popout.remove_requested.connect(lambda: self.remove_requested.emit(self._source_id))
             self._popout.finished.connect(self._on_popout_closed)
             self._popout.set_auto_active(self._auto_button.isChecked())
+            self._popout.set_overlay_active(self._overlay_button.isChecked())
+            self._popout.set_mirror_active(self._mirror_button.isChecked())
             self._popout.set_undistort_active(self._undistort.isChecked())
         if self._last_pixmap is not None:
             self._popout.set_frame(self._last_pixmap)
@@ -376,6 +462,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
     workflow_mode_changed = Signal(str)
     spatial_grid_changed = Signal(int, int)
     sources_changed = Signal(object)
+    preview_options_changed = Signal()
 
     def __init__(self, window: "DesignedMainWindow", default_camera_csv: str, default_fps: float) -> None:
         super().__init__(window)
@@ -558,13 +645,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._capture_resolution_combo.addItem("1920 x 1080", (1920, 1080))
         self._capture_resolution_combo.setCurrentIndex(3)
-        self._preview_width_combo = QComboBox()
-        self._preview_width_combo.addItem("Auto", 0)
-        self._preview_width_combo.addItem("1920 px", 1920)
-        self._preview_width_combo.addItem("1280 px", 1280)
-        self._preview_width_combo.addItem("960 px", 960)
-        self._preview_width_combo.addItem("640 px", 640)
-        self._preview_width_combo.setCurrentIndex(2)
+        self._preview_resolution_combo = QComboBox()
+        self._preview_resolution_combo.addItem("Auto", (0, 0))
+        self._preview_resolution_combo.addItem("640 x 480", (640, 480))
+        self._preview_resolution_combo.addItem("960 x 540", (960, 540))
+        self._preview_resolution_combo.addItem("1280 x 720", (1280, 720))
+        self._preview_resolution_combo.addItem("1920 x 1080", (1920, 1080))
+        self._preview_resolution_combo.setCurrentIndex(3)
         self._probe_max_spin = self._spin(1, 20, 10)
 
         self._chess_cols_spin = self._spin(2, 30, 9)
@@ -740,7 +827,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form.addRow("Capture FPS", QLabel("Use the FPS field on the Camera page"))
         form.addRow("Capture Resolution", self._capture_resolution_combo)
         form.addRow("Preview FPS", self._preview_fps_spin)
-        form.addRow("Preview Width", self._preview_width_combo)
+        form.addRow("Preview Resolution", self._preview_resolution_combo)
         form.addRow("Calibration Detect Hz", self._detect_hz_spin)
         form.addRow("Probe Max Index", self._probe_max_spin)
         form.addRow("", self._probe_status)
@@ -1073,13 +1160,16 @@ class DesignedCalibrationPanel(QtCore.QObject):
         capture_size = self._capture_resolution_combo.currentData()
         if not isinstance(capture_size, tuple) or len(capture_size) != 2:
             capture_size = (0, 0)
-        preview_width = int(self._preview_width_combo.currentData() or 0)
+        preview_size = self._preview_resolution_combo.currentData()
+        if not isinstance(preview_size, tuple) or len(preview_size) != 2:
+            preview_size = (0, 0)
         return RuntimeTuning(
             capture_fps=float(self.window.spin_cap_fps.value()),
             capture_width=int(capture_size[0]),
             capture_height=int(capture_size[1]),
             preview_fps=float(self._preview_fps_spin.value()),
-            preview_max_width=preview_width if preview_width > 0 else 0,
+            preview_max_width=int(preview_size[0]),
+            preview_max_height=int(preview_size[1]),
             calibration_detection_hz=float(self._detect_hz_spin.value()),
             overlays_enabled=self._overlay_checkbox.isChecked(),
             detection_capture_enabled=False,
@@ -1105,6 +1195,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             tile.set_display_name(self._camera_names.get(source_id, source_id))
             tile.undistort_toggled.connect(self.undistort_toggled)
             tile.auto_capture_toggled.connect(self._on_tile_auto_capture_toggled)
+            tile.preview_options_changed.connect(self.preview_options_changed)
             tile.remove_requested.connect(self._remove_source)
             tile.name_changed.connect(self._on_camera_name_changed)
             self._tiles[source_id] = tile
@@ -1364,10 +1455,20 @@ class DesignedCalibrationPanel(QtCore.QObject):
         return self._relaxed_sync_checkbox.isChecked()
 
     def overlay_enabled(self) -> bool:
-        return self._overlay_checkbox.isChecked()
+        if not self._tiles:
+            return self._overlay_checkbox.isChecked()
+        return any(tile.overlay_enabled() for tile in self._tiles.values())
+
+    def overlay_enabled_for(self, source_id: str) -> bool:
+        tile = self._tiles.get(source_id)
+        return tile.overlay_enabled() if tile else self._overlay_checkbox.isChecked()
 
     def mirror_preview_enabled(self) -> bool:
         return self._mirror_checkbox.isChecked()
+
+    def mirror_preview_enabled_for(self, source_id: str) -> bool:
+        tile = self._tiles.get(source_id)
+        return self._mirror_checkbox.isChecked() or (tile.mirror_enabled() if tile else False)
 
     def undistort_enabled_for(self, source_id: str) -> bool:
         tile = self._tiles.get(source_id)

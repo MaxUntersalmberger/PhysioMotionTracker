@@ -2246,7 +2246,7 @@ class CalibrationManager:
             f"quality:{detection.quality_score:.2f} | coverage:{detection.coverage_ratio * 100:.1f}%"
         )
         diagnostics_text = detection.diagnostics[0] if detection.diagnostics else ""
-        band_height = 78 if diagnostics_text else 56
+        band_height = 78
         canvas = np.zeros((height + band_height, width, 3), dtype=rendered.dtype)
         canvas[band_height:, :] = rendered
         rendered = canvas
