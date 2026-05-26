@@ -1,9 +1,7 @@
-Deze GitHub is voor en door studenten :) :D
-
-test
+#Deze GitHub is voor en door studenten :D
 
 Installation: 
-## Install/run from source code (i.e. the code in this repo)
+# Install/run from source code (i.e. the code in this repo)
 
 Open an [Anaconda-enabled command prompt](https://www.anaconda.org) (or your preferred method of environment management) and enter the following commands:
 
@@ -39,8 +37,8 @@ python PhysioMotionTracker/GUI/guiMain.py
 
 A GUI should pop up!
 
-## How to use:
+# How to use:
 
 On the main page you can create a new project or open an existing project. 
 
-# Selecting camera's
+## Selecting camera's
