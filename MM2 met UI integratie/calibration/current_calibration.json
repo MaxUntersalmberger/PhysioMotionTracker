@@ -1,0 +1,2754 @@
+{
+  "schema_version": 2,
+  "saved_at_iso": "2026-05-21T13:16:49.591999",
+  "metadata": {
+    "schema_version": 2,
+    "active_pattern": "charuco",
+    "pattern_types": [
+      "charuco"
+    ],
+    "calibration_board": {
+      "type": "charuco",
+      "squares": [
+        5,
+        3
+      ],
+      "square_size_m": 0.077,
+      "marker_size_m": 0.061
+    },
+    "sample_collection": {
+      "first_sample_at_iso": "2026-05-21T13:15:11.246423",
+      "last_sample_at_iso": "2026-05-21T13:15:57.362451",
+      "duration_sec": 46.116028,
+      "total_samples": 60,
+      "total_intrinsics_samples": 60,
+      "synchronized_sets": 0,
+      "per_camera": {
+        "cam0": {
+          "total_samples": 60,
+          "intrinsics_samples": 60,
+          "sync_only_samples": 0,
+          "first_sample_at_iso": "2026-05-21T13:15:11.246423",
+          "last_sample_at_iso": "2026-05-21T13:15:57.362451",
+          "duration_sec": 46.116028
+        }
+      }
+    },
+    "min_samples_per_camera": 8,
+    "min_quality_score": 0.25,
+    "min_coverage_ratio": 0.018,
+    "spatial_coverage": {
+      "grid": {
+        "cols": 5,
+        "rows": 3,
+        "total_cells": 15
+      },
+      "min_grid_coverage_ratio": 0.7,
+      "sample_filter": "intrinsics",
+      "overall_grid_coverage_ratio": 1.0,
+      "per_camera": {
+        "cam0": {
+          "source_id": "cam0",
+          "grid_cols": 5,
+          "grid_rows": 3,
+          "sample_count": 60,
+          "image_size": [
+            1280,
+            720
+          ],
+          "visited_cells": 15,
+          "total_cells": 15,
+          "grid_coverage_ratio": 1.0,
+          "center_spread_x_px": 845.1706390380859,
+          "center_spread_y_px": 390.1351623535156,
+          "edge_coverage_score": 1.0,
+          "corner_cell_hits": {
+            "top_left": 7,
+            "top_right": 9,
+            "bottom_left": 7,
+            "bottom_right": 12
+          },
+          "cell_hit_counts": [
+            [
+              7,
+              14,
+              17,
+              18,
+              9
+            ],
+            [
+              15,
+              28,
+              27,
+              34,
+              19
+            ],
+            [
+              7,
+              12,
+              10,
+              17,
+              12
+            ]
+          ],
+          "credited_visited_cells": 15,
+          "credited_grid_coverage_ratio": 1.0,
+          "credited_edge_coverage_score": 1.0,
+          "credited_corner_cell_hits": {
+            "top_left": 4,
+            "top_right": 4,
+            "bottom_left": 4,
+            "bottom_right": 4
+          },
+          "credited_cell_hit_counts": [
+            [
+              4,
+              4,
+              4,
+              4,
+              4
+            ],
+            [
+              4,
+              4,
+              4,
+              4,
+              4
+            ],
+            [
+              4,
+              4,
+              4,
+              4,
+              4
+            ]
+          ],
+          "credited_visited_cell_indices": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              0,
+              3
+            ],
+            [
+              0,
+              4
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              1,
+              3
+            ],
+            [
+              1,
+              4
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              2,
+              4
+            ]
+          ],
+          "spatial_credit_mode": "one_sample_one_footprint_cell",
+          "center_visited_cells": 13,
+          "center_grid_coverage_ratio": 0.8666666666666667,
+          "center_cell_hit_counts": [
+            [
+              1,
+              2,
+              9,
+              6,
+              1
+            ],
+            [
+              3,
+              7,
+              5,
+              6,
+              0
+            ],
+            [
+              0,
+              5,
+              4,
+              9,
+              2
+            ]
+          ],
+          "center_visited_cell_indices": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              0,
+              3
+            ],
+            [
+              0,
+              4
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              1,
+              3
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              2,
+              4
+            ]
+          ],
+          "visited_cell_indices": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              0,
+              2
+            ],
+            [
+              0,
+              3
+            ],
+            [
+              0,
+              4
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              1,
+              3
+            ],
+            [
+              1,
+              4
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              2,
+              3
+            ],
+            [
+              2,
+              4
+            ]
+          ],
+          "samples": [
+            {
+              "index": 1,
+              "captured_at_iso": "2026-05-21T13:15:11.246423",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                969.902,
+                477.047,
+                231.736,
+                75.002
+              ],
+              "board_center_px": [
+                1085.77,
+                514.548
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                4
+              ]
+            },
+            {
+              "index": 2,
+              "captured_at_iso": "2026-05-21T13:15:12.931712",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                890.46,
+                473.064,
+                239.204,
+                80.824
+              ],
+              "board_center_px": [
+                1010.063,
+                513.476
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                4
+              ]
+            },
+            {
+              "index": 3,
+              "captured_at_iso": "2026-05-21T13:15:13.349788",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                892.16,
+                490.232,
+                249.1,
+                89.348
+              ],
+              "board_center_px": [
+                1016.711,
+                534.906
+              ],
+              "visited_cells": [
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                3
+              ]
+            },
+            {
+              "index": 4,
+              "captured_at_iso": "2026-05-21T13:15:14.055148",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                882.754,
+                441.257,
+                253.163,
+                84.618
+              ],
+              "board_center_px": [
+                1009.335,
+                483.566
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                3
+              ]
+            },
+            {
+              "index": 5,
+              "captured_at_iso": "2026-05-21T13:15:15.035968",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                887.264,
+                451.031,
+                277.552,
+                88.984
+              ],
+              "board_center_px": [
+                1026.04,
+                495.523
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                4
+              ]
+            },
+            {
+              "index": 6,
+              "captured_at_iso": "2026-05-21T13:15:17.578603",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                802.139,
+                429.125,
+                291.175,
+                102.175
+              ],
+              "board_center_px": [
+                947.726,
+                480.212
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                4
+              ]
+            },
+            {
+              "index": 7,
+              "captured_at_iso": "2026-05-21T13:15:17.988976",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                822.581,
+                427.614,
+                286.699,
+                93.495
+              ],
+              "board_center_px": [
+                965.931,
+                474.362
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                3
+              ]
+            },
+            {
+              "index": 8,
+              "captured_at_iso": "2026-05-21T13:15:18.552477",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                815.989,
+                386.018,
+                299.714,
+                96.206
+              ],
+              "board_center_px": [
+                965.846,
+                434.121
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                3
+              ]
+            },
+            {
+              "index": 9,
+              "captured_at_iso": "2026-05-21T13:15:18.981383",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                816.055,
+                294.657,
+                297.942,
+                96.196
+              ],
+              "board_center_px": [
+                965.026,
+                342.755
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                4
+              ]
+            },
+            {
+              "index": 10,
+              "captured_at_iso": "2026-05-21T13:15:19.401555",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                813.01,
+                230.023,
+                302.88,
+                99.843
+              ],
+              "board_center_px": [
+                964.45,
+                279.944
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                4
+              ]
+            },
+            {
+              "index": 11,
+              "captured_at_iso": "2026-05-21T13:15:19.828493",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                811.203,
+                197.637,
+                299.016,
+                101.396
+              ],
+              "board_center_px": [
+                960.711,
+                248.335
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                3
+              ]
+            },
+            {
+              "index": 12,
+              "captured_at_iso": "2026-05-21T13:15:20.245316",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                806.527,
+                173.633,
+                290.96,
+                99.9
+              ],
+              "board_center_px": [
+                952.006,
+                223.583
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                4
+              ]
+            },
+            {
+              "index": 13,
+              "captured_at_iso": "2026-05-21T13:15:20.674993",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                806.879,
+                149.233,
+                289.46,
+                104.86
+              ],
+              "board_center_px": [
+                951.609,
+                201.663
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                3
+              ]
+            },
+            {
+              "index": 14,
+              "captured_at_iso": "2026-05-21T13:15:21.797294",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                887.257,
+                148.262,
+                274.901,
+                101.306
+              ],
+              "board_center_px": [
+                1024.707,
+                198.915
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                4
+              ]
+            },
+            {
+              "index": 15,
+              "captured_at_iso": "2026-05-21T13:15:22.492974",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                792.376,
+                167.095,
+                269.279,
+                97.737
+              ],
+              "board_center_px": [
+                927.015,
+                215.963
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                3
+              ]
+            },
+            {
+              "index": 16,
+              "captured_at_iso": "2026-05-21T13:15:23.060240",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                774.063,
+                186.065,
+                269.95,
+                89.112
+              ],
+              "board_center_px": [
+                909.038,
+                230.621
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                3
+              ]
+            },
+            {
+              "index": 17,
+              "captured_at_iso": "2026-05-21T13:15:23.486650",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                703.613,
+                165.2,
+                268.86,
+                93.847
+              ],
+              "board_center_px": [
+                838.043,
+                212.124
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                0,
+                2
+              ]
+            },
+            {
+              "index": 18,
+              "captured_at_iso": "2026-05-21T13:15:24.044456",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                562.15,
+                170.9,
+                260.284,
+                89.026
+              ],
+              "board_center_px": [
+                692.292,
+                215.413
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                1,
+                2
+              ]
+            },
+            {
+              "index": 19,
+              "captured_at_iso": "2026-05-21T13:15:24.473456",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                509.1,
+                150.509,
+                260.529,
+                85.477
+              ],
+              "board_center_px": [
+                639.364,
+                193.248
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                0,
+                1
+              ]
+            },
+            {
+              "index": 20,
+              "captured_at_iso": "2026-05-21T13:15:24.894806",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                440.891,
+                160.918,
+                264.947,
+                94.812
+              ],
+              "board_center_px": [
+                573.364,
+                208.324
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                1,
+                1
+              ]
+            },
+            {
+              "index": 21,
+              "captured_at_iso": "2026-05-21T13:15:25.316853",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                377.052,
+                190.874,
+                282.25,
+                97.025
+              ],
+              "board_center_px": [
+                518.177,
+                239.387
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                0,
+                1
+              ]
+            },
+            {
+              "index": 22,
+              "captured_at_iso": "2026-05-21T13:15:25.878802",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                372.724,
+                173.087,
+                320.026,
+                110.017
+              ],
+              "board_center_px": [
+                532.737,
+                228.096
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                0,
+                2
+              ]
+            },
+            {
+              "index": 23,
+              "captured_at_iso": "2026-05-21T13:15:26.300452",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                324.887,
+                164.913,
+                336.88,
+                127.269
+              ],
+              "board_center_px": [
+                493.327,
+                228.547
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                1,
+                1
+              ]
+            },
+            {
+              "index": 24,
+              "captured_at_iso": "2026-05-21T13:15:26.728758",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                246.248,
+                232.216,
+                325.292,
+                111.935
+              ],
+              "board_center_px": [
+                408.894,
+                288.183
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                0,
+                0
+              ]
+            },
+            {
+              "index": 25,
+              "captured_at_iso": "2026-05-21T13:15:27.149704",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                203.353,
+                222.443,
+                317.268,
+                104.868
+              ],
+              "board_center_px": [
+                361.987,
+                274.877
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                1,
+                0
+              ]
+            },
+            {
+              "index": 26,
+              "captured_at_iso": "2026-05-21T13:15:27.567423",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                193.231,
+                208.505,
+                311.791,
+                110.453
+              ],
+              "board_center_px": [
+                349.127,
+                263.731
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ],
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                0,
+                0
+              ]
+            },
+            {
+              "index": 27,
+              "captured_at_iso": "2026-05-21T13:15:27.989065",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                160.075,
+                186.572,
+                316.612,
+                118.088
+              ],
+              "board_center_px": [
+                318.381,
+                245.616
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ],
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                1,
+                0
+              ]
+            },
+            {
+              "index": 28,
+              "captured_at_iso": "2026-05-21T13:15:29.070090",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                106.936,
+                400.105,
+                339.034,
+                129.241
+              ],
+              "board_center_px": [
+                276.453,
+                464.726
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                2,
+                0
+              ]
+            },
+            {
+              "index": 29,
+              "captured_at_iso": "2026-05-21T13:15:29.497724",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                161.746,
+                445.212,
+                316.491,
+                125.416
+              ],
+              "board_center_px": [
+                319.992,
+                507.92
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                2,
+                1
+              ]
+            },
+            {
+              "index": 30,
+              "captured_at_iso": "2026-05-21T13:15:29.916783",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                134.589,
+                452.006,
+                323.188,
+                124.796
+              ],
+              "board_center_px": [
+                296.183,
+                514.404
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                2,
+                0
+              ]
+            },
+            {
+              "index": 31,
+              "captured_at_iso": "2026-05-21T13:15:31.739635",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                201.097,
+                450.968,
+                306.134,
+                111.931
+              ],
+              "board_center_px": [
+                354.164,
+                506.933
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                2,
+                1
+              ]
+            },
+            {
+              "index": 32,
+              "captured_at_iso": "2026-05-21T13:15:33.151973",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                470.384,
+                469.296,
+                340.972,
+                127.349
+              ],
+              "board_center_px": [
+                640.87,
+                532.97
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  2,
+                  1
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                2,
+                2
+              ]
+            },
+            {
+              "index": 33,
+              "captured_at_iso": "2026-05-21T13:15:33.578925",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                489.227,
+                389.723,
+                335.795,
+                121.07
+              ],
+              "board_center_px": [
+                657.125,
+                450.258
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  2,
+                  1
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                2,
+                2
+              ]
+            },
+            {
+              "index": 34,
+              "captured_at_iso": "2026-05-21T13:15:33.998451",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                491.09,
+                338.397,
+                328.595,
+                116.323
+              ],
+              "board_center_px": [
+                655.388,
+                396.559
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                1,
+                2
+              ]
+            },
+            {
+              "index": 35,
+              "captured_at_iso": "2026-05-21T13:15:34.379565",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                491.366,
+                275.82,
+                327.533,
+                115.203
+              ],
+              "board_center_px": [
+                655.133,
+                333.421
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                1,
+                1
+              ]
+            },
+            {
+              "index": 36,
+              "captured_at_iso": "2026-05-21T13:15:34.747042",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                502.392,
+                221.94,
+                324.093,
+                114.772
+              ],
+              "board_center_px": [
+                664.439,
+                279.326
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                0,
+                1
+              ]
+            },
+            {
+              "index": 37,
+              "captured_at_iso": "2026-05-21T13:15:35.171677",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                542.255,
+                157.066,
+                328.73,
+                115.673
+              ],
+              "board_center_px": [
+                706.62,
+                214.902
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                0,
+                2
+              ]
+            },
+            {
+              "index": 38,
+              "captured_at_iso": "2026-05-21T13:15:41.123319",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                737.797,
+                480.485,
+                339.492,
+                116.503
+              ],
+              "board_center_px": [
+                907.543,
+                538.737
+              ],
+              "visited_cells": [
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                4
+              ]
+            },
+            {
+              "index": 39,
+              "captured_at_iso": "2026-05-21T13:15:42.344069",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                800.073,
+                490.278,
+                353.566,
+                115.574
+              ],
+              "board_center_px": [
+                976.856,
+                548.065
+              ],
+              "visited_cells": [
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                3
+              ]
+            },
+            {
+              "index": 40,
+              "captured_at_iso": "2026-05-21T13:15:43.424298",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                556.737,
+                467.965,
+                334.602,
+                128.926
+              ],
+              "board_center_px": [
+                724.038,
+                532.428
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                2,
+                2
+              ]
+            },
+            {
+              "index": 41,
+              "captured_at_iso": "2026-05-21T13:15:43.794765",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                458.95,
+                450.032,
+                322.777,
+                127.738
+              ],
+              "board_center_px": [
+                620.338,
+                513.901
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  2,
+                  1
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                2,
+                1
+              ]
+            },
+            {
+              "index": 42,
+              "captured_at_iso": "2026-05-21T13:15:44.218237",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                366.879,
+                479.726,
+                322.122,
+                111.221
+              ],
+              "board_center_px": [
+                527.94,
+                535.337
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  2,
+                  1
+                ],
+                [
+                  2,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                1,
+                2
+              ]
+            },
+            {
+              "index": 43,
+              "captured_at_iso": "2026-05-21T13:15:44.644699",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                275.684,
+                474.319,
+                306.198,
+                128.953
+              ],
+              "board_center_px": [
+                428.783,
+                538.796
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  2,
+                  1
+                ],
+                [
+                  2,
+                  2
+                ]
+              ],
+              "credited_cell": [
+                2,
+                1
+              ]
+            },
+            {
+              "index": 44,
+              "captured_at_iso": "2026-05-21T13:15:45.108566",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                224.223,
+                446.677,
+                278.233,
+                102.91
+              ],
+              "board_center_px": [
+                363.34,
+                498.132
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                2,
+                0
+              ]
+            },
+            {
+              "index": 45,
+              "captured_at_iso": "2026-05-21T13:15:45.526986",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                162.133,
+                428.902,
+                274.606,
+                94.974
+              ],
+              "board_center_px": [
+                299.436,
+                476.389
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                1,
+                0
+              ]
+            },
+            {
+              "index": 46,
+              "captured_at_iso": "2026-05-21T13:15:45.957447",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                113.858,
+                397.661,
+                288.084,
+                93.877
+              ],
+              "board_center_px": [
+                257.9,
+                444.6
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  0
+                ],
+                [
+                  2,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                2,
+                0
+              ]
+            },
+            {
+              "index": 47,
+              "captured_at_iso": "2026-05-21T13:15:46.334410",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                93.602,
+                312.778,
+                293.995,
+                102.087
+              ],
+              "board_center_px": [
+                240.599,
+                363.822
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                1,
+                0
+              ]
+            },
+            {
+              "index": 48,
+              "captured_at_iso": "2026-05-21T13:15:46.706154",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                97.781,
+                249.295,
+                290.464,
+                101.846
+              ],
+              "board_center_px": [
+                243.013,
+                300.218
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                1,
+                1
+              ]
+            },
+            {
+              "index": 49,
+              "captured_at_iso": "2026-05-21T13:15:47.132415",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                107.917,
+                199.958,
+                286.272,
+                104.272
+              ],
+              "board_center_px": [
+                251.053,
+                252.095
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ],
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                0,
+                0
+              ]
+            },
+            {
+              "index": 50,
+              "captured_at_iso": "2026-05-21T13:15:47.557926",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                108.476,
+                137.108,
+                284.971,
+                107.565
+              ],
+              "board_center_px": [
+                250.961,
+                190.89
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ],
+                [
+                  1,
+                  0
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                0,
+                0
+              ]
+            },
+            {
+              "index": 51,
+              "captured_at_iso": "2026-05-21T13:15:47.978026",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                114.83,
+                104.87,
+                285.356,
+                106.121
+              ],
+              "board_center_px": [
+                257.508,
+                157.93
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  0
+                ],
+                [
+                  0,
+                  1
+                ]
+              ],
+              "credited_cell": [
+                0,
+                1
+              ]
+            },
+            {
+              "index": 52,
+              "captured_at_iso": "2026-05-21T13:15:50.790346",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                500.977,
+                126.984,
+                352.528,
+                130.435
+              ],
+              "board_center_px": [
+                677.241,
+                192.201
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  1
+                ],
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                0,
+                3
+              ]
+            },
+            {
+              "index": 53,
+              "captured_at_iso": "2026-05-21T13:15:51.206799",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                517.376,
+                196.661,
+                353.328,
+                128.269
+              ],
+              "board_center_px": [
+                694.04,
+                260.795
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                0,
+                2
+              ]
+            },
+            {
+              "index": 54,
+              "captured_at_iso": "2026-05-21T13:15:51.726051",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                525.927,
+                178.075,
+                344.233,
+                116.24
+              ],
+              "board_center_px": [
+                698.043,
+                236.195
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                1,
+                3
+              ]
+            },
+            {
+              "index": 55,
+              "captured_at_iso": "2026-05-21T13:15:52.253908",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                535.875,
+                137.705,
+                335.505,
+                111.581
+              ],
+              "board_center_px": [
+                703.627,
+                193.495
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                1,
+                2
+              ]
+            },
+            {
+              "index": 56,
+              "captured_at_iso": "2026-05-21T13:15:53.365096",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                659.953,
+                181.323,
+                365.069,
+                131.766
+              ],
+              "board_center_px": [
+                842.488,
+                247.206
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                0,
+                4
+              ]
+            },
+            {
+              "index": 57,
+              "captured_at_iso": "2026-05-21T13:15:53.747181",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                722.309,
+                169.224,
+                365.644,
+                120.383
+              ],
+              "board_center_px": [
+                905.131,
+                229.415
+              ],
+              "visited_cells": [
+                [
+                  0,
+                  2
+                ],
+                [
+                  0,
+                  3
+                ],
+                [
+                  0,
+                  4
+                ],
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                1,
+                4
+              ]
+            },
+            {
+              "index": 58,
+              "captured_at_iso": "2026-05-21T13:15:56.556433",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                743.96,
+                456.756,
+                388.727,
+                134.443
+              ],
+              "board_center_px": [
+                938.324,
+                523.978
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                4
+              ]
+            },
+            {
+              "index": 59,
+              "captured_at_iso": "2026-05-21T13:15:56.939928",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                685.2,
+                440.693,
+                378.779,
+                138.47
+              ],
+              "board_center_px": [
+                874.59,
+                509.928
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ],
+                [
+                  2,
+                  4
+                ]
+              ],
+              "credited_cell": [
+                2,
+                3
+              ]
+            },
+            {
+              "index": 60,
+              "captured_at_iso": "2026-05-21T13:15:57.362451",
+              "accepted_for_intrinsics": true,
+              "corner_count": 8,
+              "board_bbox_px": [
+                639.167,
+                430.972,
+                370.414,
+                146.115
+              ],
+              "board_center_px": [
+                824.374,
+                504.03
+              ],
+              "visited_cells": [
+                [
+                  1,
+                  2
+                ],
+                [
+                  1,
+                  3
+                ],
+                [
+                  2,
+                  2
+                ],
+                [
+                  2,
+                  3
+                ]
+              ],
+              "credited_cell": [
+                2,
+                2
+              ]
+            }
+          ],
+          "calibration_quality_score": 0.7539582800106281,
+          "quality_components": {
+            "score": 0.7539582800106281,
+            "base_score": 0.7595326446217692,
+            "spatial_score": 0.9887089177584036,
+            "grid_score": 1.0,
+            "edge_score": 1.0,
+            "center_spread_score": 0.9247261183893579,
+            "reprojection_score": 0.7548836507272013,
+            "sample_count_score": 1.0,
+            "mean_sample_quality": 0.5773865468872338
+          }
+        }
+      }
+    },
+    "calibration_quality": {
+      "overall_score": 0.7539582800106281,
+      "per_camera": {
+        "cam0": {
+          "score": 0.7539582800106281,
+          "base_score": 0.7595326446217692,
+          "spatial_score": 0.9887089177584036,
+          "grid_score": 1.0,
+          "edge_score": 1.0,
+          "center_spread_score": 0.9247261183893579,
+          "reprojection_score": 0.7548836507272013,
+          "sample_count_score": 1.0,
+          "mean_sample_quality": 0.5773865468872338
+        }
+      }
+    },
+    "charuco_available": true,
+    "solved_at_iso": "2026-05-21T13:16:49.558541",
+    "units": {
+      "all_length_fields": "meters",
+      "calibration_board.square_size_m": "meters",
+      "calibration_board.marker_size_m": "meters",
+      "sample_collection.duration_sec": "seconds",
+      "sample_collection.first_sample_at_iso": "ISO-8601 local timestamp",
+      "sample_collection.last_sample_at_iso": "ISO-8601 local timestamp",
+      "cameras.*.intrinsics": "pixels",
+      "cameras.*.distortion": "unitless OpenCV distortion coefficients",
+      "cameras.*.rotation": "unitless 3x3 row-major world-to-camera rotation matrix",
+      "cameras.*.translation": "meters, world-to-camera translation",
+      "cameras.*.reprojection_error": "pixels",
+      "metadata.extrinsics.*.baseline_m": "meters",
+      "metadata.extrinsics.*.stereo_rms": "pixels",
+      "metadata.spatial_coverage.*.grid_coverage_ratio": "0..1 ratio",
+      "metadata.spatial_coverage.*.center_spread_x_px": "pixels",
+      "metadata.spatial_coverage.*.center_spread_y_px": "pixels",
+      "metadata.spatial_coverage.*.edge_coverage_score": "0..1 ratio",
+      "metadata.spatial_coverage.*.cell_hit_counts": "sample-hit counts per grid cell",
+      "image_size": "pixels [width, height]"
+    },
+    "validation_guidance": [
+      "Measure the printed calibration board with a ruler or caliper. ChArUco square_size_m is one full square edge in meters; marker_size_m is the black marker edge in meters.",
+      "Measure camera lens-center to lens-center distance and compare it with metadata.extrinsics.<camera>.baseline_m. A large scale mismatch usually means the board square/marker size was entered incorrectly.",
+      "Check cameras.*.reprojection_error and metadata.extrinsics.*.stereo_rms in pixels. Values below about 1 px are usually a good sign; higher values suggest blur, weak coverage, wrong board settings, or mismatched samples.",
+      "Move the board through the full image area and multiple angles. Low coverage warnings mean the calibration may fit the center but extrapolate poorly near the edges.",
+      "Check metadata.spatial_coverage.per_camera.*.grid_coverage_ratio and edge_coverage_score. Low values mean the board stayed in one image region even if reprojection error is low.",
+      "Confirm the active_pattern and calibration_board block match the physical board before trusting translation or baseline values in meters."
+    ]
+  },
+  "notes": [
+    "Next step: solve synchronized multi-camera extrinsics from shared calibration captures.",
+    "TODO: Add bundle-adjustment refinement over intrinsics+extrinsics.",
+    "TODO: Add pairwise baseline diagnostics and epipolar residual plots.",
+    "Triangulation assumption: camera rotation/translation must be world-to-camera extrinsics provided separately from intrinsics solve."
+  ],
+  "cameras": {
+    "cam0": {
+      "source_id": "cam0",
+      "status": "solved_with_warnings",
+      "num_samples": 60,
+      "image_size": [
+        1280,
+        720
+      ],
+      "intrinsics": [
+        [
+          903.3102013089576,
+          0.0,
+          638.0919658368567
+        ],
+        [
+          0.0,
+          901.5421593353748,
+          372.35302860691115
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": [
+        0.16536290646952104,
+        -0.7196363671371729,
+        -0.00011190450978144188,
+        -0.001519306395915544,
+        1.077730278924695
+      ],
+      "rotation": null,
+      "translation": null,
+      "reprojection_error": 0.3374299759267102,
+      "diagnostics": [
+        "Spatial coverage metrics: visited_cells=15, credited_visited_cells=15, total_cells=15, grid_coverage_ratio=1.000, credited_grid_coverage_ratio=1.000, center_spread_x_px=845, center_spread_y_px=390, edge_coverage_score=1.000, credited_edge_coverage_score=1.000.",
+        "Spatial corner cells: TL=7, TR=9, BL=7, BR=12.",
+        "Credited spatial corner cells: TL=4, TR=4, BL=4, BR=4.",
+        "Spatial cell_hit_counts: [[7, 14, 17, 18, 9], [15, 28, 27, 34, 19], [7, 12, 10, 17, 12]].",
+        "Credited spatial cell_hit_counts: [[4, 4, 4, 4, 4], [4, 4, 4, 4, 4], [4, 4, 4, 4, 4]].",
+        "Pattern: charuco",
+        "Calibration quality score: 0.75 (reprojection score 0.75, spatial score 0.99).",
+        "Extrinsics not solved in this step. Load/provide world-referenced rotation+translation for real triangulation."
+      ],
+      "calibrated_at_iso": "2026-05-21T13:16:49.558298"
+    }
+  }
+}
