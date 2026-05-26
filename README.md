@@ -39,6 +39,8 @@ python PhysioMotionTracker/GUI/guiMain.py
 
 A GUI should pop up!
 
-How to use:
+## How to use:
 
 On the main page you can create a new project or open an existing project. 
+
+# Selecting camera's
