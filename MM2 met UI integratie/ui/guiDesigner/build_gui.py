@@ -9,7 +9,8 @@ def build_and_fix():
 
     # 1. Voer je standaard commando uit
     print("UI omzetten naar Python...")
-    os.system("pyside6-uic GUI.ui -o ../gui.py")
+    os.system("python -m PyQt5.uic.pyuic GUI.ui -o ../gui.py")
+
     # 2. Lees het gegenereerde bestand
     gui_path = "../gui.py"
     if os.path.exists(gui_path):

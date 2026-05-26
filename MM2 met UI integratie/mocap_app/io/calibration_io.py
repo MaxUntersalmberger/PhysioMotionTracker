@@ -2210,6 +2210,7 @@ class CalibrationManager:
     ) -> U8Array:
         """Render detection and diagnostics overlay for calibration preview."""
         rendered = frame_bgr.copy()
+        height, width = rendered.shape[:2]
         self._draw_spatial_grid_overlay(
             rendered,
             detection,
@@ -2238,14 +2239,31 @@ class CalibrationManager:
         if accepted is False:
             color = (60, 100, 255)
 
-        sample_text = f" | samples={sample_count}" if sample_count is not None else ""
+        sample_text = f" | samples:{sample_count}" if sample_count is not None else ""
+        header_text = f"{detection.source_id}{sample_text} | {detection.pattern_type} | {status_text}"
+        metrics_text = (
+            f"corners:{detection.detected_corners} | "
+            f"quality:{detection.quality_score:.2f} | coverage:{detection.coverage_ratio * 100:.1f}%"
+        )
+        diagnostics_text = detection.diagnostics[0] if detection.diagnostics else ""
+        band_height = 78 if diagnostics_text else 56
+        canvas = np.zeros((height + band_height, width, 3), dtype=rendered.dtype)
+        canvas[band_height:, :] = rendered
+        rendered = canvas
+
         cv2.putText(
             rendered,
-            (
-                f"{detection.source_id}{sample_text} | {detection.pattern_type} | {status_text} "
-                f"| corners={detection.detected_corners} "
-                f"| q={detection.quality_score:.2f} c={detection.coverage_ratio * 100:.1f}%"
-            ),
+            header_text,
+            (12, 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.56,
+            (5, 8, 10),
+            4,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            rendered,
+            header_text,
             (12, 22),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.56,
@@ -2253,14 +2271,44 @@ class CalibrationManager:
             2,
             cv2.LINE_AA,
         )
-        if detection.diagnostics:
+        cv2.putText(
+            rendered,
+            metrics_text,
+            (12, 44),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (5, 8, 10),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            rendered,
+            metrics_text,
+            (12, 44),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (225, 235, 245),
+            1,
+            cv2.LINE_AA,
+        )
+        if diagnostics_text:
             cv2.putText(
                 rendered,
-                detection.diagnostics[0],
-                (12, 44),
+                diagnostics_text,
+                (12, 66),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (120, 180, 255),
+                0.48,
+                (5, 8, 10),
+                3,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                rendered,
+                diagnostics_text,
+                (12, 66),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (150, 205, 255),
                 1,
                 cv2.LINE_AA,
             )
@@ -2316,10 +2364,12 @@ class CalibrationManager:
                 x1 = int(round((col + 1) * cell_width))
                 y1 = int(round((row + 1) * cell_height))
 
-                grid_color = (210, 225, 235)
+                grid_color = (235, 245, 250)
                 if col > 0:
+                    cv2.line(rendered, (x0, 0), (x0, height), (25, 30, 35), 3, cv2.LINE_AA)
                     cv2.line(rendered, (x0, 0), (x0, height), grid_color, 1, cv2.LINE_AA)
                 if row > 0:
+                    cv2.line(rendered, (0, y0), (width, y0), (25, 30, 35), 3, cv2.LINE_AA)
                     cv2.line(rendered, (0, y0), (width, y0), grid_color, 1, cv2.LINE_AA)
 
                 hit_count = 0
@@ -2350,7 +2400,17 @@ class CalibrationManager:
             label,
             (12, label_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.58,
+            (5, 8, 10),
+            5,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            rendered,
+            label,
+            (12, label_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
             (235, 245, 255),
             2,
             cv2.LINE_AA,
@@ -2374,21 +2434,32 @@ class CalibrationManager:
         cell_height: float,
     ) -> None:
         text = f"{hit_count}/{target}"
-        font_scale = float(np.clip(min(cell_width, cell_height) / 210.0, 0.36, 0.52))
-        thickness = 1
+        font_scale = float(np.clip(min(cell_width, cell_height) / 160.0, 0.50, 0.72))
+        thickness = 2
         text_size, baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
         pad_x = 7
         pad_y = 8
         text_x = x0 + pad_x
         text_y = y0 + pad_y + text_size[1]
+        bg_pad = 4
+        cv2.rectangle(
+            rendered,
+            (max(x0 + 2, text_x - bg_pad), max(y0 + 2, text_y - text_size[1] - bg_pad)),
+            (
+                min(int(round(x0 + cell_width)) - 2, text_x + text_size[0] + bg_pad),
+                min(int(round(y0 + cell_height)) - 2, text_y + baseline + bg_pad),
+            ),
+            (15, 20, 24),
+            -1,
+        )
         cv2.putText(
             rendered,
             text,
             (text_x, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             font_scale,
-            (20, 30, 35),
-            3,
+            (0, 0, 0),
+            thickness + 3,
             cv2.LINE_AA,
         )
         cv2.putText(

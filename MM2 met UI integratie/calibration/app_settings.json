@@ -1,0 +1,14 @@
+{
+  "app_name": "PhysioMotionTracker",
+  "app_root": "C:\\Users\\Melle Poeckling\\Downloads\\SamenvoegenCh\\Samengevoegd",
+  "target_fps": 30.0,
+  "default_camera_csv": "0",
+  "calibration_dir": "C:\\Users\\Melle Poeckling\\Downloads\\SamenvoegenCh\\Samengevoegd\\calibration",
+  "logs_dir": "C:\\Users\\Melle Poeckling\\Downloads\\SamenvoegenCh\\Samengevoegd\\logs",
+  "sessions_dir": "C:\\Users\\Melle Poeckling\\Downloads\\SamenvoegenCh\\Samengevoegd\\sessions",
+  "default_sessions_dir": "C:\\Users\\Melle Poeckling\\Downloads\\SamenvoegenCh\\Samengevoegd\\sessions",
+  "ui_scale": 0.7,
+  "camera_labels": {
+    "cam0": "Webcam"
+  }
+}

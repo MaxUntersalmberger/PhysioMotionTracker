@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
         self._last_rendered_frame_indices: dict[str, int] = {}
         self._active_camera_count = 0
 
-        self._calibration_panel = CalibrationPanelWidget(
+        self._calibration_panel = self._create_calibration_panel(
             default_camera_csv=self._config.default_camera_csv,
             default_fps=self._config.target_fps,
         )
@@ -95,12 +95,21 @@ class MainWindow(QMainWindow):
         self._set_display_timer_hz(self._runtime_tuning.preview_fps)
 
         self.setWindowTitle(self._config.app_name)
-        self.resize(1500, 920)
+        self._apply_initial_window_geometry()
         self._set_status("Ready for camera calibration")
 
     def _setup_ui(self) -> None:
         self.setCentralWidget(self._calibration_panel)
         self.statusBar().showMessage("Idle")
+
+    def _create_calibration_panel(self, default_camera_csv: str, default_fps: float):
+        return CalibrationPanelWidget(
+            default_camera_csv=default_camera_csv,
+            default_fps=default_fps,
+        )
+
+    def _apply_initial_window_geometry(self) -> None:
+        self.resize(1500, 920)
 
     def _apply_window_style(self) -> None:
         self.setStyleSheet(
@@ -135,6 +144,8 @@ class MainWindow(QMainWindow):
         self._calibration_panel.acceptance_thresholds_changed.connect(self._on_acceptance_thresholds_changed)
         self._calibration_panel.workflow_mode_changed.connect(self._on_calibration_workflow_mode_changed)
         self._calibration_panel.spatial_grid_changed.connect(self._on_spatial_grid_changed)
+        if hasattr(self._calibration_panel, "sources_changed"):
+            self._calibration_panel.sources_changed.connect(self._on_panel_sources_changed)
 
     def _set_display_timer_hz(self, hz: float) -> None:
         safe_hz = max(1.0, hz)
@@ -326,11 +337,35 @@ class MainWindow(QMainWindow):
         self._last_live_status_refresh_at = now
 
     def _active_source_ids(self) -> list[str]:
-        if self._active_sources:
+        live_active = self._live_worker is not None and self._live_worker.isRunning()
+        if live_active and self._active_sources:
             return [source.source_id for source in self._active_sources]
         if self._latest_frames:
             return sorted(self._latest_frames.keys())
-        return []
+        try:
+            return [source.source_id for source in self._calibration_panel.current_sources()]
+        except ValueError:
+            return []
+
+    def _on_panel_sources_changed(self, sources_obj: object) -> None:
+        sources = [source for source in sources_obj if isinstance(source, CameraSourceConfig)] if isinstance(sources_obj, list) else []
+        live_active = self._live_worker is not None and self._live_worker.isRunning()
+        if live_active:
+            return
+        self._active_sources = sources
+        source_ids = {source.source_id for source in sources}
+        self._latest_frames = {source_id: frame for source_id, frame in self._latest_frames.items() if source_id in source_ids}
+        self._latest_calibration_detections = {
+            source_id: detection
+            for source_id, detection in self._latest_calibration_detections.items()
+            if source_id in source_ids
+        }
+        self._last_rendered_frame_indices = {
+            source_id: frame_index
+            for source_id, frame_index in self._last_rendered_frame_indices.items()
+            if source_id in source_ids
+        }
+        self._refresh_calibration_panel(force=True)
 
     def _refresh_calibration_panel(self, force: bool = False) -> None:
         now = time.perf_counter()
@@ -846,6 +881,7 @@ class MainWindow(QMainWindow):
     def _on_live_finished(self) -> None:
         if self._live_worker is not None and not self._live_worker.isRunning():
             self._live_worker = None
+        self._active_sources = []
         self._active_camera_count = 0
         self._refresh_live_status(force=True)
 
@@ -859,6 +895,7 @@ class MainWindow(QMainWindow):
             self._live_worker.terminate()
             self._live_worker.wait(1000)
         self._live_worker = None
+        self._active_sources = []
         self._latest_frames.clear()
         self._latest_calibration_detections.clear()
         self._last_rendered_frame_indices.clear()
@@ -1081,8 +1118,10 @@ class MainWindow(QMainWindow):
                 "Wait for the intrinsics solve to finish before starting auto capture.",
                 success=False,
             )
+            self._calibration_panel.set_auto_capture_enabled(False)
             return
         if not self._latest_frames:
+            self._calibration_panel.set_auto_capture_enabled(False)
             self._show_warning("No frames available. Start live capture first.")
             return
         if self._stop_auto_capture_if_limit_reached():
