@@ -1,4 +1,3 @@
-from PyQt5 import QtCore, QtWidgets
 from tab_home import TabHome
 from tab_cameras import TabCameras
 from tab_diagnostics import TabDiagnostics
@@ -7,6 +6,7 @@ from tab_results import TabResults
 from tab_settings import TabSettings
 from pathlib import Path
 from datetime import datetime
+from PySide6.QtWidgets import QMessageBox, QFileDialog
 import sys
 import webbrowser
 
@@ -163,7 +163,7 @@ class Logic:
             #     f"Nieuw project aangemaakt:\n{project_folder_name}"
             # )
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
+            QMessageBox.critical(
                 self.window,
                 "Fout",
                 f"Kon project niet aanmaken:\n{str(e)}"
@@ -180,7 +180,7 @@ class Logic:
             start_dir = config.sessions_dir or Path.cwd() / "sessions"
             
             # Open bestandsverkenner
-            selected_dir = QtWidgets.QFileDialog.getExistingDirectory(
+            selected_dir = QFileDialog.getExistingDirectory(
                 self.window,
                 "Selecteer een project map",
                 str(start_dir)
@@ -206,7 +206,7 @@ class Logic:
                 #     f"Project geladen:\n{project_path.name}"
                 # )
         except Exception as e:
-            QtWidgets.QMessageBox.critical(
+            QMessageBox.critical(
                 self.window,
                 "Fout",
                 f"Kon project niet openen:\n{str(e)}"

@@ -1,5 +1,3 @@
-from PyQt5 import QtCore
-
 class apply_styles:
     def __init__(self, window):
         self.window = window

@@ -1,4 +1,5 @@
-from PyQt5 import QtWidgets
+from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QGuiApplication
 
 
 class TabDiagnostics:
@@ -51,6 +52,6 @@ class TabDiagnostics:
     def center_window(self):
         """Hulpmethode om venster te centreren"""
         qr = self.window.frameGeometry()
-        cp = QtWidgets.QDesktopWidget().availableGeometry().center()
+        cp = QGuiApplication.primaryScreen().availableGeometry().center()
         qr.moveCenter(cp)
         self.window.move(qr.topLeft())

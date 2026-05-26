@@ -1,7 +1,8 @@
-from PyQt5 import QtCore, QtWidgets, QtGui
-from PyQt5.QtWidgets import QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton, QLineEdit, QLabel, QFileDialog, QFileIconProvider
-from PyQt5.QtCore import Qt, QFileInfo
-from PyQt5.QtGui import QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QPushButton, QLineEdit, 
+                               QLabel, QFileDialog, QMessageBox, QFileIconProvider)
+from PySide6.QtGui import QIcon
+from PySide6.QtCore import QFileInfo
 from pathlib import Path
 import logging
 
@@ -93,13 +94,13 @@ class TabDirectory:
             if not directory_path.exists():
                 error_msg = f"Directory niet gevonden: {directory_path}"
                 logger.warning(error_msg)
-                QtWidgets.QMessageBox.warning(self.window, "Fout", error_msg)
+                QMessageBox.warning(self.window, "Fout", error_msg)
                 return
             
             if not directory_path.is_dir():
                 error_msg = f"Pad is geen directory: {directory_path}"
                 logger.warning(error_msg)
-                QtWidgets.QMessageBox.warning(self.window, "Fout", error_msg)
+                QMessageBox.warning(self.window, "Fout", error_msg)
                 return
             
             self.root_directory = directory_path
@@ -126,7 +127,7 @@ class TabDirectory:
         except Exception as e:
             error_msg = f"Kon directory niet laden: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            QtWidgets.QMessageBox.critical(
+            QMessageBox.critical(
                 self.window,
                 "Fout bij laden directory",
                 error_msg
@@ -223,7 +224,7 @@ class TabDirectory:
             if parent_path != current_path:
                 self.load_root_directory(parent_path)
             else:
-                QtWidgets.QMessageBox.information(
+                QMessageBox.information(
                     self.window,
                     "Info",
                     "U bent al in de root directory"
@@ -231,7 +232,7 @@ class TabDirectory:
         except Exception as e:
             error_msg = f"Kan niet naar bovenliggende map navigeren: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            QtWidgets.QMessageBox.critical(
+            QMessageBox.critical(
                 self.window,
                 "Fout bij navigatie",
                 error_msg
@@ -266,7 +267,7 @@ class TabDirectory:
             config.default_sessions_dir = self.root_directory
             config.save()
             
-            QtWidgets.QMessageBox.information(
+            QMessageBox.information(
                 self.window,
                 "Succes",
                 f"Standaard locatie ingesteld op:\n{self.root_directory}"
@@ -274,7 +275,7 @@ class TabDirectory:
         except Exception as e:
             error_msg = f"Kon standaard locatie niet instellen: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            QtWidgets.QMessageBox.critical(
+            QMessageBox.critical(
                 self.window,
                 "Fout",
                 error_msg
