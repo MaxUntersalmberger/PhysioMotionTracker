@@ -1,5 +1,6 @@
 PySide6>=6.6
 opencv-contrib-python>=4.8
 numpy>=1.26
+PyQt5>=5.15.11
 
 # ChArUco-detectie gebruikt cv2.aruco uit OpenCV contrib.
