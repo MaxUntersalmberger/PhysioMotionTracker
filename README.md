@@ -25,19 +25,13 @@ conda activate HUmocap-env
 git clone https://github.com/MaxUntersalmberger/PhysioMotionTracker
 ```
 
-4) Navigate into the newly cloned/downloaded `PhysioMotionTracker` folder
-
-```bash
-cd freemocap
-```
-
-5) Install the library's
+4) Install the library's
 
 ```bash
 pip install -r "PhysioMotionTracker/Calibratie Programma/requirements.txt"
 ```
 
-6) Launch the GUI (via the `guiMain.py` entry point)
+5) Launch the GUI (via the `guiMain.py` entry point)
 
 ```bash
 python PhysioMotionTracker/GUI/guiMain.py
