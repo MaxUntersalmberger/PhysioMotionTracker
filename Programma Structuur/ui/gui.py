@@ -16,10 +16,9 @@ from PySide6.QtGui import (QAction, QBrush, QColor, QConicalGradient,
     QIcon, QImage, QKeySequence, QLinearGradient,
     QPainter, QPalette, QPixmap, QRadialGradient,
     QTransform)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMenu, QMenuBar, QPlainTextEdit,
-    QPushButton, QSizePolicy, QSpinBox, QStackedWidget,
+from PySide6.QtWidgets import (QApplication, QFrame, QGridLayout, QLabel,
+    QLineEdit, QMainWindow, QMenu, QMenuBar,
+    QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget,
     QTextEdit, QVBoxLayout, QWidget)
 import resources_rc
 
@@ -28,7 +27,7 @@ class Ui_MainWindow(object):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
         MainWindow.setEnabled(True)
-        MainWindow.resize(914, 663)
+        MainWindow.resize(914, 695)
         MainWindow.setMinimumSize(QSize(0, 0))
         MainWindow.setMaximumSize(QSize(16777215, 16777215))
         icon = QIcon()
@@ -65,24 +64,11 @@ class Ui_MainWindow(object):
         self.page_home.setObjectName(u"page_home")
         self.gridLayout_4 = QGridLayout(self.page_home)
         self.gridLayout_4.setObjectName(u"gridLayout_4")
-        self.horizontalLayout_2 = QHBoxLayout()
-        self.horizontalLayout_2.setObjectName(u"horizontalLayout_2")
-
-        self.gridLayout_4.addLayout(self.horizontalLayout_2, 2, 2, 1, 1)
-
-        self.btn_loadproject = QPushButton(self.page_home)
-        self.btn_loadproject.setObjectName(u"btn_loadproject")
+        self.btn_newproject = QPushButton(self.page_home)
+        self.btn_newproject.setObjectName(u"btn_newproject")
         sizePolicy1 = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         sizePolicy1.setHorizontalStretch(0)
         sizePolicy1.setVerticalStretch(0)
-        sizePolicy1.setHeightForWidth(self.btn_loadproject.sizePolicy().hasHeightForWidth())
-        self.btn_loadproject.setSizePolicy(sizePolicy1)
-        self.btn_loadproject.setMouseTracking(True)
-
-        self.gridLayout_4.addWidget(self.btn_loadproject, 2, 1, 1, 1)
-
-        self.btn_newproject = QPushButton(self.page_home)
-        self.btn_newproject.setObjectName(u"btn_newproject")
         sizePolicy1.setHeightForWidth(self.btn_newproject.sizePolicy().hasHeightForWidth())
         self.btn_newproject.setSizePolicy(sizePolicy1)
         self.btn_newproject.setMinimumSize(QSize(0, 0))
@@ -92,24 +78,15 @@ class Ui_MainWindow(object):
         self.btn_newproject.setMouseTracking(True)
         self.btn_newproject.setIconSize(QSize(16, 16))
 
-        self.gridLayout_4.addWidget(self.btn_newproject, 1, 1, 1, 1)
+        self.gridLayout_4.addWidget(self.btn_newproject, 0, 0, 1, 1)
 
-        self.verticalLayout_4 = QVBoxLayout()
-        self.verticalLayout_4.setObjectName(u"verticalLayout_4")
+        self.btn_loadproject = QPushButton(self.page_home)
+        self.btn_loadproject.setObjectName(u"btn_loadproject")
+        sizePolicy1.setHeightForWidth(self.btn_loadproject.sizePolicy().hasHeightForWidth())
+        self.btn_loadproject.setSizePolicy(sizePolicy1)
+        self.btn_loadproject.setMouseTracking(True)
 
-        self.gridLayout_4.addLayout(self.verticalLayout_4, 3, 1, 1, 1)
-
-        self.horizontalLayout = QHBoxLayout()
-        self.horizontalLayout.setObjectName(u"horizontalLayout")
-
-        self.gridLayout_4.addLayout(self.horizontalLayout, 2, 0, 1, 1)
-
-        self.label_main_text = QLabel(self.page_home)
-        self.label_main_text.setObjectName(u"label_main_text")
-        self.label_main_text.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
-        self.label_main_text.setTextFormat(Qt.TextFormat.PlainText)
-
-        self.gridLayout_4.addWidget(self.label_main_text, 0, 1, 1, 1)
+        self.gridLayout_4.addWidget(self.btn_loadproject, 1, 0, 1, 1)
 
         self.stackedWidget.addWidget(self.page_home)
         self.page_cameras = QWidget()
@@ -149,7 +126,7 @@ class Ui_MainWindow(object):
         self.gridLayout_10.addWidget(self.btn_cap_intrinsics_start, 1, 0, 1, 1)
 
 
-        self.gridLayout_9.addWidget(self.frame_2, 3, 0, 2, 1)
+        self.gridLayout_9.addWidget(self.frame_2, 1, 0, 2, 1)
 
         self.frame_3 = QFrame(self.frame)
         self.frame_3.setObjectName(u"frame_3")
@@ -176,36 +153,12 @@ class Ui_MainWindow(object):
         self.gridLayout_11.addWidget(self.btn_cap_extrinsics_start, 2, 0, 1, 1)
 
 
-        self.gridLayout_9.addWidget(self.frame_3, 3, 1, 2, 1)
-
-        self.combo_cap_pattern = QComboBox(self.frame)
-        self.combo_cap_pattern.addItem("")
-        self.combo_cap_pattern.addItem("")
-        self.combo_cap_pattern.setObjectName(u"combo_cap_pattern")
-
-        self.gridLayout_9.addWidget(self.combo_cap_pattern, 1, 1, 1, 1)
-
-        self.spin_cap_fps = QSpinBox(self.frame)
-        self.spin_cap_fps.setObjectName(u"spin_cap_fps")
-        self.spin_cap_fps.setMaximum(120)
-        self.spin_cap_fps.setValue(30)
-
-        self.gridLayout_9.addWidget(self.spin_cap_fps, 0, 1, 1, 1)
-
-        self.lab_cap_fps = QLabel(self.frame)
-        self.lab_cap_fps.setObjectName(u"lab_cap_fps")
-
-        self.gridLayout_9.addWidget(self.lab_cap_fps, 0, 0, 1, 1)
+        self.gridLayout_9.addWidget(self.frame_3, 1, 1, 2, 1)
 
         self.btn_cap_reset_calibration = QPushButton(self.frame)
         self.btn_cap_reset_calibration.setObjectName(u"btn_cap_reset_calibration")
 
-        self.gridLayout_9.addWidget(self.btn_cap_reset_calibration, 9, 0, 1, 2)
-
-        self.lab_cap_pattern = QLabel(self.frame)
-        self.lab_cap_pattern.setObjectName(u"lab_cap_pattern")
-
-        self.gridLayout_9.addWidget(self.lab_cap_pattern, 1, 0, 1, 1)
+        self.gridLayout_9.addWidget(self.btn_cap_reset_calibration, 7, 0, 1, 2)
 
 
         self.gridLayout_3.addWidget(self.frame, 0, 0, 1, 2)
@@ -443,16 +396,6 @@ class Ui_MainWindow(object):
         self.page_advanced_settings.setObjectName(u"page_advanced_settings")
         self.gridLayout_15 = QGridLayout(self.page_advanced_settings)
         self.gridLayout_15.setObjectName(u"gridLayout_15")
-        self.label_2 = QLabel(self.page_advanced_settings)
-        self.label_2.setObjectName(u"label_2")
-
-        self.gridLayout_15.addWidget(self.label_2, 0, 0, 1, 1)
-
-        self.doubleSpinBox = QDoubleSpinBox(self.page_advanced_settings)
-        self.doubleSpinBox.setObjectName(u"doubleSpinBox")
-
-        self.gridLayout_15.addWidget(self.doubleSpinBox, 0, 1, 1, 1)
-
         self.stackedWidget.addWidget(self.page_advanced_settings)
 
         self.gridLayout_2.addWidget(self.stackedWidget, 0, 0, 1, 1)
@@ -594,7 +537,7 @@ class Ui_MainWindow(object):
 
         self.retranslateUi(MainWindow)
 
-        self.stackedWidget.setCurrentIndex(5)
+        self.stackedWidget.setCurrentIndex(1)
 
 
         QMetaObject.connectSlotsByName(MainWindow)
@@ -607,21 +550,15 @@ class Ui_MainWindow(object):
         self.actionOpen_project.setText(QCoreApplication.translate("MainWindow", u"Open project", None))
         self.actionQuit.setText(QCoreApplication.translate("MainWindow", u"Quit", None))
         self.actionOpen_documentation.setText(QCoreApplication.translate("MainWindow", u"Open documentation", None))
-        self.btn_loadproject.setText(QCoreApplication.translate("MainWindow", u"Load Project", None))
         self.btn_newproject.setText(QCoreApplication.translate("MainWindow", u"New Project", None))
-        self.label_main_text.setText(QCoreApplication.translate("MainWindow", u"Hallo!!", None))
+        self.btn_loadproject.setText(QCoreApplication.translate("MainWindow", u"Load Project", None))
         self.lab_cap_intrinsics.setText(QCoreApplication.translate("MainWindow", u"Intrinsics", None))
         self.btn_cap_calculate_intrinsics.setText(QCoreApplication.translate("MainWindow", u"Calculate", None))
         self.btn_cap_intrinsics_start.setText(QCoreApplication.translate("MainWindow", u"Start", None))
         self.btn_cap_calculate_extrinsics.setText(QCoreApplication.translate("MainWindow", u"Calculate", None))
         self.lab_cap_extrinsics.setText(QCoreApplication.translate("MainWindow", u"Extrinsics", None))
         self.btn_cap_extrinsics_start.setText(QCoreApplication.translate("MainWindow", u"Start", None))
-        self.combo_cap_pattern.setItemText(0, QCoreApplication.translate("MainWindow", u"Chessboard", None))
-        self.combo_cap_pattern.setItemText(1, QCoreApplication.translate("MainWindow", u"Charuco", None))
-
-        self.lab_cap_fps.setText(QCoreApplication.translate("MainWindow", u"FPS", None))
         self.btn_cap_reset_calibration.setText(QCoreApplication.translate("MainWindow", u"Reset Calibration", None))
-        self.lab_cap_pattern.setText(QCoreApplication.translate("MainWindow", u"Pattern", None))
         self.lab_res_intrinsics_results.setText(QCoreApplication.translate("MainWindow", u"Intrinsics results", None))
         self.lab_res_frames.setText(QCoreApplication.translate("MainWindow", u"Frames", None))
         self.export_toml.setText(QCoreApplication.translate("MainWindow", u"Export TOML", None))
@@ -637,7 +574,6 @@ class Ui_MainWindow(object):
         self.lab_diag_extrinsics_time.setText(QCoreApplication.translate("MainWindow", u"Extrinsics Time", None))
         self.lab_diag_used_cams.setText(QCoreApplication.translate("MainWindow", u"Used Camera's", None))
         self.lab_diag_total_time.setText(QCoreApplication.translate("MainWindow", u"Total Time", None))
-        self.label_2.setText(QCoreApplication.translate("MainWindow", u"Size charuco/chessboad (mm)", None))
         self.label_logo.setText("")
         self.btn_home.setText(QCoreApplication.translate("MainWindow", u"Home", None))
         self.btn_cameras.setText(QCoreApplication.translate("MainWindow", u"Camera's /\n"
