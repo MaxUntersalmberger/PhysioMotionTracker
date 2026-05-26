@@ -201,15 +201,12 @@ class CameraFrame(QFrame):
 
         opencv_idx = self.combo_select_cam.currentData()
         if opencv_idx is not None and opencv_idx != -1:
-            # Haal direct de FPS op uit de spinbox in de GUI
-            global_fps = self.parent_tab.ui.spin_cap_fps.value()
             
             # Maak de thread aan en start hem direct
             self.thread = CameraThread(
                 camera_index=opencv_idx, 
                 width=self.spin_width.value(), 
-                height=self.spin_height.value(),
-                fps=global_fps
+                height=self.spin_height.value()
             )
             self.apply_settings()
             self.thread.change_pixmap_signal.connect(self.update_frame)
