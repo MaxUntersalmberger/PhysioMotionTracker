@@ -73,6 +73,7 @@ On the main screen you can create a new project or open an existing one.
 Select the desired cameras via the Camera's/calibration menu. Make sure the cameras are properly connected and recognised by the system.
 
 ### Calibration
+There are two different sequences when calibrating the camera's. First you calibrate the intrinsic parameters. This means that you calibrate each camera one at a time. Then you calibrate the extrinsic parameters. In this step you calibrate multiple camera's at the same time.
 Follow the calibration steps in the GUI. Afterwards, the camera parameters are saved in the project and ready for use in external software. 
 
 ---
