@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from mocap_app.io.calibration_io import ChessboardDetectionResult
+from mocap_app.io.toml_export import calibration_bundle_to_toml
 from mocap_app.models.types import (
     CalibrationBoardSettings,
     CalibrationBundle,
@@ -118,6 +119,7 @@ class DesignedPreviewPopout(QDialog):
         self._image = QLabel("No frame")
         self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image.setMinimumSize(1, 1)
+        self._image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self._image.setStyleSheet("background-color: black; color: white;")
 
         layout = QVBoxLayout(self)
@@ -168,9 +170,12 @@ class DesignedPreviewPopout(QDialog):
     def _render(self) -> None:
         if self._last_pixmap is None:
             return
+        target_size = self._image.size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            return
         self._image.setPixmap(
             self._last_pixmap.scaled(
-                self._image.size(),
+                target_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
@@ -234,6 +239,7 @@ class DesignedPreviewTile(QFrame):
         self._image = QLabel("No frame")
         self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image.setMinimumSize(320, 220)
+        self._image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self._image.setStyleSheet("background-color: black; color: white;")
 
         self._status = QLabel("Waiting for live feed")
@@ -326,17 +332,36 @@ class DesignedPreviewTile(QFrame):
             self._popout.set_mirror_active(active)
         self.preview_options_changed.emit()
 
-    def set_sample_count(self, count: int) -> None:
-        self._progress.setValue(min(max(int(count), 0), 100))
-        self._progress.setFormat(f"{int(count)}/100")
+    def set_progress(self, current: int, maximum: int, label: str | None = None) -> None:
+        current = max(0, int(current))
+        maximum = max(0, int(maximum))
+        if maximum <= 0:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(0)
+            self._progress.setFormat(label or f"{current} / No limit")
+            return
+        self._progress.setRange(0, 100)
+        percent = int(round(min(current, maximum) * 100.0 / maximum))
+        self._progress.setValue(max(0, min(100, percent)))
+        self._progress.setFormat(label or f"{current}/{maximum}")
 
-    def set_frame(self, frame_bgr: Any, status: str, sample_count: int) -> None:
+    def set_sample_count(self, count: int) -> None:
+        self.set_progress(count, 100, f"{int(count)}/100")
+
+    def set_frame(
+        self,
+        frame_bgr: Any,
+        status: str,
+        progress_current: int,
+        progress_maximum: int,
+        progress_label: str | None = None,
+    ) -> None:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         image = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
         self._last_pixmap = QPixmap.fromImage(image)
         self._status.setText(status)
-        self.set_sample_count(sample_count)
+        self.set_progress(progress_current, progress_maximum, progress_label)
         self._render()
         if self._popout is not None:
             self._popout.set_frame(self._last_pixmap)
@@ -432,9 +457,12 @@ class DesignedPreviewTile(QFrame):
     def _render(self) -> None:
         if self._last_pixmap is None:
             return
+        target_size = self._image.size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            return
         self._image.setPixmap(
             self._last_pixmap.scaled(
-                self._image.size(),
+                target_size,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
@@ -469,11 +497,15 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window = window
         self._tiles: dict[str, DesignedPreviewTile] = {}
         self._source_order: list[str] = []
+        self._last_camera_grid_columns = 0
         self._live_active = False
         self._active_cameras = 0
+        self._sync_progress_count = 0
         self._project_root = Path.cwd()
         self._icon_provider = QFileIconProvider()
         self._camera_names = dict(getattr(self.window._config, "camera_labels", {}) or {})
+        self._wheel_guarded_widgets: list[QtCore.QObject] = []
+        self._last_results_bundle: CalibrationBundle | None = None
 
         self._setup_navigation()
         self._setup_console()
@@ -503,18 +535,60 @@ class DesignedCalibrationPanel(QtCore.QObject):
         sys.stdout = ConsoleStream(self.window.plaintextedit_console)
         sys.stderr = ConsoleStream(self.window.plaintextedit_console)
 
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if (
+            hasattr(self, "_camera_scroll")
+            and watched is self._camera_scroll.viewport()
+            and event.type() == QtCore.QEvent.Type.Resize
+        ):
+            QtCore.QTimer.singleShot(0, self._rebuild_camera_grid_if_columns_changed)
+        if (
+            event.type() == QtCore.QEvent.Type.Wheel
+            and watched in self._wheel_guarded_widgets
+        ):
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _block_wheel_changes(self, *widgets: QWidget) -> None:
+        for widget in widgets:
+            if widget in self._wheel_guarded_widgets:
+                continue
+            widget.installEventFilter(self)
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self._wheel_guarded_widgets.append(widget)
+
+    def _prepare_settings_container(self, root: QWidget) -> None:
+        root.setMaximumWidth(760)
+        root.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+
+        for widget in root.findChildren(QSpinBox):
+            widget.setMaximumWidth(145)
+            self._block_wheel_changes(widget)
+        for widget in root.findChildren(QDoubleSpinBox):
+            widget.setMaximumWidth(165)
+            self._block_wheel_changes(widget)
+        for widget in root.findChildren(QComboBox):
+            widget.setMaximumWidth(240)
+            self._block_wheel_changes(widget)
+        for widget in root.findChildren(QLineEdit):
+            widget.setMaximumWidth(360)
+
     def _setup_camera_page(self, default_camera_csv: str, default_fps: float) -> None:
         self._setup_camera_splitter()
         self.window.spin_cap_fps.setRange(1, 120)
         self.window.spin_cap_fps.setValue(max(1, int(round(default_fps))))
         self.window.btn_cap_intrinsics_start.setCheckable(True)
         self.window.btn_cap_extrinsics_start.setCheckable(True)
+        self.window.btn_cap_intrinsics_start.setText("Intrinsics Mode")
+        self.window.btn_cap_extrinsics_start.setText("Extrinsics Mode")
 
         self.window.combo_cap_pattern.blockSignals(True)
         self.window.combo_cap_pattern.clear()
         self.window.combo_cap_pattern.addItem("Chessboard", "chessboard")
         self.window.combo_cap_pattern.addItem("Charuco", "charuco")
         self.window.combo_cap_pattern.blockSignals(False)
+        self._block_wheel_changes(self.window.spin_cap_fps, self.window.combo_cap_pattern)
 
         self.window.btn_camera_detect.clicked.connect(
             lambda: self.probe_cameras_requested.emit(int(self._probe_max_spin.value()))
@@ -524,12 +598,17 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         self._camera_scroll = QScrollArea()
         self._camera_scroll.setWidgetResizable(True)
+        self._camera_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._camera_scroll_content = QWidget()
+        self._camera_scroll_content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._camera_grid = QGridLayout(self._camera_scroll_content)
         self._camera_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        for col in range(3):
+        self._camera_grid.setContentsMargins(4, 4, 4, 4)
+        self._camera_grid.setSpacing(8)
+        for col in range(2):
             self._camera_grid.setColumnStretch(col, 1)
         self._camera_scroll.setWidget(self._camera_scroll_content)
+        self._camera_scroll.viewport().installEventFilter(self)
         self.window.gridLayout_6.addWidget(self._camera_scroll)
 
         self._add_camera_button = QPushButton("+ Camera Toevoegen")
@@ -563,6 +642,14 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._frames_text = self._plain_text_in_frame(self.window.frame_res_aantal_frames)
         self._camera_info_text = self._plain_text_in_frame(self.window.frame_res_camera_info)
         self._error_text = self._plain_text_in_frame(self.window.frame_res_error)
+        for text in [
+            self._intrinsics_text,
+            self._extrinsics_text,
+            self._frames_text,
+            self._camera_info_text,
+            self._error_text,
+        ]:
+            text.setMinimumHeight(96)
 
         existing_preview = self.window.frame_res_preview_tmol.findChild(QPlainTextEdit)
         self._tmol_preview = existing_preview or QPlainTextEdit()
@@ -575,9 +662,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 preview_layout.setContentsMargins(4, 4, 4, 4)
             preview_layout.addWidget(self._tmol_preview)
 
-        self.window.btn_res_show_tmol.clicked.connect(lambda: self.window.stackedWidget_2.setCurrentIndex(1))
+        self.window.btn_res_show_tmol.clicked.connect(self._preview_toml)
         self.window.pushButton.clicked.connect(lambda: self.window.stackedWidget_2.setCurrentIndex(0))
-        self.window.export_toml.clicked.connect(self._show_export_hint)
+        self.window.export_toml.clicked.connect(self._export_toml_file)
 
     def _setup_directory_page(self) -> None:
         layout = QVBoxLayout(self.window.frame_directory)
@@ -637,7 +724,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         self._sources_input = QLineEdit(default_camera_csv)
         self._preview_fps_spin = self._double_spin(1.0, 120.0, min(default_fps, 30.0), 1.0, 1)
-        self._detect_hz_spin = self._double_spin(0.5, 20.0, 10.0, 0.5, 1)
+        self._detect_hz_spin = self._double_spin(0.5, 20.0, 4.0, 0.5, 1)
         self._capture_resolution_combo = QComboBox()
         self._capture_resolution_combo.addItem("Auto", (0, 0))
         self._capture_resolution_combo.addItem("640 x 480", (640, 480))
@@ -652,6 +739,38 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._preview_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._preview_resolution_combo.addItem("1920 x 1080", (1920, 1080))
         self._preview_resolution_combo.setCurrentIndex(3)
+        self._camera_exposure_spin = self._spin(-13, 0, -1)
+        self._camera_exposure_spin.setSpecialValueText("Auto")
+        self._camera_fourcc_combo = QComboBox()
+        self._camera_fourcc_combo.addItem("MJPG", "MJPG")
+        self._camera_fourcc_combo.addItem("YUY2", "YUY2")
+        self._camera_auto_exposure_combo = self._camera_mode_combo(
+            [("Auto", 0.75), ("Manual", 0.25)]
+        )
+        self._camera_auto_wb_combo = self._camera_mode_combo([("On", 1.0), ("Off", 0.0)])
+        self._camera_autofocus_combo = self._camera_mode_combo([("On", 1.0), ("Off", 0.0)])
+        self._camera_control_spins: dict[str, QDoubleSpinBox] = {
+            "brightness": self._camera_control_spin(),
+            "contrast": self._camera_control_spin(),
+            "saturation": self._camera_control_spin(),
+            "hue": self._camera_control_spin(),
+            "gain": self._camera_control_spin(),
+            "sharpness": self._camera_control_spin(),
+            "gamma": self._camera_control_spin(),
+            "temperature": self._camera_control_spin(maximum=20000.0),
+            "backlight": self._camera_control_spin(),
+            "wb_temperature": self._camera_control_spin(maximum=20000.0),
+            "focus": self._camera_control_spin(maximum=20000.0),
+            "zoom": self._camera_control_spin(maximum=20000.0),
+            "pan": self._camera_control_spin(),
+            "tilt": self._camera_control_spin(),
+            "roll": self._camera_control_spin(),
+            "iris": self._camera_control_spin(maximum=20000.0),
+            "trigger": self._camera_control_spin(),
+            "trigger_delay": self._camera_control_spin(),
+            "aperture": self._camera_control_spin(maximum=20000.0),
+            "exposure_program": self._camera_control_spin(),
+        }
         self._probe_max_spin = self._spin(1, 20, 10)
 
         self._chess_cols_spin = self._spin(2, 30, 9)
@@ -670,15 +789,19 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._overlay_checkbox.setChecked(True)
         self._mirror_checkbox = QCheckBox("Mirror Preview")
         self._auto_capture_checkbox = QCheckBox("Auto Capture Valid Samples")
-        self._relaxed_sync_checkbox = QCheckBox("Relax Sync Thresholds")
-        self._relaxed_sync_checkbox.setChecked(True)
         self._auto_cooldown_spin = self._double_spin(0.1, 10.0, 0.33, 0.01, 2)
-        self._auto_max_spin = self._spin(0, 1000, 60)
-        self._auto_max_spin.setSpecialValueText("No limit")
-        self._auto_max_spin.setSuffix(" samples")
-        self._quality_spin = self._double_spin(0.0, 1.0, 0.25, 0.05, 2)
-        self._coverage_spin = self._double_spin(0.0, 25.0, 1.8, 0.2, 1)
-        self._coverage_spin.setSuffix(" %")
+        self._intrinsics_max_spin = self._spin(0, 1000, 60)
+        self._intrinsics_max_spin.setSpecialValueText("No limit")
+        self._intrinsics_max_spin.setSuffix(" samples")
+        self._extrinsics_max_spin = self._spin(0, 1000, 30)
+        self._extrinsics_max_spin.setSpecialValueText("No limit")
+        self._extrinsics_max_spin.setSuffix(" sync sets")
+        self._intrinsics_quality_spin = self._double_spin(0.0, 1.0, 0.25, 0.05, 2)
+        self._intrinsics_coverage_spin = self._double_spin(0.0, 25.0, 1.8, 0.2, 1)
+        self._intrinsics_coverage_spin.setSuffix(" %")
+        self._extrinsics_quality_spin = self._double_spin(0.0, 1.0, 0.15, 0.05, 2)
+        self._extrinsics_coverage_spin = self._double_spin(0.0, 25.0, 1.0, 0.2, 1)
+        self._extrinsics_coverage_spin.setSuffix(" %")
         self._grid_cols_spin = self._spin(1, 20, 6)
         self._grid_rows_spin = self._spin(1, 20, 4)
 
@@ -698,6 +821,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_sync_button = QPushButton("Capture Sync Set(s)")
         self._start_auto_button = QPushButton("Start Auto Capture")
         self._apply_live_settings_button = QPushButton("Apply Live Source Settings")
+        self._apply_camera_controls_button = QPushButton("Apply Camera Image Controls")
+        self._reset_camera_controls_button = QPushButton("Reset to Defaults")
         self._apply_chessboard_button = QPushButton("Apply Chessboard Settings")
         self._apply_charuco_button = QPushButton("Apply ChArUco Settings")
         self._apply_workflow_button = QPushButton("Apply Workflow Settings")
@@ -710,15 +835,18 @@ class DesignedCalibrationPanel(QtCore.QObject):
         advanced_layout.setContentsMargins(4, 4, 4, 4)
         advanced_layout.setSpacing(8)
         advanced_layout.addWidget(self._section("Live source settings", self._live_settings_form()))
+        advanced_layout.addWidget(self._section("Camera image controls", self._camera_controls_form()))
         advanced_layout.addWidget(self._section("Chessboard settings", self._chessboard_settings_form()))
         advanced_layout.addWidget(self._section("ChArUco settings", self._charuco_settings_form()))
         advanced_layout.addWidget(self._section("Workflow and thresholds", self._workflow_settings_form()))
         advanced_layout.addWidget(self._section("Advanced actions", self._advanced_actions_widget()))
         advanced_layout.addWidget(self._section("Status and warnings", self._status_widget()))
         advanced_layout.addStretch(1)
+        self._prepare_settings_container(advanced_root)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         scroll.setWidget(advanced_root)
         page_layout = self.window.page_advanced_settings.layout()
         if page_layout is None:
@@ -729,6 +857,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
         page_layout.addWidget(scroll)
 
         self._connect_advanced_controls()
+        self._set_mode_button_state(self.current_workflow_mode())
+        for tile in self._tiles.values():
+            tile.set_progress(0, self.active_progress_maximum(), self.active_progress_label(0))
 
     def _connect_designed_actions(self) -> None:
         self.window.btn_newproject.clicked.connect(self.new_project_requested)
@@ -738,8 +869,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window.actionQuit.triggered.connect(self.window.close)
         self.window.actionOpen_documentation.triggered.connect(self._open_documentation)
 
-        self.window.btn_cap_intrinsics_start.clicked.connect(self._toggle_intrinsics_start)
-        self.window.btn_cap_extrinsics_start.clicked.connect(self._toggle_extrinsics_start)
+        self.window.btn_cap_intrinsics_start.clicked.connect(self._activate_intrinsics_mode)
+        self.window.btn_cap_extrinsics_start.clicked.connect(self._activate_extrinsics_mode)
         self.window.btn_cap_calculate_intrinsics.clicked.connect(self.solve_requested)
         self.window.btn_cap_calculate_extrinsics.clicked.connect(self._emit_solve_extrinsics)
         self.window.btn_cap_reset_calibration.clicked.connect(self._emit_reset)
@@ -754,6 +885,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_sync_button.clicked.connect(self._capture_sync_sample)
         self._start_auto_button.clicked.connect(self.auto_capture_start_requested)
         self._apply_live_settings_button.clicked.connect(self._apply_live_settings)
+        self._apply_camera_controls_button.clicked.connect(self._apply_camera_controls)
+        self._reset_camera_controls_button.clicked.connect(self._reset_camera_image_controls)
         self._apply_chessboard_button.clicked.connect(lambda: self._apply_board_settings("Chessboard settings applied."))
         self._apply_charuco_button.clicked.connect(lambda: self._apply_board_settings("ChArUco settings applied."))
         self._apply_workflow_button.clicked.connect(self._apply_workflow_settings)
@@ -809,6 +942,27 @@ class DesignedCalibrationPanel(QtCore.QObject):
         spin.setValue(value)
         return spin
 
+    def _camera_mode_combo(self, choices: list[tuple[str, float]]) -> QComboBox:
+        combo = QComboBox()
+        combo.addItem("Auto", None)
+        for label, value in choices:
+            combo.addItem(label, value)
+        return combo
+
+    def _camera_control_spin(
+        self,
+        minimum: float = -10000.0,
+        maximum: float = 10000.0,
+        step: float = 1.0,
+    ) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(2)
+        spin.setSingleStep(step)
+        spin.setValue(minimum)
+        spin.setSpecialValueText("Auto")
+        return spin
+
     def _section(self, title: str, content: QWidget) -> QFrame:
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -826,12 +980,52 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form.addRow("Sources (CSV)", self._sources_input)
         form.addRow("Capture FPS", QLabel("Use the FPS field on the Camera page"))
         form.addRow("Capture Resolution", self._capture_resolution_combo)
+        form.addRow("Camera Exposure", self._camera_exposure_spin)
+        form.addRow("Pixel Format", self._camera_fourcc_combo)
         form.addRow("Preview FPS", self._preview_fps_spin)
         form.addRow("Preview Resolution", self._preview_resolution_combo)
         form.addRow("Calibration Detect Hz", self._detect_hz_spin)
         form.addRow("Probe Max Index", self._probe_max_spin)
         form.addRow("", self._probe_status)
         form.addRow("", self._apply_live_settings_button)
+        return form_widget
+
+    def _camera_controls_form(self) -> QWidget:
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
+        note = QLabel("Auto = laat de camera-driver de waarde kiezen of laat de property ongemoeid.")
+        note.setWordWrap(True)
+        form.addRow("", note)
+        form.addRow("Auto Exposure Mode", self._camera_auto_exposure_combo)
+        form.addRow("Brightness", self._camera_control_spins["brightness"])
+        form.addRow("Contrast", self._camera_control_spins["contrast"])
+        form.addRow("Saturation", self._camera_control_spins["saturation"])
+        form.addRow("Hue", self._camera_control_spins["hue"])
+        form.addRow("Gain", self._camera_control_spins["gain"])
+        form.addRow("Sharpness", self._camera_control_spins["sharpness"])
+        form.addRow("Gamma", self._camera_control_spins["gamma"])
+        form.addRow("Temperature", self._camera_control_spins["temperature"])
+        form.addRow("Backlight", self._camera_control_spins["backlight"])
+        form.addRow("Auto White Balance", self._camera_auto_wb_combo)
+        form.addRow("White Balance Temperature", self._camera_control_spins["wb_temperature"])
+        form.addRow("Autofocus", self._camera_autofocus_combo)
+        form.addRow("Focus", self._camera_control_spins["focus"])
+        form.addRow("Zoom", self._camera_control_spins["zoom"])
+        form.addRow("Pan", self._camera_control_spins["pan"])
+        form.addRow("Tilt", self._camera_control_spins["tilt"])
+        form.addRow("Roll", self._camera_control_spins["roll"])
+        form.addRow("Iris", self._camera_control_spins["iris"])
+        form.addRow("Trigger", self._camera_control_spins["trigger"])
+        form.addRow("Trigger Delay", self._camera_control_spins["trigger_delay"])
+        form.addRow("Aperture", self._camera_control_spins["aperture"])
+        form.addRow("Exposure Program", self._camera_control_spins["exposure_program"])
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        actions_layout.addWidget(self._reset_camera_controls_button)
+        actions_layout.addWidget(self._apply_camera_controls_button)
+        form.addRow("", actions)
         return form_widget
 
     def _chessboard_settings_form(self) -> QWidget:
@@ -862,10 +1056,12 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form.addRow("Mirror", self._mirror_checkbox)
         form.addRow("Auto Capture", self._auto_capture_checkbox)
         form.addRow("Cooldown", self._auto_cooldown_spin)
-        form.addRow("Max Samples", self._auto_max_spin)
-        form.addRow("Relaxed Sync", self._relaxed_sync_checkbox)
-        form.addRow("Min Quality", self._quality_spin)
-        form.addRow("Min Coverage", self._coverage_spin)
+        form.addRow("Intrinsics Max Samples", self._intrinsics_max_spin)
+        form.addRow("Extrinsics Max Sync Sets", self._extrinsics_max_spin)
+        form.addRow("Intrinsics Min Quality", self._intrinsics_quality_spin)
+        form.addRow("Intrinsics Min Coverage", self._intrinsics_coverage_spin)
+        form.addRow("Extrinsics Min Quality", self._extrinsics_quality_spin)
+        form.addRow("Extrinsics Min Coverage", self._extrinsics_coverage_spin)
         grid = QWidget()
         grid_layout = QHBoxLayout(grid)
         grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -970,23 +1166,85 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._emit_runtime_tuning_changed()
         self.show_feedback("Live source settings applied.", success=True)
 
+    def _apply_camera_controls(self, message: str = "Camera image controls applied.") -> None:
+        self._emit_runtime_tuning_changed()
+        self.show_feedback(message, success=True)
+
+    def _reset_camera_image_controls(self) -> None:
+        defaults = RuntimeTuning()
+        self._camera_exposure_spin.setValue(defaults.camera_exposure)
+        fourcc_index = self._camera_fourcc_combo.findData(defaults.camera_fourcc)
+        self._camera_fourcc_combo.setCurrentIndex(fourcc_index if fourcc_index >= 0 else 0)
+
+        for combo in [
+            self._camera_auto_exposure_combo,
+            self._camera_auto_wb_combo,
+            self._camera_autofocus_combo,
+        ]:
+            combo.setCurrentIndex(0)
+
+        for spin in self._camera_control_spins.values():
+            spin.setValue(spin.minimum())
+
+        self._apply_camera_controls("Camera image controls reset to defaults.")
+
     def _apply_workflow_settings(self) -> None:
         self._emit_runtime_tuning_changed()
-        self._emit_workflow_mode_changed()
         self._emit_acceptance_thresholds_changed()
         self._emit_spatial_grid_changed()
+        self._emit_workflow_mode_changed()
         self.show_feedback("Workflow settings applied.", success=True)
 
     def _apply_board_settings(self, message: str) -> None:
         self.board_settings_applied.emit(self.board_settings())
         self.show_feedback(message, success=True)
 
-    def _show_export_hint(self) -> None:
-        self._tmol_preview.setPlainText(
-            "The calibration backend stores JSON profiles. Use Save Profile in advanced settings to export the "
-            "current calibration."
-        )
+    def _current_toml_bundle(self) -> CalibrationBundle | None:
+        bundle = self._last_results_bundle or getattr(self.window, "_current_calibration_bundle", None)
+        if bundle is not None:
+            return bundle
+        manager = getattr(self.window, "_calibration_manager", None)
+        if manager is None:
+            return None
+        return manager.last_solution()
+
+    def _preview_toml(self) -> None:
+        bundle = self._current_toml_bundle()
+        if bundle is None:
+            self._tmol_preview.setPlainText("Nog geen kalibratie om te exporteren. Solve eerst.")
+        else:
+            self._tmol_preview.setPlainText(calibration_bundle_to_toml(bundle))
         self.window.stackedWidget_2.setCurrentIndex(1)
+
+    def _export_toml_file(self) -> None:
+        bundle = self._current_toml_bundle()
+        if bundle is None:
+            QMessageBox.information(
+                self.window,
+                "Export",
+                "Er is nog geen kalibratie om te exporteren. Solve eerst.",
+            )
+            return
+
+        default_path = self.window._config.calibration_dir / "calibration.toml"
+        selected, _ = QFileDialog.getSaveFileName(
+            self.window,
+            "Export calibration as TOML",
+            str(default_path),
+            "TOML files (*.toml);;All files (*.*)",
+        )
+        if not selected:
+            return
+
+        toml_text = calibration_bundle_to_toml(bundle)
+        try:
+            Path(selected).write_text(toml_text, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self.window, "Export mislukt", str(exc))
+            return
+
+        self._tmol_preview.setPlainText(toml_text)
+        self.show_feedback(f"TOML geexporteerd naar {selected}", success=True)
 
     def _emit_start_live(self) -> None:
         try:
@@ -996,39 +1254,28 @@ class DesignedCalibrationPanel(QtCore.QObject):
             return
         self.start_live_requested.emit(sources, self.target_fps())
 
-    def _toggle_intrinsics_start(self, checked: bool) -> None:
-        if checked:
-            self.set_workflow_mode("intrinsics")
-            self.workflow_mode_changed.emit("intrinsics")
-            self.set_auto_capture_enabled(True)
-            self.window.btn_cap_intrinsics_start.setText("Stop")
-            self.window.btn_cap_intrinsics_start.setStyleSheet(
-                "background-color: #0078d7; color: white; font-weight: bold;"
-            )
-            self._emit_start_live()
-            self.auto_capture_start_requested.emit()
-            return
-        self.set_auto_capture_enabled(False)
-        self.stop_live_requested.emit()
-        self.window.btn_cap_intrinsics_start.setText("Start")
-        self.window.btn_cap_intrinsics_start.setStyleSheet("")
+    def _set_mode_button_state(self, mode: str) -> None:
+        intrinsics_active = mode == "intrinsics"
+        extrinsics_active = mode == "sync_extrinsics"
+        active_style = "background-color: #0078d7; color: white; font-weight: bold;"
+        for button, active in (
+            (self.window.btn_cap_intrinsics_start, intrinsics_active),
+            (self.window.btn_cap_extrinsics_start, extrinsics_active),
+        ):
+            button.blockSignals(True)
+            button.setChecked(active)
+            button.setStyleSheet(active_style if active else "")
+            button.blockSignals(False)
+        self.window.btn_cap_intrinsics_start.setText("Intrinsics Mode")
+        self.window.btn_cap_extrinsics_start.setText("Extrinsics Mode")
 
-    def _toggle_extrinsics_start(self, checked: bool) -> None:
-        if checked:
-            self.set_workflow_mode("sync_extrinsics")
-            self.workflow_mode_changed.emit("sync_extrinsics")
-            self.set_auto_capture_enabled(True)
-            self.window.btn_cap_extrinsics_start.setText("Stop")
-            self.window.btn_cap_extrinsics_start.setStyleSheet(
-                "background-color: #0078d7; color: white; font-weight: bold;"
-            )
-            self._emit_start_live()
-            self.auto_capture_start_requested.emit()
-            return
-        self.set_auto_capture_enabled(False)
-        self.stop_live_requested.emit()
-        self.window.btn_cap_extrinsics_start.setText("Start")
-        self.window.btn_cap_extrinsics_start.setStyleSheet("")
+    def _activate_intrinsics_mode(self, _checked: bool = True) -> None:
+        self.set_workflow_mode("intrinsics")
+        self.workflow_mode_changed.emit("intrinsics")
+
+    def _activate_extrinsics_mode(self, _checked: bool = True) -> None:
+        self.set_workflow_mode("sync_extrinsics")
+        self.workflow_mode_changed.emit("sync_extrinsics")
 
     def _emit_solve_extrinsics(self) -> None:
         self.set_workflow_mode("sync_extrinsics")
@@ -1036,14 +1283,10 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.solve_extrinsics_requested.emit()
 
     def _emit_reset(self) -> None:
-        self.window.btn_cap_intrinsics_start.setChecked(False)
-        self.window.btn_cap_extrinsics_start.setChecked(False)
-        self.window.btn_cap_intrinsics_start.setText("Start")
-        self.window.btn_cap_extrinsics_start.setText("Start")
-        self.window.btn_cap_intrinsics_start.setStyleSheet("")
-        self.window.btn_cap_extrinsics_start.setStyleSheet("")
+        self._sync_progress_count = 0
+        self._set_mode_button_state(self.current_workflow_mode())
         for tile in self._tiles.values():
-            tile.set_sample_count(0)
+            tile.set_progress(0, self.active_progress_maximum(), self.active_progress_label(0))
         self.reset_requested.emit()
 
     def _capture_intrinsics_sample(self) -> None:
@@ -1060,7 +1303,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.pattern_changed.emit(self.current_pattern())
 
     def _emit_workflow_mode_changed(self) -> None:
-        self.workflow_mode_changed.emit(self.current_workflow_mode())
+        mode = self.current_workflow_mode()
+        self.set_workflow_mode(mode)
+        self.workflow_mode_changed.emit(mode)
 
     def _emit_acceptance_thresholds_changed(self) -> None:
         quality, coverage = self.acceptance_threshold_values()
@@ -1156,6 +1401,21 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def target_fps(self) -> float:
         return float(self.window.spin_cap_fps.value())
 
+    def _camera_controls(self) -> dict[str, float]:
+        controls: dict[str, float] = {}
+        for key, combo in (
+            ("auto_exposure", self._camera_auto_exposure_combo),
+            ("auto_wb", self._camera_auto_wb_combo),
+            ("autofocus", self._camera_autofocus_combo),
+        ):
+            value = combo.currentData()
+            if value is not None:
+                controls[key] = float(value)
+        for key, spin in self._camera_control_spins.items():
+            if float(spin.value()) > float(spin.minimum()):
+                controls[key] = float(spin.value())
+        return controls
+
     def runtime_tuning(self) -> RuntimeTuning:
         capture_size = self._capture_resolution_combo.currentData()
         if not isinstance(capture_size, tuple) or len(capture_size) != 2:
@@ -1171,6 +1431,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
             preview_max_width=int(preview_size[0]),
             preview_max_height=int(preview_size[1]),
             calibration_detection_hz=float(self._detect_hz_spin.value()),
+            camera_exposure=int(self._camera_exposure_spin.value()),
+            camera_fourcc=str(self._camera_fourcc_combo.currentData() or "MJPG"),
+            camera_controls=self._camera_controls(),
             overlays_enabled=self._overlay_checkbox.isChecked(),
             detection_capture_enabled=False,
             detection_reconstruction_enabled=False,
@@ -1198,6 +1461,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
             tile.preview_options_changed.connect(self.preview_options_changed)
             tile.remove_requested.connect(self._remove_source)
             tile.name_changed.connect(self._on_camera_name_changed)
+            if hasattr(self, "_intrinsics_max_spin"):
+                tile.set_progress(0, self.active_progress_maximum(), self.active_progress_label(0))
             self._tiles[source_id] = tile
 
         self._source_order = list(source_ids)
@@ -1209,13 +1474,34 @@ class DesignedCalibrationPanel(QtCore.QObject):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
+
+        columns = self._camera_grid_columns()
+        self._last_camera_grid_columns = columns
+        for col in range(3):
+            self._camera_grid.setColumnStretch(col, 1 if col < columns else 0)
+
         for index, source_id in enumerate(self._source_order):
-            self._camera_grid.addWidget(self._tiles[source_id], index // 3, index % 3)
+            self._camera_grid.addWidget(self._tiles[source_id], index // columns, index % columns)
         self._camera_grid.addWidget(
             self._add_camera_button,
-            len(self._source_order) // 3,
-            len(self._source_order) % 3,
+            len(self._source_order) // columns,
+            len(self._source_order) % columns,
         )
+
+    def _camera_grid_columns(self) -> int:
+        viewport_width = self._camera_scroll.viewport().width() if hasattr(self, "_camera_scroll") else 0
+        minimum_tile_width = 520
+        minimum_gap = self._camera_grid.spacing()
+        if viewport_width >= (minimum_tile_width * 2 + minimum_gap):
+            return 2
+        return 1
+
+    def _rebuild_camera_grid_if_columns_changed(self) -> None:
+        if not hasattr(self, "_camera_grid"):
+            return
+        columns = self._camera_grid_columns()
+        if columns != self._last_camera_grid_columns:
+            self._rebuild_camera_grid()
 
     def update_previews(
         self,
@@ -1239,7 +1525,18 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 )
             elif detection is not None:
                 status += f" | {detection.pattern_type} not found"
-            tile.set_frame(frame_bgr, status, count)
+            if self.current_workflow_mode() == "sync_extrinsics":
+                progress_current = self._sync_progress_count
+                progress_maximum = self.extrinsics_max_sync_sets()
+                progress_label = self.active_progress_label(progress_current)
+            else:
+                progress_current = count
+                progress_maximum = self.intrinsics_max_samples()
+                progress_label = self.active_progress_label(progress_current)
+            tile.set_frame(frame_bgr, status, progress_current, progress_maximum, progress_label)
+
+    def set_sync_progress_count(self, count: int) -> None:
+        self._sync_progress_count = max(0, int(count))
 
     def _display_name(self, source_id: str) -> str:
         tile = self._tiles.get(source_id)
@@ -1271,6 +1568,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         bundle: CalibrationBundle | None,
         live_detection: dict[str, ChessboardDetectionResult] | None = None,
     ) -> None:
+        self._last_results_bundle = bundle
         intrinsics: list[str] = []
         extrinsics: list[str] = []
         frames: list[str] = []
@@ -1322,20 +1620,29 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def show_warnings(self, lines: list[str]) -> None:
         self._warnings.setPlainText("\n".join(lines))
 
-    def set_live_status(self, live_active: bool, active_cameras: int) -> None:
+    def set_live_status(
+        self,
+        live_active: bool,
+        active_cameras: int,
+        per_camera_fps: dict[str, float] | None = None,
+    ) -> None:
         self._live_active = live_active
         self._active_cameras = active_cameras
         self.window.btn_camera_start_live.setEnabled(not live_active)
         self.window.btn_camera_stop_live.setEnabled(live_active)
         self.window.text_diag_used_cams.setPlainText(str(active_cameras))
         state = "On" if live_active else "Off"
-        self._feedback.setText(f"Live: {state} | Cameras: {active_cameras}")
+        fps_text = ""
+        if per_camera_fps:
+            fps_text = " | FPS: " + ", ".join(
+                f"{self._display_name(source_id)} {fps:.1f}"
+                for source_id, fps in sorted(per_camera_fps.items())
+            )
+        self._feedback.setText(f"Live: {state} | Cameras: {active_cameras}{fps_text}")
         if not live_active:
             for button in [self.window.btn_cap_intrinsics_start, self.window.btn_cap_extrinsics_start]:
                 button.blockSignals(True)
-                button.setChecked(False)
-                button.setText("Start")
-                button.setStyleSheet("")
+                button.setText("Intrinsics Mode" if button is self.window.btn_cap_intrinsics_start else "Extrinsics Mode")
                 button.blockSignals(False)
 
     def set_camera_probe_running(self, running: bool) -> None:
@@ -1373,6 +1680,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
             self._reset_samples_button,
             self._load_profile_button,
             self._apply_live_settings_button,
+            self._apply_camera_controls_button,
+            self._reset_camera_controls_button,
             self._apply_chessboard_button,
             self._apply_charuco_button,
             self._apply_workflow_button,
@@ -1424,15 +1733,26 @@ class DesignedCalibrationPanel(QtCore.QObject):
         return "sync_extrinsics" if mode == "sync_extrinsics" else "intrinsics"
 
     def set_workflow_mode(self, mode: str) -> None:
-        index = self._workflow_combo.findData(mode.lower().strip())
+        normalized = "sync_extrinsics" if mode.lower().strip() == "sync_extrinsics" else "intrinsics"
+        index = self._workflow_combo.findData(normalized)
         self._workflow_combo.blockSignals(True)
         self._workflow_combo.setCurrentIndex(index if index >= 0 else 0)
         self._workflow_combo.blockSignals(False)
-        if mode == "sync_extrinsics":
+        self._set_mode_button_state(normalized)
+        if normalized == "sync_extrinsics":
+            self.enable_all_overlays()
             self._capture_button.setText("Capture Intrinsics Sample(s)")
             self._capture_sync_button.setEnabled(True)
         else:
             self._capture_sync_button.setEnabled(True)
+
+    def enable_all_overlays(self) -> None:
+        self._overlay_checkbox.blockSignals(True)
+        self._overlay_checkbox.setChecked(True)
+        self._overlay_checkbox.blockSignals(False)
+        for tile in self._tiles.values():
+            tile.set_overlay_active(True)
+        self.preview_options_changed.emit()
 
     def auto_capture_enabled(self) -> bool:
         return self._auto_capture_checkbox.isChecked()
@@ -1445,14 +1765,32 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def auto_capture_cooldown_sec(self) -> float:
         return float(self._auto_cooldown_spin.value())
 
+    def intrinsics_max_samples(self) -> int:
+        return int(self._intrinsics_max_spin.value())
+
+    def extrinsics_max_sync_sets(self) -> int:
+        return int(self._extrinsics_max_spin.value())
+
     def auto_capture_max_samples(self) -> int:
-        return int(self._auto_max_spin.value())
+        if self.current_workflow_mode() == "sync_extrinsics":
+            return self.extrinsics_max_sync_sets()
+        return self.intrinsics_max_samples()
+
+    def active_progress_maximum(self) -> int:
+        return self.auto_capture_max_samples()
+
+    def active_progress_label(self, current: int) -> str:
+        maximum = self.active_progress_maximum()
+        if maximum <= 0:
+            return f"{int(current)} / No limit"
+        suffix = " sync" if self.current_workflow_mode() == "sync_extrinsics" else ""
+        return f"{int(current)}/{maximum}{suffix}"
 
     def set_auto_capture_status(self, message: str) -> None:
         self._auto_status.setText(message)
 
     def relaxed_sync_enabled(self) -> bool:
-        return self._relaxed_sync_checkbox.isChecked()
+        return True
 
     def overlay_enabled(self) -> bool:
         if not self._tiles:
@@ -1486,15 +1824,35 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._grid_rows_spin.blockSignals(False)
 
     def set_acceptance_threshold_values(self, min_quality: float, min_coverage_ratio: float) -> None:
-        self._quality_spin.blockSignals(True)
-        self._coverage_spin.blockSignals(True)
-        self._quality_spin.setValue(float(min_quality))
-        self._coverage_spin.setValue(float(min_coverage_ratio) * 100.0)
-        self._quality_spin.blockSignals(False)
-        self._coverage_spin.blockSignals(False)
+        if self.current_workflow_mode() == "sync_extrinsics":
+            quality_spin = self._extrinsics_quality_spin
+            coverage_spin = self._extrinsics_coverage_spin
+        else:
+            quality_spin = self._intrinsics_quality_spin
+            coverage_spin = self._intrinsics_coverage_spin
+        quality_spin.blockSignals(True)
+        coverage_spin.blockSignals(True)
+        quality_spin.setValue(float(min_quality))
+        coverage_spin.setValue(float(min_coverage_ratio) * 100.0)
+        quality_spin.blockSignals(False)
+        coverage_spin.blockSignals(False)
 
     def acceptance_threshold_values(self) -> tuple[float, float]:
-        return float(self._quality_spin.value()), float(self._coverage_spin.value()) / 100.0
+        if self.current_workflow_mode() == "sync_extrinsics":
+            return self.extrinsics_threshold_values()
+        return self.intrinsics_threshold_values()
+
+    def intrinsics_threshold_values(self) -> tuple[float, float]:
+        return (
+            float(self._intrinsics_quality_spin.value()),
+            float(self._intrinsics_coverage_spin.value()) / 100.0,
+        )
+
+    def extrinsics_threshold_values(self) -> tuple[float, float]:
+        return (
+            float(self._extrinsics_quality_spin.value()),
+            float(self._extrinsics_coverage_spin.value()) / 100.0,
+        )
 
     def load_root_directory(self, directory_path: Path | str) -> None:
         path = Path(directory_path)

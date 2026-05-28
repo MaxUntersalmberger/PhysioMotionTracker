@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self._calibration_loaded = False
         self._calibration_pattern = self._calibration_manager.default_pattern
         self._latest_calibration_detections: dict[str, ChessboardDetectionResult] = {}
+        self._latest_calibration_overlay_frames: dict[str, Any] = {}
         self._last_calibration_detection_at = 0.0
         self._calibration_detection_interval_sec = 0.25
         self._last_calibration_panel_refresh_at = 0.0
@@ -60,6 +61,7 @@ class MainWindow(QMainWindow):
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
         self._last_rendered_frame_indices: dict[str, int] = {}
+        self._measured_fps_by_source: dict[str, float] = {}
         self._active_camera_count = 0
 
         self._calibration_panel = self._create_calibration_panel(
@@ -335,6 +337,7 @@ class MainWindow(QMainWindow):
         self._calibration_panel.set_live_status(
             live_active=live_active,
             active_cameras=self._active_camera_count,
+            per_camera_fps=self._measured_fps_by_source,
         )
         self._last_live_status_refresh_at = now
 
@@ -357,9 +360,19 @@ class MainWindow(QMainWindow):
         self._active_sources = sources
         source_ids = {source.source_id for source in sources}
         self._latest_frames = {source_id: frame for source_id, frame in self._latest_frames.items() if source_id in source_ids}
+        self._measured_fps_by_source = {
+            source_id: fps
+            for source_id, fps in self._measured_fps_by_source.items()
+            if source_id in source_ids
+        }
         self._latest_calibration_detections = {
             source_id: detection
             for source_id, detection in self._latest_calibration_detections.items()
+            if source_id in source_ids
+        }
+        self._latest_calibration_overlay_frames = {
+            source_id: frame
+            for source_id, frame in self._latest_calibration_overlay_frames.items()
             if source_id in source_ids
         }
         self._last_rendered_frame_indices = {
@@ -376,6 +389,9 @@ class MainWindow(QMainWindow):
 
         source_ids = self._active_source_ids()
         self._calibration_panel.set_sources(source_ids)
+        sync_count = self._calibration_manager.synchronized_capture_count()
+        if hasattr(self._calibration_panel, "set_sync_progress_count"):
+            self._calibration_panel.set_sync_progress_count(sync_count)
         sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
         sample_breakdown = self._calibration_manager.observations_breakdown_summary()
         self._calibration_panel.update_camera_status_table(
@@ -393,22 +409,25 @@ class MainWindow(QMainWindow):
         for source_id in source_ids:
             if mode == "sync_extrinsics":
                 sync_count_for_source = int(sample_breakdown.get(source_id, {}).get("synchronized", 0))
-                if sync_count_for_source < 3:
+                extrinsics_limit = self._extrinsics_max_sync_sets()
+                required = extrinsics_limit if extrinsics_limit > 0 else 3
+                if sync_count_for_source < min(required, 3):
                     warnings.append(
-                        f"{source_id}: too few synchronized sets ({sync_count_for_source}/3). "
+                        f"{source_id}: too few synchronized sets ({sync_count_for_source}/{required}). "
                         "Extrinsics may be unstable."
                     )
             else:
                 count = sample_counts.get(source_id, 0)
-                if count < self._calibration_manager.min_samples_per_camera:
+                intrinsics_limit = self._intrinsics_max_samples()
+                required = intrinsics_limit if intrinsics_limit > 0 else self._calibration_manager.min_samples_per_camera
+                if count < min(required, self._calibration_manager.min_samples_per_camera):
                     warnings.append(
-                        f"{source_id}: too few frames ({count}/{self._calibration_manager.min_samples_per_camera})."
+                        f"{source_id}: too few frames ({count}/{required})."
                     )
         if self._current_calibration_bundle:
             warnings.extend(self._current_calibration_bundle.notes)
         if self._calibration_pattern == "charuco" and "charuco" not in self._calibration_manager.available_patterns():
             warnings.append("Charuco selected but cv2.aruco is unavailable in current OpenCV build.")
-        sync_count = self._calibration_manager.synchronized_capture_count()
         if sync_count > 0:
             warnings.append(f"Synchronized capture sets stored: {sync_count}.")
         if mode == "sync_extrinsics":
@@ -425,7 +444,7 @@ class MainWindow(QMainWindow):
             f"coverage >= {self._calibration_manager.min_coverage_ratio * 100.0:.1f}%."
         )
         warnings.append(
-            "Sync thresholds: "
+            "Extrinsics thresholds: "
             f"quality >= {self._calibration_manager.sync_min_quality_score:.2f}, "
             f"coverage >= {self._calibration_manager.sync_min_coverage_ratio * 100.0:.1f}%."
         )
@@ -438,6 +457,21 @@ class MainWindow(QMainWindow):
 
     def _calibration_workflow_mode(self) -> str:
         return self._calibration_panel.current_workflow_mode()
+
+    def _intrinsics_max_samples(self) -> int:
+        if hasattr(self._calibration_panel, "intrinsics_max_samples"):
+            return int(self._calibration_panel.intrinsics_max_samples())
+        return int(self._calibration_panel.auto_capture_max_samples())
+
+    def _extrinsics_max_sync_sets(self) -> int:
+        if hasattr(self._calibration_panel, "extrinsics_max_sync_sets"):
+            return int(self._calibration_panel.extrinsics_max_sync_sets())
+        return int(self._calibration_panel.auto_capture_max_samples())
+
+    def _active_mode_sample_limit(self) -> int:
+        if self._calibration_workflow_mode() == "sync_extrinsics":
+            return self._extrinsics_max_sync_sets()
+        return self._intrinsics_max_samples()
 
     def _refresh_threshold_controls_for_mode(self) -> None:
         if self._calibration_workflow_mode() == "sync_extrinsics":
@@ -452,7 +486,7 @@ class MainWindow(QMainWindow):
         )
 
     def _auto_capture_idle_text(self) -> str:
-        limit = self._calibration_panel.auto_capture_max_samples()
+        limit = self._active_mode_sample_limit()
         limit_text = f" Max {limit}." if limit > 0 else ""
         collection = self._calibration_manager.sample_collection_metadata()
         duration_sec = float(collection.get("duration_sec", 0.0) or 0.0)
@@ -482,7 +516,7 @@ class MainWindow(QMainWindow):
         return f"{minutes:d}:{seconds:02d}"
 
     def _auto_capture_stop_message_if_limit_reached(self) -> str | None:
-        limit = self._calibration_panel.auto_capture_max_samples()
+        limit = self._active_mode_sample_limit()
         if limit <= 0:
             return None
         if self._calibration_workflow_mode() == "sync_extrinsics":
@@ -494,6 +528,13 @@ class MainWindow(QMainWindow):
         source_ids = self._active_source_ids()
         if not source_ids:
             return None
+        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
+        if all(int(sample_counts.get(source_id, 0)) >= limit for source_id in source_ids):
+            progress_text = ", ".join(
+                f"{source_id}={int(sample_counts.get(source_id, 0))}/{limit}"
+                for source_id in source_ids
+            )
+            return f"Auto capture stopped at intrinsics max samples ({progress_text})."
         if all(self._source_spatial_grid_complete(source_id) for source_id in source_ids):
             target = self._spatial_target_samples_per_cell()
             coverage_text = ", ".join(
@@ -517,17 +558,19 @@ class MainWindow(QMainWindow):
         return True
 
     def _auto_capture_intrinsics_candidates(self, source_ids: list[str]) -> list[str]:
-        limit = self._calibration_panel.auto_capture_max_samples()
+        limit = self._intrinsics_max_samples()
         if limit <= 0 or self._calibration_workflow_mode() != "intrinsics":
             return list(source_ids)
+        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
         return [
             source_id
             for source_id in source_ids
-            if not self._source_spatial_grid_complete(source_id)
+            if int(sample_counts.get(source_id, 0)) < limit
+            and not self._source_spatial_grid_complete(source_id)
         ]
 
     def _source_spatial_grid_complete(self, source_id: str) -> bool:
-        if self._calibration_panel.auto_capture_max_samples() <= 0:
+        if self._intrinsics_max_samples() <= 0:
             return False
         target = self._spatial_target_samples_per_cell()
         summary = self._calibration_manager.spatial_coverage_summary(
@@ -586,6 +629,7 @@ class MainWindow(QMainWindow):
                         detection=detection,
                         sample_count=sample_counts.get(source_id, 0),
                     )
+                    self._latest_calibration_overlay_frames[source_id] = previews[source_id]
 
             self._latest_calibration_detections = detections
             self._last_calibration_detection_at = now
@@ -602,12 +646,20 @@ class MainWindow(QMainWindow):
                         detection=detection,
                         sample_count=sample_counts.get(source_id, 0),
                     )
+                    self._latest_calibration_overlay_frames[source_id] = previews[source_id]
+                elif self._calibration_panel.overlay_enabled_for(source_id):
+                    previous_overlay = self._latest_calibration_overlay_frames.get(source_id)
+                    if previous_overlay is not None:
+                        previews[source_id] = previous_overlay
         elif not detection_needed and self._latest_calibration_detections:
             self._latest_calibration_detections.clear()
+            self._latest_calibration_overlay_frames.clear()
             detections = {}
             self._refresh_calibration_panel(force=True)
 
         display_previews = self._finalize_calibration_preview_frames(previews, detections, overlay_enabled)
+        if hasattr(self._calibration_panel, "set_sync_progress_count"):
+            self._calibration_panel.set_sync_progress_count(self._calibration_manager.synchronized_capture_count())
         self._calibration_panel.update_previews(display_previews, detections, sample_counts)
         self._last_rendered_frame_indices = frame_indices
         if detection_due or force:
@@ -616,6 +668,7 @@ class MainWindow(QMainWindow):
     def _prepare_calibration_preview_frame(self, source_id: str, frame_bgr: Any) -> Any:
         if not self._calibration_panel.undistort_enabled_for(source_id):
             return frame_bgr
+        self._latest_calibration_overlay_frames.pop(source_id, None)
         return self._calibration_manager.undistort_frame(
             source_id=source_id,
             frame_bgr=frame_bgr,
@@ -660,10 +713,11 @@ class MainWindow(QMainWindow):
             sample_count=sample_count,
             mirror_x=mirror_preview,
             spatial_target_samples_per_cell=self._spatial_target_samples_per_cell(),
+            show_spatial_grid=self._calibration_workflow_mode() == "intrinsics",
         )
 
     def _spatial_target_samples_per_cell(self) -> int:
-        max_samples = self._calibration_panel.auto_capture_max_samples()
+        max_samples = self._intrinsics_max_samples()
         cols, rows = self._calibration_manager.spatial_grid_shape
         total_cells = max(1, int(cols) * int(rows))
         if max_samples <= 0:
@@ -675,7 +729,7 @@ class MainWindow(QMainWindow):
         source_id: str,
         detection: ChessboardDetectionResult,
     ) -> bool:
-        if self._calibration_panel.auto_capture_max_samples() <= 0:
+        if self._intrinsics_max_samples() <= 0:
             return True
         if not detection.found or detection.corners is None:
             return True
@@ -835,7 +889,9 @@ class MainWindow(QMainWindow):
 
         self._active_sources = sources
         self._latest_frames.clear()
+        self._measured_fps_by_source.clear()
         self._latest_calibration_detections.clear()
+        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._last_calibration_detection_at = 0.0
         source_ids = [source.source_id for source in sources]
@@ -849,6 +905,9 @@ class MainWindow(QMainWindow):
             max_frame_height=self._runtime_tuning.preview_max_height,
             requested_width=self._runtime_tuning.capture_width,
             requested_height=self._runtime_tuning.capture_height,
+            exposure=self._runtime_tuning.camera_exposure,
+            fourcc=self._runtime_tuning.camera_fourcc,
+            camera_controls=self._runtime_tuning.camera_controls,
         )
         worker.batch_ready.connect(self._on_frame_batch)
         worker.state_changed.connect(self._on_live_state_changed)
@@ -904,7 +963,9 @@ class MainWindow(QMainWindow):
         self._live_worker = None
         self._active_sources = []
         self._latest_frames.clear()
+        self._measured_fps_by_source.clear()
         self._latest_calibration_detections.clear()
+        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._active_camera_count = 0
         self._refresh_live_status(force=True)
@@ -915,13 +976,36 @@ class MainWindow(QMainWindow):
         frames = dict(batch_obj)  # type: ignore[arg-type]
         if not frames:
             return
-        incoming_ts = max(frame.timestamp_sec for frame in frames.values())
-        if self._latest_frames:
-            latest_ts = max(frame.timestamp_sec for frame in self._latest_frames.values())
-            if incoming_ts < latest_ts:
-                return
-        self._latest_frames = frames
-        self._active_camera_count = len(frames)
+        accepted = False
+        for source_id, frame in frames.items():
+            previous = self._latest_frames.get(source_id)
+            if previous is not None and frame.timestamp_sec < previous.timestamp_sec:
+                continue
+            if previous is not None and frame.timestamp_sec > previous.timestamp_sec:
+                delta_sec = frame.timestamp_sec - previous.timestamp_sec
+                if delta_sec > 0.0001:
+                    measured_fps = min(240.0, 1.0 / delta_sec)
+                    old_fps = self._measured_fps_by_source.get(source_id)
+                    self._measured_fps_by_source[source_id] = (
+                        measured_fps if old_fps is None else (old_fps * 0.8) + (measured_fps * 0.2)
+                    )
+            self._latest_frames[source_id] = frame
+            accepted = True
+        if not accepted:
+            return
+        active_source_ids = {source.source_id for source in self._active_sources}
+        if active_source_ids:
+            self._latest_frames = {
+                source_id: frame
+                for source_id, frame in self._latest_frames.items()
+                if source_id in active_source_ids
+            }
+            self._measured_fps_by_source = {
+                source_id: fps
+                for source_id, fps in self._measured_fps_by_source.items()
+                if source_id in active_source_ids
+            }
+        self._active_camera_count = len(self._latest_frames)
         self._refresh_live_status()
 
     def _build_calibration_preview_frame(
@@ -984,14 +1068,27 @@ class MainWindow(QMainWindow):
         if detections:
             self._latest_calibration_detections = detections
         if preview_frames:
+            if hasattr(self._calibration_panel, "set_sync_progress_count"):
+                self._calibration_panel.set_sync_progress_count(self._calibration_manager.synchronized_capture_count())
             self._calibration_panel.update_previews(preview_frames, detections, sample_counts)
         self._refresh_calibration_panel(force=True)
 
         if accepted_total > 0:
-            sync_suffix = ""
-            if after_sync_sets > before_sync_sets:
-                sync_suffix = f" Created synchronized set #{after_sync_sets}."
-            message = f"Accepted {accepted_total} sample(s). " + " | ".join(feedback_messages) + sync_suffix
+            if self._calibration_workflow_mode() == "sync_extrinsics" and after_sync_sets > before_sync_sets:
+                limit = self._extrinsics_max_sync_sets()
+                limit_text = f"/{limit}" if limit > 0 else " / No limit"
+                cameras = " ".join(sorted(feedback_by_source.keys()))
+                message = f"Stored sync set {after_sync_sets}{limit_text}, cameras: {cameras}."
+            else:
+                limit = self._intrinsics_max_samples()
+                accepted_parts = []
+                for source_id, feedback in sorted(feedback_by_source.items()):
+                    if feedback.accepted:
+                        limit_text = f"/{limit}" if limit > 0 else " / No limit"
+                        accepted_parts.append(f"accepted {source_id} sample {feedback.sample_count}{limit_text}")
+                message = "; ".join(accepted_parts) if accepted_parts else f"Accepted {accepted_total} sample(s)."
+                if feedback_messages:
+                    message += " | " + " | ".join(feedback_messages)
             self._set_status(message)
             self._calibration_panel.show_feedback(message, success=True)
             if auto_trigger:
@@ -1243,6 +1340,7 @@ class MainWindow(QMainWindow):
     def _on_reset_calibration_samples(self) -> None:
         self._calibration_manager.reset()
         self._latest_calibration_detections.clear()
+        self._latest_calibration_overlay_frames.clear()
         self._refresh_calibration_panel(force=True)
         self._calibration_panel.show_feedback("Calibration samples reset.", success=True)
         self._set_status("Calibration samples reset")
@@ -1264,6 +1362,7 @@ class MainWindow(QMainWindow):
 
         self._calibration_manager.reset_all()
         self._latest_calibration_detections.clear()
+        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._current_calibration_bundle = None
         self._calibration_loaded = False
@@ -1389,6 +1488,7 @@ class MainWindow(QMainWindow):
         self._current_calibration_bundle = None
         self._calibration_loaded = False
         self._latest_calibration_detections.clear()
+        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._calibration_path = self._default_calibration_path()
         try:
@@ -1414,9 +1514,13 @@ class MainWindow(QMainWindow):
         normalized = mode.lower().strip()
         if normalized not in {"intrinsics", "sync_extrinsics"}:
             normalized = "intrinsics"
+        self._latest_calibration_overlay_frames.clear()
         if normalized == "sync_extrinsics":
+            if hasattr(self._calibration_panel, "enable_all_overlays"):
+                self._calibration_panel.enable_all_overlays()
             message = (
-                "Calibration workflow set to Sync / Extrinsics: only synchronized multi-camera sets are stored."
+                "Calibration workflow set to Sync / Extrinsics: all camera overlays are enabled and only "
+                "synchronized multi-camera sets are stored."
             )
         else:
             message = (
@@ -1428,31 +1532,51 @@ class MainWindow(QMainWindow):
         self._update_calibration_preview(force=True)
 
     def _on_acceptance_thresholds_changed(self, min_quality: float, min_coverage_ratio: float) -> None:
-        if self._calibration_workflow_mode() == "sync_extrinsics":
+        if hasattr(self._calibration_panel, "intrinsics_threshold_values") and hasattr(
+            self._calibration_panel,
+            "extrinsics_threshold_values",
+        ):
+            intr_quality, intr_coverage = self._calibration_panel.intrinsics_threshold_values()
+            ext_quality, ext_coverage = self._calibration_panel.extrinsics_threshold_values()
+            self._calibration_manager.set_intrinsics_acceptance_thresholds(
+                min_quality_score=intr_quality,
+                min_coverage_ratio=intr_coverage,
+            )
             self._calibration_manager.set_sync_acceptance_thresholds(
-                min_quality_score=min_quality,
-                min_coverage_ratio=min_coverage_ratio,
+                min_quality_score=ext_quality,
+                min_coverage_ratio=ext_coverage,
             )
             message = (
-                "Sync thresholds updated: "
-                f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
+                "Calibration thresholds updated: "
+                f"intrinsics q >= {intr_quality:.2f}, cov >= {intr_coverage * 100.0:.1f}%; "
+                f"extrinsics q >= {ext_quality:.2f}, cov >= {ext_coverage * 100.0:.1f}%."
             )
         else:
-            self._calibration_manager.set_intrinsics_acceptance_thresholds(
-                min_quality_score=min_quality,
-                min_coverage_ratio=min_coverage_ratio,
-            )
-            message = (
-                "Intrinsics thresholds updated: "
-                f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
-            )
+            if self._calibration_workflow_mode() == "sync_extrinsics":
+                self._calibration_manager.set_sync_acceptance_thresholds(
+                    min_quality_score=min_quality,
+                    min_coverage_ratio=min_coverage_ratio,
+                )
+                message = (
+                    "Extrinsics thresholds updated: "
+                    f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
+                )
+            else:
+                self._calibration_manager.set_intrinsics_acceptance_thresholds(
+                    min_quality_score=min_quality,
+                    min_coverage_ratio=min_coverage_ratio,
+                )
+                message = (
+                    "Intrinsics thresholds updated: "
+                    f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
+                )
         self._calibration_panel.show_feedback(message, success=True)
         self._refresh_calibration_panel(force=True)
         self._update_calibration_preview(force=True)
 
     def _on_spatial_grid_changed(self, cols: int, rows: int) -> None:
         self._calibration_manager.set_spatial_coverage_grid(cols=cols, rows=rows)
-        max_samples = self._calibration_panel.auto_capture_max_samples()
+        max_samples = self._intrinsics_max_samples()
         target = self._spatial_target_samples_per_cell()
         target_text = (
             f"{target} sample(s) per cell"

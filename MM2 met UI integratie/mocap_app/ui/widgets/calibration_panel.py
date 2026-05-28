@@ -706,7 +706,12 @@ class CalibrationPanelWidget(QWidget):
             detection_analysis_enabled=False,
         )
 
-    def set_live_status(self, live_active: bool, active_cameras: int) -> None:
+    def set_live_status(
+        self,
+        live_active: bool,
+        active_cameras: int,
+        per_camera_fps: dict[str, float] | None = None,
+    ) -> None:
         self._live_label.setText(f"Live: {'On' if live_active else 'Off'}")
         self._cams_label.setText(f"Cameras: {active_cameras}")
 

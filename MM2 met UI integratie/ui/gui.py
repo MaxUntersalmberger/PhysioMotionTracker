@@ -27,6 +27,21 @@ def _load_pixmap(name: str) -> QtGui.QPixmap:
     return pixmap
 
 
+class NoWheelSpinBox(QtWidgets.QSpinBox):
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class NoWheelComboBox(QtWidgets.QComboBox):
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow: QtWidgets.QMainWindow) -> None:
         MainWindow.setObjectName("MainWindow")
@@ -283,7 +298,7 @@ class Ui_MainWindow(object):
         self.lab_cap_fps.setText("FPS")
         top_layout.addWidget(self.lab_cap_fps, 0, 0)
 
-        self.spin_cap_fps = QtWidgets.QSpinBox(self.frame)
+        self.spin_cap_fps = NoWheelSpinBox(self.frame)
         self.spin_cap_fps.setObjectName("spin_cap_fps")
         self.spin_cap_fps.setRange(1, 120)
         self.spin_cap_fps.setValue(30)
@@ -295,7 +310,7 @@ class Ui_MainWindow(object):
         self.lab_cap_pattern.setText("Patroon")
         top_layout.addWidget(self.lab_cap_pattern, 1, 0)
 
-        self.combo_cap_pattern = QtWidgets.QComboBox(self.frame)
+        self.combo_cap_pattern = NoWheelComboBox(self.frame)
         self.combo_cap_pattern.setObjectName("combo_cap_pattern")
         self.combo_cap_pattern.addItem("Chessboard", "chessboard")
         self.combo_cap_pattern.addItem("Charuco", "charuco")
@@ -433,108 +448,114 @@ class Ui_MainWindow(object):
         export_layout.addWidget(self.export_toml)
         page_layout.addWidget(self.frame_4)
 
-        # Grid: labels + value frames
-        grid_holder = QtWidgets.QFrame(self.page_results_tab)
-        grid_holder.setProperty("card", True)
-        grid_holder.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        # Grid: compact result panels
+        grid_holder = QtWidgets.QWidget(self.page_results_tab)
         grid = QtWidgets.QGridLayout(grid_holder)
         grid.setObjectName("gridLayout_13")
-        grid.setContentsMargins(14, 12, 14, 12)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(10)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
 
         self.lab_res_intrinsics_results = QtWidgets.QLabel("Intrinsics resultaten")
         self.lab_res_intrinsics_results.setObjectName("lab_res_intrinsics_results")
         self.lab_res_intrinsics_results.setProperty("section", True)
-        grid.addWidget(self.lab_res_intrinsics_results, 0, 0)
 
         self.frame_res_intrinsic_results = QtWidgets.QFrame(grid_holder)
         self.frame_res_intrinsic_results.setObjectName("frame_res_intrinsic_results")
         self.frame_res_intrinsic_results.setProperty("value", True)
         intr_layout = QtWidgets.QVBoxLayout(self.frame_res_intrinsic_results)
         intr_layout.setContentsMargins(10, 8, 10, 8)
+        intr_layout.setSpacing(6)
+        intr_layout.addWidget(self.lab_res_intrinsics_results)
         self.text_res_intrinsics = QtWidgets.QPlainTextEdit(self.frame_res_intrinsic_results)
         self.text_res_intrinsics.setObjectName("text_res_intrinsics")
         self.text_res_intrinsics.setReadOnly(True)
+        self.text_res_intrinsics.setMinimumHeight(100)
         self.text_res_intrinsics.setPlaceholderText("Nog geen intrinsics resultaten.")
         intr_layout.addWidget(self.text_res_intrinsics)
-        grid.addWidget(self.frame_res_intrinsic_results, 0, 1)
+        grid.addWidget(self.frame_res_intrinsic_results, 0, 0)
 
         self.lab_res_extrinsics_results = QtWidgets.QLabel("Extrinsics resultaten")
         self.lab_res_extrinsics_results.setObjectName("lab_res_extrinsics_results")
         self.lab_res_extrinsics_results.setProperty("section", True)
-        grid.addWidget(self.lab_res_extrinsics_results, 1, 0)
 
         self.frame_res_extrinsics_results = QtWidgets.QFrame(grid_holder)
         self.frame_res_extrinsics_results.setObjectName("frame_res_extrinsics_results")
         self.frame_res_extrinsics_results.setProperty("value", True)
         extr_layout = QtWidgets.QVBoxLayout(self.frame_res_extrinsics_results)
         extr_layout.setContentsMargins(10, 8, 10, 8)
+        extr_layout.setSpacing(6)
+        extr_layout.addWidget(self.lab_res_extrinsics_results)
         self.text_res_extrinsics = QtWidgets.QPlainTextEdit(self.frame_res_extrinsics_results)
         self.text_res_extrinsics.setObjectName("text_res_extrinsics")
         self.text_res_extrinsics.setReadOnly(True)
+        self.text_res_extrinsics.setMinimumHeight(100)
         self.text_res_extrinsics.setPlaceholderText("Nog geen extrinsics resultaten.")
         extr_layout.addWidget(self.text_res_extrinsics)
-        grid.addWidget(self.frame_res_extrinsics_results, 1, 1)
+        grid.addWidget(self.frame_res_extrinsics_results, 0, 1)
 
         self.lab_res_cam_info = QtWidgets.QLabel("Camera info")
         self.lab_res_cam_info.setObjectName("lab_res_cam_info")
         self.lab_res_cam_info.setProperty("section", True)
-        grid.addWidget(self.lab_res_cam_info, 2, 0)
 
         self.frame_res_camera_info = QtWidgets.QFrame(grid_holder)
         self.frame_res_camera_info.setObjectName("frame_res_camera_info")
         self.frame_res_camera_info.setProperty("value", True)
         cam_layout = QtWidgets.QVBoxLayout(self.frame_res_camera_info)
         cam_layout.setContentsMargins(10, 8, 10, 8)
+        cam_layout.setSpacing(6)
+        cam_layout.addWidget(self.lab_res_cam_info)
         self.text_res_camera_info = QtWidgets.QPlainTextEdit(self.frame_res_camera_info)
         self.text_res_camera_info.setObjectName("text_res_camera_info")
         self.text_res_camera_info.setReadOnly(True)
+        self.text_res_camera_info.setMinimumHeight(100)
         self.text_res_camera_info.setPlaceholderText("Voeg camera's toe om hier informatie te zien.")
         cam_layout.addWidget(self.text_res_camera_info)
-        grid.addWidget(self.frame_res_camera_info, 2, 1)
+        grid.addWidget(self.frame_res_camera_info, 1, 0)
 
         self.lab_res_frames = QtWidgets.QLabel("Frames")
         self.lab_res_frames.setObjectName("lab_res_frames")
         self.lab_res_frames.setProperty("section", True)
-        grid.addWidget(self.lab_res_frames, 3, 0)
 
         self.frame_res_aantal_frames = QtWidgets.QFrame(grid_holder)
         self.frame_res_aantal_frames.setObjectName("frame_res_aantal_frames")
         self.frame_res_aantal_frames.setProperty("value", True)
         frames_layout = QtWidgets.QVBoxLayout(self.frame_res_aantal_frames)
         frames_layout.setContentsMargins(10, 8, 10, 8)
+        frames_layout.setSpacing(6)
+        frames_layout.addWidget(self.lab_res_frames)
         self.text_res_frames = QtWidgets.QPlainTextEdit(self.frame_res_aantal_frames)
         self.text_res_frames.setObjectName("text_res_frames")
         self.text_res_frames.setReadOnly(True)
+        self.text_res_frames.setMinimumHeight(100)
         self.text_res_frames.setPlaceholderText("Geen samples verzameld.")
         frames_layout.addWidget(self.text_res_frames)
-        grid.addWidget(self.frame_res_aantal_frames, 3, 1)
+        grid.addWidget(self.frame_res_aantal_frames, 1, 1)
 
         self.lab_res_error = QtWidgets.QLabel("Reprojection error")
         self.lab_res_error.setObjectName("lab_res_error")
         self.lab_res_error.setProperty("section", True)
-        grid.addWidget(self.lab_res_error, 4, 0)
 
         self.frame_res_error = QtWidgets.QFrame(grid_holder)
         self.frame_res_error.setObjectName("frame_res_error")
         self.frame_res_error.setProperty("value", True)
         err_layout = QtWidgets.QVBoxLayout(self.frame_res_error)
         err_layout.setContentsMargins(10, 8, 10, 8)
+        err_layout.setSpacing(6)
+        err_layout.addWidget(self.lab_res_error)
         self.text_res_error = QtWidgets.QPlainTextEdit(self.frame_res_error)
         self.text_res_error.setObjectName("text_res_error")
         self.text_res_error.setReadOnly(True)
+        self.text_res_error.setMinimumHeight(100)
         self.text_res_error.setPlaceholderText("Nog niet beschikbaar.")
         err_layout.addWidget(self.text_res_error)
-        grid.addWidget(self.frame_res_error, 4, 1)
+        grid.addWidget(self.frame_res_error, 2, 0, 1, 2)
 
-        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(1, 1)
         grid.setRowStretch(2, 1)
-        grid.setRowStretch(3, 1)
-        grid.setRowStretch(4, 1)
         page_layout.addWidget(grid_holder, stretch=1)
 
         self.stackedWidget_2.addWidget(self.page_results_tab)
@@ -653,7 +674,16 @@ class Ui_MainWindow(object):
         card = QtWidgets.QFrame(self.page_advanced_settings)
         card.setProperty("card", True)
         card.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        wrap.addWidget(card, stretch=1)
+        card.setMaximumWidth(620)
+        card.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+        wrap.addWidget(
+            card,
+            alignment=QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft,
+        )
+        wrap.addStretch(1)
 
         form = QtWidgets.QFormLayout(card)
         form.setObjectName("gridLayout_15")
@@ -667,23 +697,26 @@ class Ui_MainWindow(object):
 
         self.label_2 = QtWidgets.QLabel("Vierkant grootte (mm)")
         self.label_2.setObjectName("label_2")
-        self.doubleSpinBox = QtWidgets.QDoubleSpinBox(card)
+        self.doubleSpinBox = NoWheelDoubleSpinBox(card)
         self.doubleSpinBox.setObjectName("doubleSpinBox")
         self.doubleSpinBox.setRange(1.0, 500.0)
         self.doubleSpinBox.setDecimals(2)
         self.doubleSpinBox.setSingleStep(0.5)
         self.doubleSpinBox.setSuffix(" mm")
         self.doubleSpinBox.setValue(24.0)
+        self.doubleSpinBox.setMaximumWidth(165)
         form.addRow(self.label_2, self.doubleSpinBox)
 
         self.label_chess = QtWidgets.QLabel("Chessboard binnenhoeken (cols × rows)")
         chess_box = QtWidgets.QHBoxLayout()
-        self.spin_chess_cols = QtWidgets.QSpinBox(card)
+        self.spin_chess_cols = NoWheelSpinBox(card)
         self.spin_chess_cols.setRange(2, 30)
         self.spin_chess_cols.setValue(9)
-        self.spin_chess_rows = QtWidgets.QSpinBox(card)
+        self.spin_chess_cols.setMaximumWidth(90)
+        self.spin_chess_rows = NoWheelSpinBox(card)
         self.spin_chess_rows.setRange(2, 30)
         self.spin_chess_rows.setValue(6)
+        self.spin_chess_rows.setMaximumWidth(90)
         chess_box.addWidget(self.spin_chess_cols)
         chess_box.addWidget(QtWidgets.QLabel("×"))
         chess_box.addWidget(self.spin_chess_rows)
@@ -694,12 +727,14 @@ class Ui_MainWindow(object):
 
         self.label_charuco = QtWidgets.QLabel("Charuco squares (X × Y)")
         char_box = QtWidgets.QHBoxLayout()
-        self.spin_charuco_x = QtWidgets.QSpinBox(card)
+        self.spin_charuco_x = NoWheelSpinBox(card)
         self.spin_charuco_x.setRange(2, 30)
         self.spin_charuco_x.setValue(5)
-        self.spin_charuco_y = QtWidgets.QSpinBox(card)
+        self.spin_charuco_x.setMaximumWidth(90)
+        self.spin_charuco_y = NoWheelSpinBox(card)
         self.spin_charuco_y.setRange(2, 30)
         self.spin_charuco_y.setValue(3)
+        self.spin_charuco_y.setMaximumWidth(90)
         char_box.addWidget(self.spin_charuco_x)
         char_box.addWidget(QtWidgets.QLabel("×"))
         char_box.addWidget(self.spin_charuco_y)
@@ -709,21 +744,23 @@ class Ui_MainWindow(object):
         form.addRow(self.label_charuco, charuco_container)
 
         self.label_charuco_marker = QtWidgets.QLabel("Charuco marker grootte (mm)")
-        self.spin_charuco_marker = QtWidgets.QDoubleSpinBox(card)
+        self.spin_charuco_marker = NoWheelDoubleSpinBox(card)
         self.spin_charuco_marker.setRange(1.0, 500.0)
         self.spin_charuco_marker.setDecimals(2)
         self.spin_charuco_marker.setSingleStep(0.5)
         self.spin_charuco_marker.setSuffix(" mm")
         self.spin_charuco_marker.setValue(61.0)
+        self.spin_charuco_marker.setMaximumWidth(165)
         form.addRow(self.label_charuco_marker, self.spin_charuco_marker)
 
         self.label_charuco_square = QtWidgets.QLabel("Charuco square grootte (mm)")
-        self.spin_charuco_square = QtWidgets.QDoubleSpinBox(card)
+        self.spin_charuco_square = NoWheelDoubleSpinBox(card)
         self.spin_charuco_square.setRange(1.0, 500.0)
         self.spin_charuco_square.setDecimals(2)
         self.spin_charuco_square.setSingleStep(0.5)
         self.spin_charuco_square.setSuffix(" mm")
         self.spin_charuco_square.setValue(77.0)
+        self.spin_charuco_square.setMaximumWidth(165)
         form.addRow(self.label_charuco_square, self.spin_charuco_square)
 
         self.btn_advanced_apply = QtWidgets.QPushButton("Toepassen op kalibratiebord")

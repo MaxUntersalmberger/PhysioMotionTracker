@@ -84,6 +84,29 @@ class CalibrationCaptureFeedback:
     detection: ChessboardDetectionResult
 
 
+@dataclass(slots=True)
+class BundleAdjustmentObservation:
+    """One camera's calibration target observations inside a synchronized capture."""
+
+    source_id: str
+    capture_index: int
+    object_points: NDArray[np.float64]
+    image_points: NDArray[np.float64]
+
+
+@dataclass(slots=True)
+class BundleAdjustmentProblem:
+    """Fixed-intrinsics bundle adjustment problem for synchronized calibration captures."""
+
+    reference_source_id: str
+    camera_ids: list[str]
+    capture_group_ids: list[str]
+    initial_params: NDArray[np.float64]
+    observations: list[BundleAdjustmentObservation]
+    intrinsics_by_source: dict[str, NDArray[np.float64]]
+    distortion_by_source: dict[str, NDArray[np.float64]]
+
+
 class CalibrationRepository:
     """Reads and writes calibration profiles using an explicit JSON schema."""
 
@@ -172,8 +195,8 @@ class CalibrationManager:
         min_samples_per_camera: int = 8,
         min_quality_score: float = 0.25,
         min_coverage_ratio: float = 0.018,
-        sync_min_quality_score: float = 0.2,
-        sync_min_coverage_ratio: float = 0.018,
+        sync_min_quality_score: float = 0.15,
+        sync_min_coverage_ratio: float = 0.01,
         default_pattern: Literal["chessboard", "charuco"] = "charuco",
         charuco_squares_x: int = 5,
         charuco_squares_y: int = 3,
@@ -423,6 +446,8 @@ class CalibrationManager:
             "cameras.*.reprojection_error": "pixels",
             "metadata.extrinsics.*.baseline_m": "meters",
             "metadata.extrinsics.*.stereo_rms": "pixels",
+            "metadata.bundle_adjustment.*_rms_px": "pixels",
+            "metadata.bundle_adjustment.per_camera.*.rms_px": "pixels",
             "metadata.spatial_coverage.*.grid_coverage_ratio": "0..1 ratio",
             "metadata.spatial_coverage.*.center_spread_x_px": "pixels",
             "metadata.spatial_coverage.*.center_spread_y_px": "pixels",
@@ -436,6 +461,7 @@ class CalibrationManager:
             "Measure the printed calibration board with a ruler or caliper. ChArUco square_size_m is one full square edge in meters; marker_size_m is the black marker edge in meters.",
             "Measure camera lens-center to lens-center distance and compare it with metadata.extrinsics.<camera>.baseline_m. A large scale mismatch usually means the board square/marker size was entered incorrectly.",
             "Check cameras.*.reprojection_error and metadata.extrinsics.*.stereo_rms in pixels. Values below about 1 px are usually a good sign; higher values suggest blur, weak coverage, wrong board settings, or mismatched samples.",
+            "Check metadata.bundle_adjustment.refined_rms_px after extrinsics solve. Bundle adjustment should improve the initial RMS; if it remains high, recapture better synchronized board views instead of trusting the refinement.",
             "Move the board through the full image area and multiple angles. Low coverage warnings mean the calibration may fit the center but extrapolate poorly near the edges.",
             "Check metadata.spatial_coverage.per_camera.*.grid_coverage_ratio and edge_coverage_score. Low values mean the board stayed in one image region even if reprojection error is low.",
             "Confirm the active_pattern and calibration_board block match the physical board before trusting translation or baseline values in meters.",
@@ -2020,6 +2046,39 @@ class CalibrationManager:
             notes.append(f"Camera {source_id}: {solve_summary}")
             solved_pairs += 1
 
+        bundle_adjustment_summary: dict[str, Any] | None = None
+        if solved_pairs > 0:
+            bundle_adjustment_summary = self._refine_extrinsics_with_bundle_adjustment(
+                working_bundle=working_bundle,
+                reference_source_id=reference_id,
+            )
+            if bundle_adjustment_summary is not None:
+                status = str(bundle_adjustment_summary.get("status", ""))
+                if status.startswith("refined"):
+                    per_camera_ba = bundle_adjustment_summary.get("per_camera", {})
+                    for ba_source_id, entry in metadata_extrinsics.items():
+                        if not isinstance(entry, dict) or ba_source_id not in cameras:
+                            continue
+                        camera = cameras[ba_source_id]
+                        if camera.rotation is not None:
+                            entry["rotation"] = list(camera.rotation)
+                        if camera.translation is not None:
+                            entry["translation"] = list(camera.translation)
+                            entry["baseline_m"] = float(
+                                np.linalg.norm(np.array(camera.translation, dtype=np.float64).reshape(3))
+                            )
+                        if isinstance(per_camera_ba, dict) and ba_source_id in per_camera_ba:
+                            entry["bundle_adjustment"] = per_camera_ba[ba_source_id]
+
+                    notes.append(
+                        "Bundle adjustment refined extrinsics: "
+                        f"RMS {bundle_adjustment_summary['initial_rms_px']:.3f}px -> "
+                        f"{bundle_adjustment_summary['refined_rms_px']:.3f}px "
+                        f"over {bundle_adjustment_summary['point_count']} point observation(s)."
+                    )
+                elif bundle_adjustment_summary.get("reason"):
+                    notes.append(f"Bundle adjustment skipped: {bundle_adjustment_summary['reason']}")
+
         if solved_pairs == 0:
             notes.append("Extrinsics solve completed without any usable camera pairs.")
         else:
@@ -2034,6 +2093,8 @@ class CalibrationManager:
         working_bundle.metadata["extrinsics"] = metadata_extrinsics
         working_bundle.metadata["extrinsics_reference_source_id"] = reference_id
         working_bundle.metadata["extrinsics_solved_at_iso"] = solved_at_iso
+        if bundle_adjustment_summary is not None:
+            working_bundle.metadata["bundle_adjustment"] = bundle_adjustment_summary
         working_bundle.metadata["sample_collection"] = self.sample_collection_metadata()
         if self._samples:
             spatial_coverage = self.spatial_coverage_metadata()
@@ -2154,6 +2215,422 @@ class CalibrationManager:
             matched_target.reshape(-1, 1, 2),
         )
 
+    def _refine_extrinsics_with_bundle_adjustment(
+        self,
+        working_bundle: CalibrationBundle,
+        reference_source_id: str,
+    ) -> dict[str, Any] | None:
+        """Refine solved extrinsics with fixed-intrinsics bundle adjustment."""
+        try:
+            from scipy.optimize import least_squares
+        except Exception as exc:
+            return {
+                "status": "skipped",
+                "reason": f"SciPy least_squares unavailable ({exc}).",
+                "fixed_intrinsics": True,
+                "fixed_reference_source_id": reference_source_id,
+            }
+
+        problem, skip_reason = self._build_bundle_adjustment_problem(
+            working_bundle=working_bundle,
+            reference_source_id=reference_source_id,
+        )
+        if problem is None:
+            return {
+                "status": "skipped",
+                "reason": skip_reason,
+                "fixed_intrinsics": True,
+                "fixed_reference_source_id": reference_source_id,
+            }
+
+        initial_residuals = self._bundle_adjustment_residuals(problem.initial_params, problem)
+        if initial_residuals.size < max(problem.initial_params.size, 1):
+            return {
+                "status": "skipped",
+                "reason": (
+                    "Not enough image observations to constrain bundle adjustment "
+                    f"({initial_residuals.size} residuals for {problem.initial_params.size} parameters)."
+                ),
+                "fixed_intrinsics": True,
+                "fixed_reference_source_id": reference_source_id,
+            }
+
+        initial_rms = self._rms_from_residuals(initial_residuals)
+        try:
+            result = least_squares(
+                self._bundle_adjustment_residuals,
+                problem.initial_params,
+                args=(problem,),
+                method="trf",
+                loss="soft_l1",
+                f_scale=2.0,
+                x_scale="jac",
+                max_nfev=200,
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "reason": f"Optimizer failed ({exc}).",
+                "initial_rms_px": initial_rms,
+                "fixed_intrinsics": True,
+                "fixed_reference_source_id": reference_source_id,
+            }
+
+        refined_params = np.array(result.x, dtype=np.float64)
+        refined_residuals = self._bundle_adjustment_residuals(refined_params, problem)
+        refined_rms = self._rms_from_residuals(refined_residuals)
+        if not np.isfinite(refined_rms):
+            return {
+                "status": "failed",
+                "reason": "Optimizer returned non-finite residuals.",
+                "initial_rms_px": initial_rms,
+                "fixed_intrinsics": True,
+                "fixed_reference_source_id": reference_source_id,
+            }
+
+        if refined_rms >= initial_rms:
+            return {
+                "status": "not_applied",
+                "reason": (
+                    f"Refined RMS did not improve ({initial_rms:.3f}px -> {refined_rms:.3f}px)."
+                ),
+                "initial_rms_px": initial_rms,
+                "refined_rms_px": refined_rms,
+                "fixed_intrinsics": True,
+                "fixed_reference_source_id": reference_source_id,
+                "optimizer_success": bool(result.success),
+                "optimizer_message": str(result.message),
+            }
+
+        self._apply_bundle_adjustment_solution(
+            working_bundle=working_bundle,
+            problem=problem,
+            params=refined_params,
+        )
+        error_summary = self._bundle_adjustment_error_summary(problem, refined_params)
+        status = "refined" if bool(result.success) else "refined_with_optimizer_warning"
+        return {
+            "status": status,
+            "initial_rms_px": initial_rms,
+            "refined_rms_px": refined_rms,
+            "improvement_px": float(initial_rms - refined_rms),
+            "fixed_intrinsics": True,
+            "fixed_reference_source_id": reference_source_id,
+            "optimized_camera_count": len(problem.camera_ids),
+            "camera_count": len(problem.camera_ids) + 1,
+            "capture_count": len(problem.capture_group_ids),
+            "observation_count": len(problem.observations),
+            "point_count": int(refined_residuals.size // 2),
+            "robust_loss": "soft_l1",
+            "loss_f_scale_px": 2.0,
+            "optimizer_success": bool(result.success),
+            "optimizer_message": str(result.message),
+            "optimizer_nfev": int(result.nfev),
+            "optimizer_cost": float(result.cost),
+            "per_camera": error_summary,
+        }
+
+    def _build_bundle_adjustment_problem(
+        self,
+        working_bundle: CalibrationBundle,
+        reference_source_id: str,
+    ) -> tuple[BundleAdjustmentProblem | None, str]:
+        cameras = working_bundle.cameras
+        reference_camera = cameras.get(reference_source_id)
+        if reference_camera is None or reference_camera.intrinsics is None or reference_camera.distortion is None:
+            return None, "Reference camera is missing intrinsics."
+
+        candidate_camera_ids = [
+            source_id
+            for source_id, camera in sorted(cameras.items())
+            if source_id != reference_source_id
+            and camera.intrinsics is not None
+            and camera.distortion is not None
+            and camera.rotation is not None
+            and camera.translation is not None
+        ]
+        if not candidate_camera_ids:
+            return None, "No non-reference cameras have extrinsics to refine."
+
+        source_ids = {reference_source_id, *candidate_camera_ids}
+        intrinsics_by_source: dict[str, NDArray[np.float64]] = {}
+        distortion_by_source: dict[str, NDArray[np.float64]] = {}
+        for source_id in source_ids:
+            camera = cameras[source_id]
+            if camera.intrinsics is None or camera.distortion is None:
+                continue
+            intrinsics_by_source[source_id] = np.array(camera.intrinsics, dtype=np.float64)
+            distortion_by_source[source_id] = np.array(camera.distortion, dtype=np.float64).reshape(-1, 1)
+
+        capture_group_ids: list[str] = []
+        board_pose_params: list[float] = []
+        observations: list[BundleAdjustmentObservation] = []
+        skipped_capture_sets = 0
+
+        for capture_set in self._capture_sets:
+            samples_by_source = {
+                source_id: sample
+                for source_id, sample in capture_set.samples_by_source.items()
+                if source_id in source_ids
+            }
+            if len(samples_by_source) < 2:
+                continue
+            if not any(source_id in candidate_camera_ids for source_id in samples_by_source):
+                continue
+
+            reference_sample = samples_by_source.get(reference_source_id)
+            if reference_sample is None:
+                skipped_capture_sets += 1
+                continue
+
+            reference_object_points, reference_image_points = self._sample_points_for_bundle_adjustment(
+                reference_sample
+            )
+            if reference_object_points.shape[0] < 4:
+                skipped_capture_sets += 1
+                continue
+
+            try:
+                ok, board_rvec, board_tvec = cv2.solvePnP(
+                    np.ascontiguousarray(reference_object_points.reshape(-1, 1, 3)),
+                    np.ascontiguousarray(reference_image_points.reshape(-1, 1, 2)),
+                    intrinsics_by_source[reference_source_id],
+                    distortion_by_source[reference_source_id],
+                    flags=cv2.SOLVEPNP_ITERATIVE,
+                )
+            except Exception:
+                skipped_capture_sets += 1
+                continue
+            if not ok:
+                skipped_capture_sets += 1
+                continue
+
+            capture_index = len(capture_group_ids)
+            capture_group_ids.append(capture_set.capture_group_id)
+            board_pose_params.extend(np.array(board_rvec, dtype=np.float64).reshape(3).tolist())
+            board_pose_params.extend(np.array(board_tvec, dtype=np.float64).reshape(3).tolist())
+
+            for source_id in sorted(samples_by_source):
+                sample = samples_by_source[source_id]
+                if source_id not in intrinsics_by_source:
+                    continue
+                object_points, image_points = self._sample_points_for_bundle_adjustment(sample)
+                if object_points.shape[0] == 0 or object_points.shape[0] != image_points.shape[0]:
+                    continue
+                observations.append(
+                    BundleAdjustmentObservation(
+                        source_id=source_id,
+                        capture_index=capture_index,
+                        object_points=object_points,
+                        image_points=image_points,
+                    )
+                )
+
+        observed_non_reference_ids = {
+            observation.source_id
+            for observation in observations
+            if observation.source_id != reference_source_id
+        }
+        camera_ids = [
+            source_id
+            for source_id in candidate_camera_ids
+            if source_id in observed_non_reference_ids
+        ]
+        observations = [
+            observation
+            for observation in observations
+            if observation.source_id == reference_source_id or observation.source_id in camera_ids
+        ]
+        if not camera_ids:
+            return None, "No synchronized captures include both the reference camera and a solved target camera."
+        if not capture_group_ids or not observations:
+            return None, "No usable synchronized observations were available for bundle adjustment."
+
+        camera_pose_params: list[float] = []
+        for source_id in camera_ids:
+            camera = cameras[source_id]
+            rotation = np.array(camera.rotation, dtype=np.float64).reshape(3, 3)
+            rvec, _ = cv2.Rodrigues(rotation)
+            translation = np.array(camera.translation, dtype=np.float64).reshape(3)
+            camera_pose_params.extend(np.array(rvec, dtype=np.float64).reshape(3).tolist())
+            camera_pose_params.extend(translation.tolist())
+
+        initial_params = np.array(camera_pose_params + board_pose_params, dtype=np.float64)
+        if skipped_capture_sets > 0:
+            LOGGER.debug(
+                "Skipped %s synchronized capture set(s) during bundle adjustment setup.",
+                skipped_capture_sets,
+            )
+
+        return (
+            BundleAdjustmentProblem(
+                reference_source_id=reference_source_id,
+                camera_ids=camera_ids,
+                capture_group_ids=capture_group_ids,
+                initial_params=initial_params,
+                observations=observations,
+                intrinsics_by_source=intrinsics_by_source,
+                distortion_by_source=distortion_by_source,
+            ),
+            "",
+        )
+
+    def _sample_points_for_bundle_adjustment(
+        self,
+        sample: CalibrationSample,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        object_points = np.array(sample.object_points, dtype=np.float64).reshape(-1, 3)
+        image_points = np.array(sample.image_points, dtype=np.float64).reshape(-1, 2)
+        point_count = min(object_points.shape[0], image_points.shape[0])
+        return object_points[:point_count], image_points[:point_count]
+
+    def _bundle_adjustment_residuals(
+        self,
+        params: NDArray[np.float64],
+        problem: BundleAdjustmentProblem,
+    ) -> NDArray[np.float64]:
+        camera_poses, board_poses = self._unpack_bundle_adjustment_params(params, problem)
+        residuals: list[NDArray[np.float64]] = []
+        for observation in problem.observations:
+            projected = self._project_bundle_adjustment_observation(
+                observation=observation,
+                problem=problem,
+                camera_poses=camera_poses,
+                board_poses=board_poses,
+            )
+            residuals.append((projected - observation.image_points).reshape(-1))
+        if not residuals:
+            return np.zeros(0, dtype=np.float64)
+        return np.concatenate(residuals).astype(np.float64)
+
+    def _unpack_bundle_adjustment_params(
+        self,
+        params: NDArray[np.float64],
+        problem: BundleAdjustmentProblem,
+    ) -> tuple[dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]], list[tuple[NDArray[np.float64], NDArray[np.float64]]]]:
+        params = np.array(params, dtype=np.float64)
+        camera_poses: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]] = {}
+        offset = 0
+        for source_id in problem.camera_ids:
+            rvec = params[offset: offset + 3].reshape(3, 1)
+            tvec = params[offset + 3: offset + 6].reshape(3, 1)
+            camera_poses[source_id] = (rvec, tvec)
+            offset += 6
+
+        board_values = params[offset:].reshape(len(problem.capture_group_ids), 6)
+        board_poses = [
+            (values[:3].reshape(3, 1), values[3:6].reshape(3, 1))
+            for values in board_values
+        ]
+        return camera_poses, board_poses
+
+    def _project_bundle_adjustment_observation(
+        self,
+        observation: BundleAdjustmentObservation,
+        problem: BundleAdjustmentProblem,
+        camera_poses: dict[str, tuple[NDArray[np.float64], NDArray[np.float64]]],
+        board_poses: list[tuple[NDArray[np.float64], NDArray[np.float64]]],
+    ) -> NDArray[np.float64]:
+        board_rvec, board_tvec = board_poses[observation.capture_index]
+        if observation.source_id == problem.reference_source_id:
+            camera_rvec = np.zeros((3, 1), dtype=np.float64)
+            camera_tvec = np.zeros((3, 1), dtype=np.float64)
+        else:
+            camera_rvec, camera_tvec = camera_poses[observation.source_id]
+
+        rvec, tvec = self._compose_bundle_adjustment_pose(
+            world_to_camera_rvec=camera_rvec,
+            world_to_camera_tvec=camera_tvec,
+            board_to_world_rvec=board_rvec,
+            board_to_world_tvec=board_tvec,
+        )
+        projected, _ = cv2.projectPoints(
+            observation.object_points.reshape(-1, 1, 3),
+            rvec,
+            tvec,
+            problem.intrinsics_by_source[observation.source_id],
+            problem.distortion_by_source[observation.source_id],
+        )
+        return np.array(projected, dtype=np.float64).reshape(-1, 2)
+
+    def _compose_bundle_adjustment_pose(
+        self,
+        world_to_camera_rvec: NDArray[np.float64],
+        world_to_camera_tvec: NDArray[np.float64],
+        board_to_world_rvec: NDArray[np.float64],
+        board_to_world_tvec: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        world_to_camera_rotation, _ = cv2.Rodrigues(world_to_camera_rvec)
+        board_to_world_rotation, _ = cv2.Rodrigues(board_to_world_rvec)
+        board_to_camera_rotation = world_to_camera_rotation @ board_to_world_rotation
+        board_to_camera_translation = (
+            world_to_camera_rotation @ board_to_world_tvec.reshape(3, 1)
+            + world_to_camera_tvec.reshape(3, 1)
+        )
+        board_to_camera_rvec, _ = cv2.Rodrigues(board_to_camera_rotation)
+        return board_to_camera_rvec.reshape(3, 1), board_to_camera_translation.reshape(3, 1)
+
+    def _apply_bundle_adjustment_solution(
+        self,
+        working_bundle: CalibrationBundle,
+        problem: BundleAdjustmentProblem,
+        params: NDArray[np.float64],
+    ) -> None:
+        camera_poses, _ = self._unpack_bundle_adjustment_params(params, problem)
+        error_summary = self._bundle_adjustment_error_summary(problem, params)
+        for source_id, (rvec, tvec) in camera_poses.items():
+            camera = working_bundle.cameras[source_id]
+            rotation, _ = cv2.Rodrigues(rvec)
+            camera.rotation = np.array(rotation, dtype=np.float64).reshape(-1).tolist()
+            camera.translation = np.array(tvec, dtype=np.float64).reshape(3).tolist()
+            per_camera = error_summary.get(source_id, {})
+            rms = float(per_camera.get("rms_px", 0.0)) if isinstance(per_camera, dict) else 0.0
+            camera.diagnostics = self._dedupe_strings(
+                camera.diagnostics
+                + [f"Bundle adjustment refined extrinsics with fixed intrinsics (RMS {rms:.3f}px)."]
+            )
+
+    def _bundle_adjustment_error_summary(
+        self,
+        problem: BundleAdjustmentProblem,
+        params: NDArray[np.float64],
+    ) -> dict[str, dict[str, float | int]]:
+        camera_poses, board_poses = self._unpack_bundle_adjustment_params(params, problem)
+        errors_by_source: dict[str, list[float]] = {}
+        for observation in problem.observations:
+            projected = self._project_bundle_adjustment_observation(
+                observation=observation,
+                problem=problem,
+                camera_poses=camera_poses,
+                board_poses=board_poses,
+            )
+            point_errors = np.linalg.norm(projected - observation.image_points, axis=1)
+            errors_by_source.setdefault(observation.source_id, []).extend(
+                float(error) for error in point_errors
+            )
+
+        summary: dict[str, dict[str, float | int]] = {}
+        for source_id, errors in errors_by_source.items():
+            values = np.array(errors, dtype=np.float64)
+            if values.size == 0:
+                continue
+            summary[source_id] = {
+                "rms_px": float(np.sqrt(np.mean(values * values))),
+                "mean_px": float(np.mean(values)),
+                "max_px": float(np.max(values)),
+                "point_count": int(values.size),
+            }
+        return summary
+
+    def _rms_from_residuals(self, residuals: NDArray[np.float64]) -> float:
+        if residuals.size == 0:
+            return 0.0
+        values = np.array(residuals, dtype=np.float64)
+        if values.size % 2 == 0:
+            point_errors = np.linalg.norm(values.reshape(-1, 2), axis=1)
+            return float(np.sqrt(np.mean(point_errors * point_errors)))
+        return float(np.sqrt(np.mean(values * values)))
+
     def _status_with_extrinsics(self, current_status: str, has_warning: bool) -> str:
         if not current_status.startswith("solved"):
             return current_status
@@ -2207,16 +2684,18 @@ class CalibrationManager:
         sample_count: int | None = None,
         mirror_x: bool = False,
         spatial_target_samples_per_cell: int | None = None,
+        show_spatial_grid: bool = True,
     ) -> U8Array:
         """Render detection and diagnostics overlay for calibration preview."""
         rendered = frame_bgr.copy()
         height, width = rendered.shape[:2]
-        self._draw_spatial_grid_overlay(
-            rendered,
-            detection,
-            mirror_x=mirror_x,
-            target_samples_per_cell=spatial_target_samples_per_cell,
-        )
+        if show_spatial_grid:
+            self._draw_spatial_grid_overlay(
+                rendered,
+                detection,
+                mirror_x=mirror_x,
+                target_samples_per_cell=spatial_target_samples_per_cell,
+            )
         if detection.found and detection.corners is not None:
             if detection.pattern_type == "charuco" and self._charuco_available and detection.charuco_ids is not None:
                 aruco = cv2.aruco  # type: ignore[attr-defined]

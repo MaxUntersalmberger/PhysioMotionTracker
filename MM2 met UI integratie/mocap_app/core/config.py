@@ -17,6 +17,24 @@ def _default_settings_path() -> Path:
     return _app_root() / "calibration" / "app_settings.json"
 
 
+def _path_relative_to(path: Path, root: Path) -> Path | None:
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return None
+
+
+def _portable_path(path: Path, saved_root: Path | None, current_root: Path) -> Path:
+    if not path.is_absolute():
+        return current_root / path
+    if saved_root is None:
+        return path
+    relative = _path_relative_to(path, saved_root)
+    if relative is None:
+        return path
+    return current_root / relative
+
+
 @dataclass(slots=True)
 class AppConfig:
     app_name: str = "PhysioMotionTracker"
@@ -47,14 +65,22 @@ class AppConfig:
             LOGGER.warning("Could not read settings %s: %s", settings_path, exc)
             return config
 
+        current_root = _app_root()
+        saved_root_value = data.get("app_root")
+        saved_root = Path(saved_root_value) if isinstance(saved_root_value, str) else None
+
         for key, value in data.items():
             if not hasattr(config, key):
                 continue
             current = getattr(config, key)
             if isinstance(current, Path) and isinstance(value, str):
-                setattr(config, key, Path(value))
+                if key == "app_root":
+                    setattr(config, key, current_root)
+                else:
+                    setattr(config, key, _portable_path(Path(value), saved_root, current_root))
             else:
                 setattr(config, key, value)
+        config.app_root = current_root
         return config
 
     def save(self, path: Path | None = None) -> None:

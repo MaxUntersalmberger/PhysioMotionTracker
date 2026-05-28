@@ -154,6 +154,9 @@ class RuntimeTuning:
     preview_max_width: int = 1280
     preview_max_height: int = 720
     calibration_detection_hz: float = 4.0
+    camera_exposure: int = -1
+    camera_fourcc: str = "MJPG"
+    camera_controls: dict[str, float] = field(default_factory=dict)
     overlays_enabled: bool = True
     detection_capture_enabled: bool = False
     detection_reconstruction_enabled: bool = True

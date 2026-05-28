@@ -1,0 +1,766 @@
+{
+  "schema_version": 2,
+  "saved_at_iso": "2026-05-27T10:18:12.497630",
+  "metadata": {
+    "schema_version": 2,
+    "active_pattern": "charuco",
+    "pattern_types": [
+      "charuco"
+    ],
+    "calibration_board": {
+      "type": "charuco",
+      "squares": [
+        5,
+        3
+      ],
+      "square_size_m": 0.077,
+      "marker_size_m": 0.061
+    },
+    "sample_collection": {
+      "first_sample_at_iso": "2026-05-27T10:16:00.551613",
+      "last_sample_at_iso": "2026-05-27T10:17:42.865152",
+      "duration_sec": 102.313539,
+      "total_samples": 60,
+      "total_intrinsics_samples": 0,
+      "synchronized_sets": 30,
+      "per_camera": {
+        "cam1": {
+          "total_samples": 30,
+          "intrinsics_samples": 0,
+          "sync_only_samples": 30,
+          "first_sample_at_iso": "2026-05-27T10:16:00.551613",
+          "last_sample_at_iso": "2026-05-27T10:17:42.864899",
+          "duration_sec": 102.313286
+        },
+        "cam2": {
+          "total_samples": 25,
+          "intrinsics_samples": 0,
+          "sync_only_samples": 25,
+          "first_sample_at_iso": "2026-05-27T10:16:00.551665",
+          "last_sample_at_iso": "2026-05-27T10:17:42.865152",
+          "duration_sec": 102.313487
+        },
+        "cam0": {
+          "total_samples": 5,
+          "intrinsics_samples": 0,
+          "sync_only_samples": 5,
+          "first_sample_at_iso": "2026-05-27T10:16:38.574903",
+          "last_sample_at_iso": "2026-05-27T10:17:27.954058",
+          "duration_sec": 49.379155
+        }
+      }
+    },
+    "min_samples_per_camera": 8,
+    "min_quality_score": 0.25,
+    "min_coverage_ratio": 0.018000000000000002,
+    "spatial_coverage": {
+      "grid": {
+        "cols": 5,
+        "rows": 3,
+        "total_cells": 15
+      },
+      "min_grid_coverage_ratio": 0.7,
+      "sample_filter": "intrinsics",
+      "overall_grid_coverage_ratio": 0.0,
+      "per_camera": {
+        "cam0": {
+          "source_id": "cam0",
+          "grid_cols": 5,
+          "grid_rows": 3,
+          "sample_count": 0,
+          "image_size": null,
+          "visited_cells": 0,
+          "total_cells": 15,
+          "grid_coverage_ratio": 0.0,
+          "center_spread_x_px": 0.0,
+          "center_spread_y_px": 0.0,
+          "edge_coverage_score": 0.0,
+          "corner_cell_hits": {
+            "top_left": 0,
+            "top_right": 0,
+            "bottom_left": 0,
+            "bottom_right": 0
+          },
+          "cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "credited_visited_cells": 0,
+          "credited_grid_coverage_ratio": 0.0,
+          "credited_edge_coverage_score": 0.0,
+          "credited_corner_cell_hits": {
+            "top_left": 0,
+            "top_right": 0,
+            "bottom_left": 0,
+            "bottom_right": 0
+          },
+          "credited_cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "credited_visited_cell_indices": [],
+          "spatial_credit_mode": "one_sample_one_footprint_cell",
+          "center_visited_cells": 0,
+          "center_grid_coverage_ratio": 0.0,
+          "center_cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "center_visited_cell_indices": [],
+          "visited_cell_indices": [],
+          "samples": [],
+          "calibration_quality_score": 0.7308908565250428,
+          "quality_components": {
+            "score": 0.7308908565250428,
+            "base_score": 0.7364895246632059,
+            "spatial_score": 0.988304876975524,
+            "grid_score": 1.0,
+            "edge_score": 1.0,
+            "center_spread_score": 0.9220325131701608,
+            "reprojection_score": 0.7188249159116975,
+            "sample_count_score": 1.0,
+            "mean_sample_quality": 0.5645432836470888
+          }
+        },
+        "cam1": {
+          "source_id": "cam1",
+          "grid_cols": 5,
+          "grid_rows": 3,
+          "sample_count": 0,
+          "image_size": null,
+          "visited_cells": 0,
+          "total_cells": 15,
+          "grid_coverage_ratio": 0.0,
+          "center_spread_x_px": 0.0,
+          "center_spread_y_px": 0.0,
+          "edge_coverage_score": 0.0,
+          "corner_cell_hits": {
+            "top_left": 0,
+            "top_right": 0,
+            "bottom_left": 0,
+            "bottom_right": 0
+          },
+          "cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "credited_visited_cells": 0,
+          "credited_grid_coverage_ratio": 0.0,
+          "credited_edge_coverage_score": 0.0,
+          "credited_corner_cell_hits": {
+            "top_left": 0,
+            "top_right": 0,
+            "bottom_left": 0,
+            "bottom_right": 0
+          },
+          "credited_cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "credited_visited_cell_indices": [],
+          "spatial_credit_mode": "one_sample_one_footprint_cell",
+          "center_visited_cells": 0,
+          "center_grid_coverage_ratio": 0.0,
+          "center_cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "center_visited_cell_indices": [],
+          "visited_cell_indices": [],
+          "samples": [],
+          "calibration_quality_score": 0.7702778273129454,
+          "quality_components": {
+            "score": 0.7702778273129454,
+            "base_score": 0.7806695299576853,
+            "spatial_score": 0.979521123568217,
+            "grid_score": 1.0,
+            "edge_score": 1.0,
+            "center_spread_score": 0.8634741571214464,
+            "reprojection_score": 0.7981949320723051,
+            "sample_count_score": 1.0,
+            "mean_sample_quality": 0.5666492692716705
+          }
+        },
+        "cam2": {
+          "source_id": "cam2",
+          "grid_cols": 5,
+          "grid_rows": 3,
+          "sample_count": 0,
+          "image_size": null,
+          "visited_cells": 0,
+          "total_cells": 15,
+          "grid_coverage_ratio": 0.0,
+          "center_spread_x_px": 0.0,
+          "center_spread_y_px": 0.0,
+          "edge_coverage_score": 0.0,
+          "corner_cell_hits": {
+            "top_left": 0,
+            "top_right": 0,
+            "bottom_left": 0,
+            "bottom_right": 0
+          },
+          "cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "credited_visited_cells": 0,
+          "credited_grid_coverage_ratio": 0.0,
+          "credited_edge_coverage_score": 0.0,
+          "credited_corner_cell_hits": {
+            "top_left": 0,
+            "top_right": 0,
+            "bottom_left": 0,
+            "bottom_right": 0
+          },
+          "credited_cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "credited_visited_cell_indices": [],
+          "spatial_credit_mode": "one_sample_one_footprint_cell",
+          "center_visited_cells": 0,
+          "center_grid_coverage_ratio": 0.0,
+          "center_cell_hit_counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "center_visited_cell_indices": [],
+          "visited_cell_indices": [],
+          "samples": [],
+          "calibration_quality_score": 0.7598261822771095,
+          "quality_components": {
+            "score": 0.7598261822771095,
+            "base_score": 0.780333110858485,
+            "spatial_score": 0.9595696754944629,
+            "grid_score": 1.0,
+            "edge_score": 0.9166666666666666,
+            "center_spread_score": 0.8693533921853089,
+            "reprojection_score": 0.8400702243499392,
+            "sample_count_score": 1.0,
+            "mean_sample_quality": 0.47317794986407347
+          }
+        }
+      }
+    },
+    "calibration_quality": {
+      "overall_score": 0.7536649553716993,
+      "per_camera": {
+        "cam0": {
+          "score": 0.7308908565250428,
+          "base_score": 0.7364895246632059,
+          "spatial_score": 0.988304876975524,
+          "grid_score": 1.0,
+          "edge_score": 1.0,
+          "center_spread_score": 0.9220325131701608,
+          "reprojection_score": 0.7188249159116975,
+          "sample_count_score": 1.0,
+          "mean_sample_quality": 0.5645432836470888
+        },
+        "cam1": {
+          "score": 0.7702778273129454,
+          "base_score": 0.7806695299576853,
+          "spatial_score": 0.979521123568217,
+          "grid_score": 1.0,
+          "edge_score": 1.0,
+          "center_spread_score": 0.8634741571214464,
+          "reprojection_score": 0.7981949320723051,
+          "sample_count_score": 1.0,
+          "mean_sample_quality": 0.5666492692716705
+        },
+        "cam2": {
+          "score": 0.7598261822771095,
+          "base_score": 0.780333110858485,
+          "spatial_score": 0.9595696754944629,
+          "grid_score": 1.0,
+          "edge_score": 0.9166666666666666,
+          "center_spread_score": 0.8693533921853089,
+          "reprojection_score": 0.8400702243499392,
+          "sample_count_score": 1.0,
+          "mean_sample_quality": 0.47317794986407347
+        }
+      }
+    },
+    "charuco_available": true,
+    "solved_at_iso": "2026-05-27T10:11:05.718174",
+    "units": {
+      "all_length_fields": "meters",
+      "calibration_board.square_size_m": "meters",
+      "calibration_board.marker_size_m": "meters",
+      "sample_collection.duration_sec": "seconds",
+      "sample_collection.first_sample_at_iso": "ISO-8601 local timestamp",
+      "sample_collection.last_sample_at_iso": "ISO-8601 local timestamp",
+      "cameras.*.intrinsics": "pixels",
+      "cameras.*.distortion": "unitless OpenCV distortion coefficients",
+      "cameras.*.rotation": "unitless 3x3 row-major world-to-camera rotation matrix",
+      "cameras.*.translation": "meters, world-to-camera translation",
+      "cameras.*.reprojection_error": "pixels",
+      "metadata.extrinsics.*.baseline_m": "meters",
+      "metadata.extrinsics.*.stereo_rms": "pixels",
+      "metadata.bundle_adjustment.*_rms_px": "pixels",
+      "metadata.bundle_adjustment.per_camera.*.rms_px": "pixels",
+      "metadata.spatial_coverage.*.grid_coverage_ratio": "0..1 ratio",
+      "metadata.spatial_coverage.*.center_spread_x_px": "pixels",
+      "metadata.spatial_coverage.*.center_spread_y_px": "pixels",
+      "metadata.spatial_coverage.*.edge_coverage_score": "0..1 ratio",
+      "metadata.spatial_coverage.*.cell_hit_counts": "sample-hit counts per grid cell",
+      "image_size": "pixels [width, height]"
+    },
+    "validation_guidance": [
+      "Measure the printed calibration board with a ruler or caliper. ChArUco square_size_m is one full square edge in meters; marker_size_m is the black marker edge in meters.",
+      "Measure camera lens-center to lens-center distance and compare it with metadata.extrinsics.<camera>.baseline_m. A large scale mismatch usually means the board square/marker size was entered incorrectly.",
+      "Check cameras.*.reprojection_error and metadata.extrinsics.*.stereo_rms in pixels. Values below about 1 px are usually a good sign; higher values suggest blur, weak coverage, wrong board settings, or mismatched samples.",
+      "Check metadata.bundle_adjustment.refined_rms_px after extrinsics solve. Bundle adjustment should improve the initial RMS; if it remains high, recapture better synchronized board views instead of trusting the refinement.",
+      "Move the board through the full image area and multiple angles. Low coverage warnings mean the calibration may fit the center but extrapolate poorly near the edges.",
+      "Check metadata.spatial_coverage.per_camera.*.grid_coverage_ratio and edge_coverage_score. Low values mean the board stayed in one image region even if reprojection error is low.",
+      "Confirm the active_pattern and calibration_board block match the physical board before trusting translation or baseline values in meters."
+    ],
+    "extrinsics": {
+      "reference_source_id": "cam0",
+      "solved_at_iso": "2026-05-27T10:18:01.535213",
+      "cam0": {
+        "rotation": [
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "stereo_rms": 0.0,
+        "baseline_m": 0.0,
+        "pair_count": 0,
+        "status": "reference_camera",
+        "bundle_adjustment": {
+          "rms_px": 0.33252727726986614,
+          "mean_px": 0.3001594619881543,
+          "max_px": 0.5707103044318624,
+          "point_count": 32
+        }
+      },
+      "cam1": {
+        "rotation": [
+          0.7838894839987955,
+          0.12447519478597786,
+          -0.60829532528131,
+          -0.18423590699103615,
+          0.9822066905757926,
+          -0.03643003655418984,
+          0.5929371024411377,
+          0.14062696352813067,
+          0.7928742962649032
+        ],
+        "translation": [
+          1.1941339103231747,
+          -0.21408510736967062,
+          0.5444243157909461
+        ],
+        "stereo_rms": 0.2973249912623579,
+        "baseline_m": 1.3297315761482236,
+        "pair_count": 5,
+        "status": "solved_with_warnings_extrinsics",
+        "bundle_adjustment": {
+          "rms_px": 0.3023731206912933,
+          "mean_px": 0.2721163503157302,
+          "max_px": 0.5804519556910788,
+          "point_count": 34
+        }
+      }
+    },
+    "extrinsics_reference_source_id": "cam0",
+    "extrinsics_solved_at_iso": "2026-05-27T10:18:01.535213",
+    "bundle_adjustment": {
+      "status": "refined",
+      "initial_rms_px": 3.0102168024186806,
+      "refined_rms_px": 0.31735134014537786,
+      "improvement_px": 2.6928654622733026,
+      "fixed_intrinsics": true,
+      "fixed_reference_source_id": "cam0",
+      "optimized_camera_count": 1,
+      "camera_count": 2,
+      "capture_count": 5,
+      "observation_count": 10,
+      "point_count": 66,
+      "robust_loss": "soft_l1",
+      "loss_f_scale_px": 2.0,
+      "optimizer_success": true,
+      "optimizer_message": "`ftol` termination condition is satisfied.",
+      "optimizer_nfev": 11,
+      "optimizer_cost": 3.297012245212043,
+      "per_camera": {
+        "cam0": {
+          "rms_px": 0.33252727726986614,
+          "mean_px": 0.3001594619881543,
+          "max_px": 0.5707103044318624,
+          "point_count": 32
+        },
+        "cam1": {
+          "rms_px": 0.3023731206912933,
+          "mean_px": 0.2721163503157302,
+          "max_px": 0.5804519556910788,
+          "point_count": 34
+        }
+      }
+    }
+  },
+  "notes": [
+    "TODO: Add bundle-adjustment refinement over intrinsics+extrinsics.",
+    "TODO: Add pairwise baseline diagnostics and epipolar residual plots.",
+    "Camera cam1: Extrinsics solved relative to cam0: stereo RMS 0.2973, baseline 1.331 m, synchronized sets 5.",
+    "Camera cam2: No usable synchronized capture sets shared by cam0 and cam2 for extrinsics solve.",
+    "Bundle adjustment refined extrinsics: RMS 3.010px -> 0.317px over 66 point observation(s).",
+    "Extrinsics solved for 2 camera(s) with cam0 as reference.",
+    "World coordinate frame is anchored to reference camera cam0 (world-to-camera extrinsics stored per camera)."
+  ],
+  "cameras": {
+    "cam0": {
+      "source_id": "cam0",
+      "status": "solved_with_warnings_extrinsics",
+      "num_samples": 60,
+      "image_size": [
+        1280,
+        720
+      ],
+      "intrinsics": [
+        [
+          861.9736994482965,
+          0.0,
+          634.9877741910067
+        ],
+        [
+          0.0,
+          862.21735184734,
+          360.0535235360438
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": [
+        0.21123541402135276,
+        -0.8392983259163043,
+        -0.0035282855190878933,
+        -0.009491188822854069,
+        1.1571346691762396
+      ],
+      "rotation": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "reprojection_error": 0.39616495376228006,
+      "diagnostics": [
+        "Spatial coverage metrics: visited_cells=15, credited_visited_cells=15, total_cells=15, grid_coverage_ratio=1.000, credited_grid_coverage_ratio=1.000, center_spread_x_px=782, center_spread_y_px=423, edge_coverage_score=1.000, credited_edge_coverage_score=1.000.",
+        "Spatial corner cells: TL=6, TR=4, BL=6, BR=8.",
+        "Credited spatial corner cells: TL=4, TR=4, BL=4, BR=4.",
+        "Spatial cell_hit_counts: [[6, 13, 16, 10, 4], [9, 24, 36, 27, 12], [6, 11, 13, 13, 8]].",
+        "Credited spatial cell_hit_counts: [[4, 4, 4, 4, 4], [4, 4, 4, 4, 4], [4, 4, 4, 4, 4]].",
+        "Pattern: charuco",
+        "Calibration quality score: 0.73 (reprojection score 0.72, spatial score 0.99).",
+        "Reference camera for extrinsics solve: cam0."
+      ],
+      "calibrated_at_iso": "2026-05-27T10:18:01.535213"
+    },
+    "cam1": {
+      "source_id": "cam1",
+      "status": "solved_with_warnings_extrinsics",
+      "num_samples": 40,
+      "image_size": [
+        1280,
+        720
+      ],
+      "intrinsics": [
+        [
+          850.1702691533275,
+          0.0,
+          642.310398728548
+        ],
+        [
+          0.0,
+          847.7866399148223,
+          358.76707871525747
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": [
+        0.22010364254940243,
+        -0.9132478503600606,
+        0.00012748920934964143,
+        0.006449879400780392,
+        1.294140578368823
+      ],
+      "rotation": [
+        0.7838894839987955,
+        0.12447519478597786,
+        -0.60829532528131,
+        -0.18423590699103615,
+        0.9822066905757926,
+        -0.03643003655418984,
+        0.5929371024411377,
+        0.14062696352813067,
+        0.7928742962649032
+      ],
+      "translation": [
+        1.1941339103231747,
+        -0.21408510736967062,
+        0.5444243157909461
+      ],
+      "reprojection_error": 0.2704829226995615,
+      "diagnostics": [
+        "Spatial coverage metrics: visited_cells=15, credited_visited_cells=15, total_cells=15, grid_coverage_ratio=1.000, credited_grid_coverage_ratio=1.000, center_spread_x_px=746, center_spread_y_px=389, edge_coverage_score=1.000, credited_edge_coverage_score=1.000.",
+        "Spatial corner cells: TL=5, TR=7, BL=2, BR=6.",
+        "Credited spatial corner cells: TL=2, TR=3, BL=2, BR=3.",
+        "Spatial cell_hit_counts: [[5, 5, 8, 9, 7], [10, 22, 23, 16, 9], [2, 9, 8, 9, 6]].",
+        "Credited spatial cell_hit_counts: [[2, 2, 2, 3, 3], [2, 3, 3, 3, 3], [2, 3, 3, 3, 3]].",
+        "Pattern: charuco",
+        "Calibration quality score: 0.77 (reprojection score 0.80, spatial score 0.98).",
+        "Extrinsics solved relative to cam0: stereo RMS 0.2973, baseline 1.331 m, synchronized sets 5.",
+        "Bundle adjustment refined extrinsics with fixed intrinsics (RMS 0.302px)."
+      ],
+      "calibrated_at_iso": "2026-05-27T10:18:01.535213"
+    },
+    "cam2": {
+      "source_id": "cam2",
+      "status": "solved_with_warnings",
+      "num_samples": 40,
+      "image_size": [
+        1280,
+        720
+      ],
+      "intrinsics": [
+        [
+          862.9131483080199,
+          0.0,
+          648.8796827152829
+        ],
+        [
+          0.0,
+          862.6647085419031,
+          350.5111419025936
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": [
+        0.2126457857759247,
+        -0.9104810649504236,
+        -0.0058399461079517755,
+        -0.0016540577594494831,
+        1.3440398157792153
+      ],
+      "rotation": null,
+      "translation": null,
+      "reprojection_error": 0.20912374826700422,
+      "diagnostics": [
+        "Spatial coverage metrics: visited_cells=14, credited_visited_cells=14, total_cells=15, grid_coverage_ratio=0.933, credited_grid_coverage_ratio=0.933, center_spread_x_px=743, center_spread_y_px=396, edge_coverage_score=0.917, credited_edge_coverage_score=0.917.",
+        "Spatial corner cells: TL=6, TR=5, BL=0, BR=6.",
+        "Credited spatial corner cells: TL=3, TR=3, BL=0, BR=3.",
+        "Spatial cell_hit_counts: [[6, 6, 7, 11, 5], [8, 13, 20, 21, 15], [0, 3, 8, 7, 6]].",
+        "Credited spatial cell_hit_counts: [[3, 2, 3, 3, 3], [3, 3, 3, 3, 3], [0, 2, 3, 3, 3]].",
+        "Pattern: charuco",
+        "Calibration quality score: 0.76 (reprojection score 0.84, spatial score 0.96).",
+        "Extrinsics not solved in this step. Load/provide world-referenced rotation+translation for real triangulation.",
+        "No usable synchronized capture sets shared by cam0 and cam2 for extrinsics solve."
+      ],
+      "calibrated_at_iso": "2026-05-27T10:11:05.717562"
+    }
+  }
+}

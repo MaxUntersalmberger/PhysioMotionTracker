@@ -368,7 +368,7 @@
                      </sizepolicy>
                     </property>
                     <property name="text">
-                     <string>Preview TMOL</string>
+                     <string>Preview TOML</string>
                     </property>
                    </widget>
                   </item>
@@ -475,7 +475,7 @@
                <item row="1" column="0">
                 <widget class="QLabel" name="label">
                  <property name="text">
-                  <string>Preview TMOL</string>
+                  <string>Preview TOML</string>
                  </property>
                 </widget>
                </item>

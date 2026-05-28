@@ -16,6 +16,16 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 
+class NoWheelSpinBox(QtWidgets.QSpinBox):
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+
+class NoWheelComboBox(QtWidgets.QComboBox):
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
+        event.ignore()
+
+
 # ----- discovery -----------------------------------------------------------
 
 
@@ -208,18 +218,20 @@ class CameraFrame(QtWidgets.QFrame):
         self.settings_layout = QtWidgets.QFormLayout(self.settings_frame)
         self.settings_layout.setContentsMargins(6, 6, 6, 6)
 
-        self.spin_width = QtWidgets.QSpinBox()
+        self.spin_width = NoWheelSpinBox()
         self.spin_width.setRange(160, 3840)
         self.spin_width.setValue(640)
-        self.spin_height = QtWidgets.QSpinBox()
+        self.spin_height = NoWheelSpinBox()
         self.spin_height.setRange(120, 2160)
         self.spin_height.setValue(480)
-        self.combo_rotate = QtWidgets.QComboBox()
+        self.combo_rotate = NoWheelComboBox()
         self.combo_rotate.addItems(["0", "90", "180", "270"])
         self.check_mirror = QtWidgets.QCheckBox("Mirror image")
-        self.spin_exposure = QtWidgets.QSpinBox()
+        self.spin_exposure = NoWheelSpinBox()
         self.spin_exposure.setRange(-13, 0)
         self.spin_exposure.setValue(-5)
+        for widget in [self.spin_width, self.spin_height, self.combo_rotate, self.spin_exposure]:
+            widget.setMaximumWidth(160)
 
         self.btn_apply = QtWidgets.QPushButton("Toepassen")
         self.btn_apply.setProperty("accent", True)

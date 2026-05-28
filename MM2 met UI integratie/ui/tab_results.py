@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PySide6 import QtWidgets
 
+from mocap_app.io.toml_export import calibration_bundle_to_toml
+
 
 class TabResults:
     def __init__(self, logic_instance) -> None:
@@ -104,7 +106,7 @@ class TabResults:
         else:
             self.window.text_res_error.setPlainText("-")
 
-        self._toml_text = self._bundle_to_toml(bundle)
+        self._toml_text = calibration_bundle_to_toml(bundle)
         self.window.text_res_preview_tmol.setPlainText(self._toml_text)
 
     # ----- TOML export ----------------------------------------------------
@@ -143,51 +145,3 @@ class TabResults:
 
     def _current_bundle(self):
         return getattr(self.logic, "current_bundle", None)
-
-    @staticmethod
-    def _bundle_to_toml(bundle) -> str:
-        lines: list[str] = []
-        lines.append('[metadata]')
-        lines.append(f'app = "PhysioMotionTracker"')
-        for key, value in bundle.metadata.items():
-            if isinstance(value, (int, float)):
-                lines.append(f"{key} = {value}")
-            elif isinstance(value, str):
-                lines.append(f'{key} = "{value}"')
-        lines.append("")
-        for source_id, camera in bundle.cameras.items():
-            lines.append(f'[camera."{source_id}"]')
-            lines.append(f'status = "{camera.status}"')
-            if camera.image_size:
-                lines.append(
-                    f"image_size = [{camera.image_size[0]}, {camera.image_size[1]}]"
-                )
-            if camera.reprojection_error is not None:
-                lines.append(f"reprojection_error = {camera.reprojection_error:.6f}")
-            if camera.intrinsics is not None:
-                lines.append("intrinsics = [")
-                for row in camera.intrinsics:
-                    lines.append(
-                        "  [" + ", ".join(f"{value:.6f}" for value in row) + "],"
-                    )
-                lines.append("]")
-            if camera.distortion is not None:
-                lines.append(
-                    "distortion = ["
-                    + ", ".join(f"{value:.6f}" for value in camera.distortion)
-                    + "]"
-                )
-            if camera.rotation is not None:
-                lines.append(
-                    "rotation = ["
-                    + ", ".join(f"{value:.6f}" for value in camera.rotation)
-                    + "]"
-                )
-            if camera.translation is not None:
-                lines.append(
-                    "translation = ["
-                    + ", ".join(f"{value:.6f}" for value in camera.translation)
-                    + "]"
-                )
-            lines.append("")
-        return "\n".join(lines)
