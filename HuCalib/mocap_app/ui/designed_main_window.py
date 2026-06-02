@@ -85,7 +85,7 @@ class ConsoleStream(io.StringIO):
 
 
 class _PreviewCanvas(QLabel):
-    def __init__(self, message: str = "No frame", parent: QWidget | None = None) -> None:
+    def __init__(self, message: str = "Geen beeld", parent: QWidget | None = None) -> None:
         super().__init__(message, parent)
         self._frame_pixmap: QPixmap | None = None
         self._detection: ChessboardDetectionResult | None = None
@@ -124,7 +124,7 @@ class _PreviewCanvas(QLabel):
         painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0))
         if self._frame_pixmap is None or self._frame_pixmap.isNull():
             painter.setPen(QtGui.QColor(245, 250, 255))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text() or "No frame")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text() or "Geen beeld")
             painter.end()
             return
 
@@ -452,22 +452,22 @@ class DesignedPreviewPopout(QDialog):
         self.resize(900, 620)
 
         self._title_button = QPushButton(display_name)
-        self._title_button.setToolTip("Rename camera")
+        self._title_button.setToolTip("Camera hernoemen")
         self._title_button.setMinimumWidth(110)
         self._auto_button = QPushButton("Auto")
         self._auto_button.setCheckable(True)
-        self._auto_button.setToolTip("Start auto capture")
+        self._auto_button.setToolTip("Automatisch vastleggen starten")
         self._overlay_button = QPushButton("Overlay")
         self._overlay_button.setCheckable(True)
-        self._overlay_button.setToolTip("Toggle detection overlay for this camera")
-        self._mirror_button = QPushButton("Mirror")
+        self._overlay_button.setToolTip("Detectie-overlay aan/uit voor deze camera")
+        self._mirror_button = QPushButton("Spiegelen")
         self._mirror_button.setCheckable(True)
-        self._mirror_button.setToolTip("Mirror this camera preview")
-        self._undistort_button = QPushButton("Undistort")
+        self._mirror_button.setToolTip("Camerabeeld spiegelen")
+        self._undistort_button = QPushButton("Corrigeren")
         self._undistort_button.setCheckable(True)
-        self._undistort_button.setToolTip("Toggle undistortion preview")
+        self._undistort_button.setToolTip("Lenscorrectie-preview aan/uit")
         self._delete_button = QPushButton("X")
-        self._delete_button.setToolTip("Remove this source from the source list")
+        self._delete_button.setToolTip("Deze bron uit de lijst verwijderen")
         self._delete_button.setFixedWidth(42)
 
         controls = QHBoxLayout()
@@ -480,7 +480,7 @@ class DesignedPreviewPopout(QDialog):
         controls.addWidget(self._undistort_button)
         controls.addWidget(self._delete_button)
 
-        self._image = _PreviewCanvas("No frame")
+        self._image = _PreviewCanvas("Geen beeld")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -532,6 +532,39 @@ class DesignedPreviewPopout(QDialog):
         self._image.set_overlay_data(detection, overlay_state, status, sample_count)
 
 
+class _AspectRatioBox(QWidget):
+    """Centers a single child widget at a fixed aspect ratio.
+
+    The camera preview uses this so it stays a tidy box (default 4:3) instead
+    of stretching to fill the full, often very wide, workspace. The page
+    background shows around the box rather than black letterbox bars.
+    """
+
+    def __init__(self, child: QWidget, ratio: float = 4.0 / 3.0, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ratio = max(0.1, float(ratio))
+        self._child = child
+        child.setParent(self)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._reflow()
+
+    def _reflow(self) -> None:
+        width = max(1, self.width())
+        height = max(1, self.height())
+        if width / height > self._ratio:
+            child_h = height
+            child_w = int(round(height * self._ratio))
+        else:
+            child_w = width
+            child_h = int(round(width / self._ratio))
+        x = (width - child_w) // 2
+        y = (height - child_h) // 2
+        self._child.setGeometry(x, y, child_w, child_h)
+
+
 class DesignedPreviewTile(QFrame):
     undistort_toggled = Signal(str, bool)
     auto_capture_requested = Signal()
@@ -552,37 +585,39 @@ class DesignedPreviewTile(QFrame):
 
         self._display_name = source_id
         self._title_button = QPushButton(source_id)
-        self._title_button.setToolTip("Rename camera")
+        self._title_button.setToolTip("Camera hernoemen")
         self._title_button.setMinimumWidth(72)
-        self._open_button = QPushButton("Open")
-        self._open_button.setToolTip("Open camera feed in a separate window")
+        self._title_button.setMaximumWidth(240)
+        self._open_button = QPushButton("Vergroten")
+        self._open_button.setToolTip("Camerabeeld in apart venster openen")
         self._open_button.setMinimumWidth(58)
         self._open_button.setCheckable(True)
         self._auto_button = QPushButton("Auto")
-        self._auto_button.setToolTip("Start auto capture")
+        self._auto_button.setToolTip("Automatisch vastleggen starten")
         self._auto_button.setMinimumWidth(58)
         self._auto_button.setCheckable(True)
         self._overlay_button = QPushButton("Overlay")
-        self._overlay_button.setToolTip("Toggle detection overlay for this camera")
+        self._overlay_button.setToolTip("Detectie-overlay aan/uit voor deze camera")
         self._overlay_button.setMinimumWidth(70)
         self._overlay_button.setCheckable(True)
         self._overlay_button.setChecked(True)
-        self._mirror_button = QPushButton("Mirror")
-        self._mirror_button.setToolTip("Mirror this camera preview")
+        self._mirror_button = QPushButton("Spiegelen")
+        self._mirror_button.setToolTip("Camerabeeld spiegelen")
         self._mirror_button.setMinimumWidth(62)
         self._mirror_button.setCheckable(True)
-        self._undistort = QPushButton("Undistort")
-        self._undistort.setToolTip("Toggle undistortion preview")
+        self._undistort = QPushButton("Corrigeren")
+        self._undistort.setToolTip("Lenscorrectie-preview aan/uit")
         self._undistort.setMinimumWidth(82)
         self._undistort.setCheckable(True)
         self._delete_button = QPushButton("X")
-        self._delete_button.setToolTip("Remove this source from the source list")
+        self._delete_button.setToolTip("Deze bron uit de lijst verwijderen")
         self._delete_button.setFixedWidth(42)
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(8)
-        controls.addWidget(self._title_button, stretch=1)
+        controls.addWidget(self._title_button)
+        controls.addStretch(1)
         controls.addWidget(self._open_button)
         controls.addWidget(self._auto_button)
         controls.addWidget(self._overlay_button)
@@ -590,10 +625,14 @@ class DesignedPreviewTile(QFrame):
         controls.addWidget(self._undistort)
         controls.addWidget(self._delete_button)
 
-        self._image = _PreviewCanvas("No frame")
-        self._image.setMinimumSize(320, 220)
+        self._image = _PreviewCanvas("Geen beeld")
+        self._image.setMinimumSize(1, 1)
+        # Keep the video a tidy 4:3 box centered in its cell instead of
+        # stretching across the whole workspace.
+        self._image_box = _AspectRatioBox(self._image, 4.0 / 3.0)
+        self._image_box.setMinimumSize(160, 120)
 
-        self._status = QLabel("Waiting for live feed")
+        self._status = QLabel("Wachten op livebeeld")
         self._status.setWordWrap(True)
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
@@ -605,12 +644,12 @@ class DesignedPreviewTile(QFrame):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
         layout.addLayout(controls)
-        layout.addWidget(self._image, stretch=1)
+        layout.addWidget(self._image_box, stretch=1)
         layout.addWidget(self._status)
         layout.addWidget(self._progress)
 
-        self.setFrameShape(QFrame.Shape.Box)
-        self.setMinimumSize(500, 300)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setMinimumSize(300, 220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._title_button.clicked.connect(self._rename_camera)
@@ -990,12 +1029,12 @@ class DesignedCalibrationPanel(QtCore.QObject):
         layout.setContentsMargins(0, 0, 0, 0)
 
         toolbar = QHBoxLayout()
-        self._directory_up_button = QPushButton("Up")
-        self._directory_down_button = QPushButton("Down")
+        self._directory_up_button = QPushButton("Omhoog")
+        self._directory_down_button = QPushButton("Omlaag")
         self._directory_path = QLineEdit(str(self._project_root))
         self._directory_path.setReadOnly(True)
-        self._directory_refresh_button = QPushButton("Refresh")
-        self._directory_browse_button = QPushButton("Browse...")
+        self._directory_refresh_button = QPushButton("Vernieuwen")
+        self._directory_browse_button = QPushButton("Bladeren...")
         toolbar.addWidget(self._directory_up_button)
         toolbar.addWidget(self._directory_down_button)
         toolbar.addWidget(QLabel("Startpad:"))
@@ -1006,6 +1045,14 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._directory_tree = QTreeWidget()
         self._directory_tree.setHeaderLabels(["Naam", "Type", "Gewijzigd"])
         self._directory_tree.setColumnCount(3)
+        # Let the Name column take the available width so paths stay readable;
+        # Type and Gewijzigd only take what their content needs.
+        _dir_header = self._directory_tree.header()
+        _dir_header.setStretchLastSection(False)
+        _dir_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        _dir_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        _dir_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._directory_tree.setColumnWidth(0, 420)
         self._directory_tree.itemExpanded.connect(self._on_directory_item_expanded)
         self._directory_tree.itemDoubleClicked.connect(lambda item, _column: self._go_down_directory(item))
 
@@ -1099,9 +1146,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._warnings.setReadOnly(True)
         self._warnings.setMinimumHeight(92)
 
-        self._start_live_button = QPushButton("Start Live")
-        self._stop_live_button = QPushButton("Stop Live")
-        self._probe_button = QPushButton("Detect Cameras")
+        self._start_live_button = QPushButton("Live starten")
+        self._stop_live_button = QPushButton("Live stoppen")
+        self._probe_button = QPushButton("Camera's zoeken")
         self._capture_button = QPushButton("Capture Intrinsics Sample(s)")
         self._capture_sync_button = QPushButton("Capture Sync Set(s)")
         self._start_auto_button = QPushButton("Start Auto Capture")
@@ -1335,7 +1382,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form.addRow("Workflow", self._workflow_combo)
         form.addRow("Pattern", self.window.combo_cap_pattern)
         form.addRow("Overlay", self._overlay_checkbox)
-        form.addRow("Mirror", self._mirror_checkbox)
+        form.addRow("Spiegelen", self._mirror_checkbox)
         form.addRow("Auto Capture", self._auto_capture_checkbox)
         form.addRow("Cooldown", self._auto_cooldown_spin)
         form.addRow("Max Samples", self._auto_max_spin)
@@ -1383,10 +1430,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
     def switch_page(self, index: int) -> None:
         self.window.stackedWidget.setCurrentIndex(index)
-        active_style = "background-color: #0078D4; color: white; font-weight: bold; border: 1px solid #005A9E;"
-        normal_style = "background-color: #2D2D2D; color: white; border: 1px solid #444;"
+        # Use the team stylesheet's nav styling (property-driven) instead of
+        # hardcoded inline colours so hover/disabled states keep working and the
+        # look stays consistent with guiStyle.
         for button_index, button in enumerate(self._nav_buttons):
-            button.setStyleSheet(active_style if button_index == index else normal_style)
+            button.setProperty("active", button_index == index)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _handle_console_input(self) -> None:
         text = self.window.lineedit_console_input.text().strip()
@@ -2135,8 +2185,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._probe_button.setEnabled(not running)
         self.window.btn_camera_detect.setEnabled(not running)
         self._probe_max_spin.setEnabled(not running)
-        self._probe_button.setText("Scanning..." if running else "Detect Cameras")
-        self.window.btn_camera_detect.setText("Scanning..." if running else "Detect Cameras")
+        self._probe_button.setText("Scannen..." if running else "Camera's zoeken")
+        self.window.btn_camera_detect.setText("Scannen..." if running else "Camera's zoeken")
         self._probe_status.setText("Camera scan: scanning..." if running else self._probe_status.text())
         self._refresh_add_camera_button()
 
@@ -2395,12 +2445,12 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         )
 
     def _compact_camera_controls(self) -> None:
-        self.btn_camera_detect = QPushButton("Detect Cameras", self.frame)
+        self.btn_camera_detect = QPushButton("Camera's zoeken", self.frame)
         self.btn_camera_detect.setObjectName("btn_camera_detect")
-        self.btn_camera_start_live = QPushButton("Start Live", self.frame)
+        self.btn_camera_start_live = QPushButton("Live starten", self.frame)
         self.btn_camera_start_live.setObjectName("btn_camera_start_live")
         self.btn_camera_start_live.setProperty("accent", True)
-        self.btn_camera_stop_live = QPushButton("Stop Live", self.frame)
+        self.btn_camera_stop_live = QPushButton("Live stoppen", self.frame)
         self.btn_camera_stop_live.setObjectName("btn_camera_stop_live")
         self.btn_camera_stop_live.setEnabled(False)
 

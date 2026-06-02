@@ -79,9 +79,9 @@ class Ui_MainWindow(object):
         nav_button_specs = [
             ("btn_home", "Home"),
             ("btn_cameras", "Camera's /\nKalibratie"),
-            ("btn_results", "Results /\nExport"),
-            ("btn_directory", "Directory"),
-            ("btn_diagnostics", "Diagnostics"),
+            ("btn_results", "Resultaten /\nExport"),
+            ("btn_directory", "Bestanden"),
+            ("btn_diagnostics", "Diagnostiek"),
             ("btn_advanced_settings", "Geavanceerde\ninstellingen"),
         ]
         for object_name, text in nav_button_specs:
@@ -325,7 +325,7 @@ class Ui_MainWindow(object):
 
         self.btn_cap_calculate_intrinsics = QtWidgets.QPushButton(self.frame_2)
         self.btn_cap_calculate_intrinsics.setObjectName("btn_cap_calculate_intrinsics")
-        self.btn_cap_calculate_intrinsics.setText("Calculate")
+        self.btn_cap_calculate_intrinsics.setText("Berekenen")
         self.btn_cap_calculate_intrinsics.setMinimumHeight(36)
         self.btn_cap_calculate_intrinsics.setProperty("accent", True)
         intrinsics_layout.addWidget(self.btn_cap_calculate_intrinsics)
@@ -356,7 +356,7 @@ class Ui_MainWindow(object):
 
         self.btn_cap_calculate_extrinsics = QtWidgets.QPushButton(self.frame_3)
         self.btn_cap_calculate_extrinsics.setObjectName("btn_cap_calculate_extrinsics")
-        self.btn_cap_calculate_extrinsics.setText("Calculate")
+        self.btn_cap_calculate_extrinsics.setText("Berekenen")
         self.btn_cap_calculate_extrinsics.setMinimumHeight(36)
         self.btn_cap_calculate_extrinsics.setProperty("accent", True)
         extrinsics_layout.addWidget(self.btn_cap_calculate_extrinsics)
