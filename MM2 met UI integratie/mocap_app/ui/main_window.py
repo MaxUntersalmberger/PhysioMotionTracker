@@ -12,7 +12,7 @@ from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
 
-from mocap_app.core.config import AppConfig
+from mocap_app.core.config import AppConfig, _app_root
 from mocap_app.io.calibration_io import (
     CalibrationManager,
     CalibrationRepository,
@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._camera_probe_worker: CameraProbeWorker | None = None
         self._intrinsics_solve_worker: IntrinsicsSolveWorker | None = None
         self._video_recorder: VideoRecorder | None = None
+        self._last_recording_dir: Path | None = None
         self._active_sources: list[CameraSourceConfig] = []
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
@@ -920,9 +921,27 @@ class MainWindow(QMainWindow):
         self._refresh_calibration_panel(force=True)
         self._set_status("Live capture stopped")
 
-    def _default_recordings_dir(self) -> Path:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return self._config.sessions_dir / "recordings" / f"rec_{timestamp}"
+    def _default_recordings_base_dir(self) -> Path:
+        # Derived from the module location (the project folder), so it is
+        # independent of any absolute paths baked into app_settings.json.
+        return _app_root() / "recordings"
+
+    def _choose_recording_base_dir(self) -> Path | None:
+        default = self._last_recording_dir or self._default_recordings_base_dir()
+        try:
+            default.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            default = self._default_recordings_base_dir()
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Kies een map om de opname in op te slaan",
+            str(default),
+        )
+        if not selected:
+            return None
+        chosen = Path(selected)
+        self._last_recording_dir = chosen
+        return chosen
 
     def _on_record_toggled(self, enabled: bool) -> None:
         if not enabled:
@@ -935,7 +954,12 @@ class MainWindow(QMainWindow):
             self._show_warning("Start eerst de live weergave voordat je een opname maakt.")
             return
 
-        output_dir = self._default_recordings_dir()
+        base_dir = self._choose_recording_base_dir()
+        if base_dir is None:
+            self._calibration_panel.set_recording_active(False)
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = base_dir / f"rec_{timestamp}"
         labels = {source.source_id: (source.label or source.source_id) for source in self._active_sources}
         fps = self._runtime_tuning.capture_fps if self._runtime_tuning.capture_fps > 0 else self._calibration_panel.target_fps()
         try:
