@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 import cv2
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -487,6 +487,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._video_sources: list[CameraSourceConfig] = []
         self._detected_cameras: list[CameraProbeResult] = []
         self._camera_probe_running = False
+        self._advanced_scroll: QScrollArea | None = None
         self._live_active = False
         self._active_cameras = 0
         self._project_root = Path.cwd()
@@ -744,6 +745,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._load_profile_button = QPushButton("Load Profile")
         self._reset_samples_button = QPushButton("Reset Samples")
 
+        self._compact_advanced_controls()
+
         advanced_root = QWidget()
         advanced_layout = QVBoxLayout(advanced_root)
         advanced_layout.setContentsMargins(4, 4, 4, 4)
@@ -759,6 +762,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(advanced_root)
+        self._advanced_scroll = scroll
         page_layout = self.window.page_advanced_settings.layout()
         if page_layout is None:
             page_layout = QVBoxLayout(self.window.page_advanced_settings)
@@ -768,6 +772,54 @@ class DesignedCalibrationPanel(QtCore.QObject):
         page_layout.addWidget(scroll)
 
         self._connect_advanced_controls()
+
+    def _compact_advanced_controls(self) -> None:
+        self._compact_field(self._sources_input, 360)
+        for widget in [
+            self._capture_resolution_combo,
+            self._preview_resolution_combo,
+            self._workflow_combo,
+        ]:
+            self._compact_field(widget, 180)
+            self._wheel_scrolls_page(widget)
+
+        for widget in [
+            self._preview_fps_spin,
+            self._detect_hz_spin,
+            self._probe_max_spin,
+            self._chess_cols_spin,
+            self._chess_rows_spin,
+            self.window.doubleSpinBox,
+            self._charuco_x_spin,
+            self._charuco_y_spin,
+            self._charuco_square_spin,
+            self._charuco_marker_spin,
+            self._auto_cooldown_spin,
+            self._auto_max_spin,
+            self._quality_spin,
+            self._coverage_spin,
+            self._grid_cols_spin,
+            self._grid_rows_spin,
+        ]:
+            self._compact_field(widget, 120)
+            self._wheel_scrolls_page(widget)
+
+        for button in [
+            self._apply_live_settings_button,
+            self._apply_chessboard_button,
+            self._apply_charuco_button,
+            self._apply_workflow_button,
+        ]:
+            button.setMaximumWidth(280)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def _compact_field(self, widget: QWidget, width: int) -> None:
+        widget.setFixedWidth(width)
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def _wheel_scrolls_page(self, widget: QWidget) -> None:
+        widget.setProperty("wheel-scrolls-advanced-page", True)
+        widget.installEventFilter(self)
 
     def _connect_designed_actions(self) -> None:
         self.window.btn_newproject.clicked.connect(self.new_project_requested)
@@ -863,9 +915,17 @@ class DesignedCalibrationPanel(QtCore.QObject):
         layout.addWidget(content)
         return frame
 
+    def _setup_compact_form(self, form: QFormLayout) -> None:
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(8)
+
     def _live_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("Sources (CSV)", self._sources_input)
         form.addRow("Capture FPS", QLabel("Use the FPS field on the Camera page"))
         form.addRow("Capture Resolution", self._capture_resolution_combo)
@@ -880,6 +940,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def _chessboard_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("Columns", self._chess_cols_spin)
         form.addRow("Rows", self._chess_rows_spin)
         form.addRow("Square", self.window.doubleSpinBox)
@@ -889,6 +950,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def _charuco_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("ChArUco Squares X", self._charuco_x_spin)
         form.addRow("ChArUco Squares Y", self._charuco_y_spin)
         form.addRow("ChArUco Square", self._charuco_square_spin)
@@ -899,6 +961,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def _workflow_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("Workflow", self._workflow_combo)
         form.addRow("Pattern", QLabel("Use the Pattern field on the Camera page"))
         form.addRow("Overlay", self._overlay_checkbox)
@@ -1069,6 +1132,24 @@ class DesignedCalibrationPanel(QtCore.QObject):
         checkbox.blockSignals(True)
         checkbox.setCheckState(state)
         checkbox.blockSignals(False)
+
+    def eventFilter(self, obj: object, event: object) -> bool:
+        if (
+            isinstance(obj, QWidget)
+            and obj.property("wheel-scrolls-advanced-page")
+            and isinstance(event, QtGui.QWheelEvent)
+            and event.type() == QEvent.Type.Wheel
+        ):
+            scroll = self._advanced_scroll
+            if scroll is not None:
+                delta = event.pixelDelta().y()
+                if delta == 0:
+                    delta = event.angleDelta().y()
+                if delta != 0:
+                    bar = scroll.verticalScrollBar()
+                    bar.setValue(bar.value() - delta)
+            return True
+        return super().eventFilter(obj, event)
 
     def _apply_board_settings(self, message: str) -> None:
         self.board_settings_applied.emit(self.board_settings())
