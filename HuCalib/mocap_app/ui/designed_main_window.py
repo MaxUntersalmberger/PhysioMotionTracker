@@ -903,9 +903,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._camera_scroll.setWidgetResizable(True)
         self._camera_scroll_content = QWidget()
         self._camera_grid = QGridLayout(self._camera_scroll_content)
-        self._camera_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        for col in range(3):
-            self._camera_grid.setColumnStretch(col, 1)
+        # Column/row stretch is configured per layout in _rebuild_camera_grid so
+        # the tiles always fill the available preview area for any camera count.
         self._camera_scroll.setWidget(self._camera_scroll_content)
         self.window.gridLayout_6.addWidget(self._camera_scroll)
 
@@ -1854,13 +1853,41 @@ class DesignedCalibrationPanel(QtCore.QObject):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
+
+        # Clear any stretch left over from a previous layout so dropped rows or
+        # columns stop reserving space (e.g. going from 3 cameras back to 1).
+        for col in range(self._camera_grid.columnCount()):
+            self._camera_grid.setColumnStretch(col, 0)
+        for row in range(self._camera_grid.rowCount()):
+            self._camera_grid.setRowStretch(row, 0)
+
+        count = len(self._source_order)
+        columns = 1 if count <= 1 else 2
         for index, source_id in enumerate(self._source_order):
-            self._camera_grid.addWidget(self._tiles[source_id], index // 3, index % 3)
-        self._camera_grid.addWidget(
-            self._add_camera_button,
-            len(self._source_order) // 3,
-            len(self._source_order) % 3,
-        )
+            self._camera_grid.addWidget(self._tiles[source_id], index // columns, index % columns)
+
+        if count == 0:
+            # No cameras yet: let the add button fill the area as a big prompt.
+            self._add_camera_button.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self._camera_grid.addWidget(self._add_camera_button, 0, 0)
+            self._camera_grid.setColumnStretch(0, 1)
+            self._camera_grid.setRowStretch(0, 1)
+        else:
+            # Cameras present: the tiles fill the grid and the add button is a
+            # slim bar spanning all columns underneath, so it never steals a
+            # tile's space the way an expanding cell did.
+            tile_rows = (count + columns - 1) // columns
+            self._add_camera_button.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            self._camera_grid.addWidget(self._add_camera_button, tile_rows, 0, 1, columns)
+            for col in range(columns):
+                self._camera_grid.setColumnStretch(col, 1)
+            for row in range(tile_rows):
+                self._camera_grid.setRowStretch(row, 1)
+
         self._refresh_add_camera_button()
 
     def _current_source_tokens(self) -> list[str]:
