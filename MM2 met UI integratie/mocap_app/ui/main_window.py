@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 import cv2
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
 
 from mocap_app.core.config import AppConfig
 from mocap_app.io.calibration_io import (
@@ -965,14 +966,76 @@ class MainWindow(QMainWindow):
             self._calibration_panel.show_feedback("Opname gestopt; geen frames opgeslagen.", success=False)
             self._set_status("Opname gestopt (geen frames).")
             return
-        output_dir = recorder.output_dir
+        self._handle_recording_result(recorder.output_dir, written, recorder.total_frames())
+
+    def _handle_recording_result(self, output_dir: Path, written: dict[str, Path], total_frames: int) -> None:
         files_text = ", ".join(path.name for path in written.values())
-        self._calibration_panel.show_feedback(
-            f"Opname opgeslagen ({recorder.total_frames()} frames): {files_text} in {output_dir}",
-            success=True,
+        box = QMessageBox(self)
+        box.setWindowTitle("Opname voltooid")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"Opname voltooid: {total_frames} frame(s) in {len(written)} bestand(en).\n"
+            f"{files_text}\n\nMap: {output_dir}\n\nWat wil je met deze opname doen?"
         )
+        keep_button = box.addButton("Bewaren", QMessageBox.ButtonRole.AcceptRole)
+        rename_button = box.addButton("Naam aanpassen", QMessageBox.ButtonRole.ActionRole)
+        delete_button = box.addButton("Verwijderen", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(keep_button)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is delete_button:
+            self._delete_recording(output_dir)
+            return
+        if clicked is rename_button:
+            output_dir = self._rename_recording(output_dir) or output_dir
+
+        self._calibration_panel.show_feedback(f"Opname bewaard in {output_dir}", success=True)
         self._set_status(f"Video opgeslagen in {output_dir}")
         self._prompt_open_recording_folder(output_dir)
+
+    def _rename_recording(self, output_dir: Path) -> Path | None:
+        new_name, accepted = QInputDialog.getText(
+            self,
+            "Naam aanpassen",
+            "Nieuwe naam voor de opnamemap:",
+            text=output_dir.name,
+        )
+        if not accepted:
+            return None
+        cleaned = "".join(char for char in new_name if char not in '<>:"/\\|?*').strip()
+        if not cleaned or cleaned == output_dir.name:
+            return None
+        target = output_dir.parent / cleaned
+        if target.exists():
+            self._show_warning(f"Er bestaat al een map met de naam '{cleaned}'.")
+            return None
+        try:
+            renamed = output_dir.rename(target)
+        except OSError as exc:
+            self._show_error(f"Kon de opname niet hernoemen: {exc}")
+            return None
+        return renamed
+
+    def _delete_recording(self, output_dir: Path) -> None:
+        confirm = QMessageBox.question(
+            self,
+            "Opname verwijderen",
+            f"Weet je zeker dat je deze opname definitief wilt verwijderen?\n{output_dir}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            self._calibration_panel.show_feedback(f"Opname bewaard in {output_dir}", success=True)
+            self._set_status(f"Video opgeslagen in {output_dir}")
+            return
+        try:
+            shutil.rmtree(output_dir)
+        except OSError as exc:
+            self._show_error(f"Kon de opname niet verwijderen: {exc}")
+            return
+        self._calibration_panel.show_feedback("Opname verwijderd.", success=True)
+        self._set_status("Opname verwijderd.")
 
     def _prompt_open_recording_folder(self, folder: Path) -> None:
         reply = QMessageBox.question(
