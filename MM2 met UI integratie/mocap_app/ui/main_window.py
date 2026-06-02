@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import cv2
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
+import numpy as np
+from PySide6.QtCore import QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
 
 from mocap_app.core.config import AppConfig
 from mocap_app.io.calibration_io import (
@@ -15,6 +19,8 @@ from mocap_app.io.calibration_io import (
     CalibrationRepository,
     ChessboardDetectionResult,
 )
+from mocap_app.io import calibration_export
+from mocap_app.io.video_recorder import VideoRecorder
 from mocap_app.models.types import (
     CalibrationBoardSettings,
     CalibrationBundle,
@@ -27,13 +33,21 @@ from mocap_app.ui.widgets.calibration_panel import CalibrationPanelWidget
 from mocap_app.workers.calibration_solve_worker import IntrinsicsSolveWorker
 from mocap_app.workers.camera_probe_worker import CameraProbeWorker
 from mocap_app.workers.capture_worker import LiveCaptureWorker
+from mocap_app.workers.detection_worker import CalibrationDetectionWorker
 
 
 LOGGER = logging.getLogger(__name__)
+SYNC_SKEW_WARNING_SEC = 0.050
+SYNC_SKEW_REJECT_SEC = 0.150
+SYNC_WARNING_THROTTLE_SEC = 3.0
 
 
 class MainWindow(QMainWindow):
     """Calibration-only application shell."""
+
+    # Emitted from the UI thread to hand a detection job to the background
+    # detection worker (connected with a queued connection across threads).
+    request_detection = Signal(object)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -46,22 +60,28 @@ class MainWindow(QMainWindow):
         self._calibration_loaded = False
         self._calibration_pattern = self._calibration_manager.default_pattern
         self._latest_calibration_detections: dict[str, ChessboardDetectionResult] = {}
-        self._latest_calibration_overlay_frames: dict[str, Any] = {}
         self._last_calibration_detection_at = 0.0
         self._calibration_detection_interval_sec = 0.25
         self._last_calibration_panel_refresh_at = 0.0
         self._calibration_panel_refresh_interval_sec = 0.35
         self._last_calibration_auto_capture_at = 0.0
         self._last_live_status_refresh_at = 0.0
+        self._last_sync_timing_warning_at = 0.0
 
         self._live_worker: LiveCaptureWorker | None = None
         self._camera_probe_worker: CameraProbeWorker | None = None
         self._intrinsics_solve_worker: IntrinsicsSolveWorker | None = None
+        self._detection_thread: QThread | None = None
+        self._detection_worker: CalibrationDetectionWorker | None = None
+        self._detection_request_in_flight = False
+        self._video_recorder: VideoRecorder | None = None
+        self._last_recording_dir: Path | None = None
         self._active_sources: list[CameraSourceConfig] = []
+        self._detected_cameras: list[CameraProbeResult] = []
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
         self._last_rendered_frame_indices: dict[str, int] = {}
-        self._measured_fps_by_source: dict[str, float] = {}
+        self._calibration_overlay_cache: dict[str, tuple[tuple[Any, ...], Any, Any]] = {}
         self._active_camera_count = 0
 
         self._calibration_panel = self._create_calibration_panel(
@@ -80,6 +100,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._apply_window_style()
         self._connect_signals()
+        self._setup_detection_worker()
 
         self._calibration_panel.set_pattern_options(
             pattern_names=self._calibration_manager.available_patterns(),
@@ -99,6 +120,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self._config.app_name)
         self._apply_initial_window_geometry()
         self._set_status("Ready for camera calibration")
+        QTimer.singleShot(250, self._start_initial_camera_probe)
 
     def _setup_ui(self) -> None:
         self.setCentralWidget(self._calibration_panel)
@@ -146,6 +168,12 @@ class MainWindow(QMainWindow):
         self._calibration_panel.acceptance_thresholds_changed.connect(self._on_acceptance_thresholds_changed)
         self._calibration_panel.workflow_mode_changed.connect(self._on_calibration_workflow_mode_changed)
         self._calibration_panel.spatial_grid_changed.connect(self._on_spatial_grid_changed)
+        if hasattr(self._calibration_panel, "record_toggled"):
+            self._calibration_panel.record_toggled.connect(self._on_record_toggled)
+        if hasattr(self._calibration_panel, "export_preview_requested"):
+            self._calibration_panel.export_preview_requested.connect(self._on_export_preview)
+        if hasattr(self._calibration_panel, "export_requested"):
+            self._calibration_panel.export_requested.connect(self._on_export_calibration)
         if hasattr(self._calibration_panel, "sources_changed"):
             self._calibration_panel.sources_changed.connect(self._on_panel_sources_changed)
         if hasattr(self._calibration_panel, "preview_options_changed"):
@@ -158,6 +186,31 @@ class MainWindow(QMainWindow):
         if not self._display_timer.isActive():
             self._display_timer.start()
 
+    def _setup_detection_worker(self) -> None:
+        """Start the background thread that runs pattern detection.
+
+        Detection is the dominant per-frame cost; running it on the UI thread
+        froze the Qt event loop every detection cycle. The worker lives for the
+        whole session and processes one job at a time (gated by
+        ``_detection_request_in_flight``) so requests never queue up.
+        """
+        self._detection_thread = QThread(self)
+        self._detection_worker = CalibrationDetectionWorker(self._calibration_manager)
+        self._detection_worker.moveToThread(self._detection_thread)
+        self.request_detection.connect(self._detection_worker.run_detection)
+        self._detection_worker.result_ready.connect(self._on_detection_result)
+        self._detection_thread.start()
+
+    def _shutdown_detection_worker(self) -> None:
+        thread = self._detection_thread
+        if thread is None:
+            return
+        thread.quit()
+        thread.wait(2000)
+        self._detection_thread = None
+        self._detection_worker = None
+        self._detection_request_in_flight = False
+
     def _default_calibration_path(self) -> Path:
         return self._config.calibration_dir / "current_calibration.json"
 
@@ -168,6 +221,18 @@ class MainWindow(QMainWindow):
         self._set_display_timer_hz(tuning_obj.preview_fps)
         self._calibration_detection_interval_sec = 1.0 / max(tuning_obj.calibration_detection_hz, 0.1)
         self._update_calibration_preview(force=True)
+
+    def _start_initial_camera_probe(self) -> None:
+        if self._camera_probe_worker is not None:
+            return
+        probe_max = 10
+        panel_probe_max = getattr(self._calibration_panel, "probe_max_index", None)
+        if callable(panel_probe_max):
+            try:
+                probe_max = int(panel_probe_max())
+            except (TypeError, ValueError):
+                probe_max = 10
+        self._on_probe_cameras(probe_max)
 
     def _stop_camera_probe_worker(self) -> None:
         if self._camera_probe_worker is None:
@@ -199,6 +264,7 @@ class MainWindow(QMainWindow):
         for item in cameras:
             if isinstance(item, CameraProbeResult):
                 results.append(item)
+        self._detected_cameras = sorted(results, key=lambda camera: camera.index)
         self._calibration_panel.set_detected_cameras(results)
         if results:
             self._set_status(f"Detected {len(results)} camera(s).")
@@ -215,8 +281,13 @@ class MainWindow(QMainWindow):
             sources = self._calibration_panel.current_sources()
         except ValueError:
             sources = [
-                CameraSourceConfig(source_id="cam0", kind="webcam", uri=0, label="Webcam 0"),
-                CameraSourceConfig(source_id="cam1", kind="webcam", uri=1, label="Webcam 1"),
+                CameraSourceConfig(
+                    source_id=f"cam{camera.index}",
+                    kind="webcam",
+                    uri=camera.index,
+                    label=f"Webcam {camera.index}",
+                )
+                for camera in self._detected_cameras[:1]
             ]
         self._active_sources = sources
         self._calibration_panel.set_sources([source.source_id for source in sources])
@@ -337,20 +408,23 @@ class MainWindow(QMainWindow):
         self._calibration_panel.set_live_status(
             live_active=live_active,
             active_cameras=self._active_camera_count,
-            per_camera_fps=self._measured_fps_by_source,
         )
         self._last_live_status_refresh_at = now
 
     def _active_source_ids(self) -> list[str]:
-        live_active = self._live_worker is not None and self._live_worker.isRunning()
-        if live_active and self._active_sources:
+        # Always prefer the configured source order so tiles keep a stable grid
+        # position; falling back to sorted frame keys would reorder tiles.
+        if self._active_sources:
             return [source.source_id for source in self._active_sources]
+        try:
+            configured = [source.source_id for source in self._calibration_panel.current_sources()]
+        except ValueError:
+            configured = []
+        if configured:
+            return configured
         if self._latest_frames:
             return sorted(self._latest_frames.keys())
-        try:
-            return [source.source_id for source in self._calibration_panel.current_sources()]
-        except ValueError:
-            return []
+        return []
 
     def _on_panel_sources_changed(self, sources_obj: object) -> None:
         sources = [source for source in sources_obj if isinstance(source, CameraSourceConfig)] if isinstance(sources_obj, list) else []
@@ -360,19 +434,9 @@ class MainWindow(QMainWindow):
         self._active_sources = sources
         source_ids = {source.source_id for source in sources}
         self._latest_frames = {source_id: frame for source_id, frame in self._latest_frames.items() if source_id in source_ids}
-        self._measured_fps_by_source = {
-            source_id: fps
-            for source_id, fps in self._measured_fps_by_source.items()
-            if source_id in source_ids
-        }
         self._latest_calibration_detections = {
             source_id: detection
             for source_id, detection in self._latest_calibration_detections.items()
-            if source_id in source_ids
-        }
-        self._latest_calibration_overlay_frames = {
-            source_id: frame
-            for source_id, frame in self._latest_calibration_overlay_frames.items()
             if source_id in source_ids
         }
         self._last_rendered_frame_indices = {
@@ -389,9 +453,6 @@ class MainWindow(QMainWindow):
 
         source_ids = self._active_source_ids()
         self._calibration_panel.set_sources(source_ids)
-        sync_count = self._calibration_manager.synchronized_capture_count()
-        if hasattr(self._calibration_panel, "set_sync_progress_count"):
-            self._calibration_panel.set_sync_progress_count(sync_count)
         sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
         sample_breakdown = self._calibration_manager.observations_breakdown_summary()
         self._calibration_panel.update_camera_status_table(
@@ -406,28 +467,27 @@ class MainWindow(QMainWindow):
         warnings: list[str] = []
         if not source_ids:
             warnings.append("Configure at least one camera source before capturing calibration samples.")
+        sync_target = self._calibration_panel.auto_capture_max_samples()
+        sync_required = sync_target if sync_target > 0 else 3
         for source_id in source_ids:
             if mode == "sync_extrinsics":
                 sync_count_for_source = int(sample_breakdown.get(source_id, {}).get("synchronized", 0))
-                extrinsics_limit = self._extrinsics_max_sync_sets()
-                required = extrinsics_limit if extrinsics_limit > 0 else 3
-                if sync_count_for_source < min(required, 3):
+                if sync_count_for_source < sync_required:
                     warnings.append(
-                        f"{source_id}: too few synchronized sets ({sync_count_for_source}/{required}). "
-                        "Extrinsics may be unstable."
+                        f"{source_id}: too few synchronized sets ({sync_count_for_source}/{sync_required}). "
+                        "Every camera must share views with the others for reliable extrinsics."
                     )
             else:
                 count = sample_counts.get(source_id, 0)
-                intrinsics_limit = self._intrinsics_max_samples()
-                required = intrinsics_limit if intrinsics_limit > 0 else self._calibration_manager.min_samples_per_camera
-                if count < min(required, self._calibration_manager.min_samples_per_camera):
+                if count < self._calibration_manager.min_samples_per_camera:
                     warnings.append(
-                        f"{source_id}: too few frames ({count}/{required})."
+                        f"{source_id}: too few frames ({count}/{self._calibration_manager.min_samples_per_camera})."
                     )
         if self._current_calibration_bundle:
             warnings.extend(self._current_calibration_bundle.notes)
         if self._calibration_pattern == "charuco" and "charuco" not in self._calibration_manager.available_patterns():
             warnings.append("Charuco selected but cv2.aruco is unavailable in current OpenCV build.")
+        sync_count = self._calibration_manager.synchronized_capture_count()
         if sync_count > 0:
             warnings.append(f"Synchronized capture sets stored: {sync_count}.")
         if mode == "sync_extrinsics":
@@ -444,7 +504,7 @@ class MainWindow(QMainWindow):
             f"coverage >= {self._calibration_manager.min_coverage_ratio * 100.0:.1f}%."
         )
         warnings.append(
-            "Extrinsics thresholds: "
+            "Sync thresholds: "
             f"quality >= {self._calibration_manager.sync_min_quality_score:.2f}, "
             f"coverage >= {self._calibration_manager.sync_min_coverage_ratio * 100.0:.1f}%."
         )
@@ -457,21 +517,6 @@ class MainWindow(QMainWindow):
 
     def _calibration_workflow_mode(self) -> str:
         return self._calibration_panel.current_workflow_mode()
-
-    def _intrinsics_max_samples(self) -> int:
-        if hasattr(self._calibration_panel, "intrinsics_max_samples"):
-            return int(self._calibration_panel.intrinsics_max_samples())
-        return int(self._calibration_panel.auto_capture_max_samples())
-
-    def _extrinsics_max_sync_sets(self) -> int:
-        if hasattr(self._calibration_panel, "extrinsics_max_sync_sets"):
-            return int(self._calibration_panel.extrinsics_max_sync_sets())
-        return int(self._calibration_panel.auto_capture_max_samples())
-
-    def _active_mode_sample_limit(self) -> int:
-        if self._calibration_workflow_mode() == "sync_extrinsics":
-            return self._extrinsics_max_sync_sets()
-        return self._intrinsics_max_samples()
 
     def _refresh_threshold_controls_for_mode(self) -> None:
         if self._calibration_workflow_mode() == "sync_extrinsics":
@@ -486,15 +531,25 @@ class MainWindow(QMainWindow):
         )
 
     def _auto_capture_idle_text(self) -> str:
-        limit = self._active_mode_sample_limit()
+        limit = self._calibration_panel.auto_capture_max_samples()
         limit_text = f" Max {limit}." if limit > 0 else ""
         collection = self._calibration_manager.sample_collection_metadata()
         duration_sec = float(collection.get("duration_sec", 0.0) or 0.0)
         duration_text = f" Collected for {self._format_duration_sec(duration_sec)}." if duration_sec > 0 else ""
         if self._calibration_workflow_mode() == "sync_extrinsics":
+            goal_text = ""
+            if limit > 0:
+                counts = self._synchronized_counts_by_source()
+                if counts:
+                    progress = ", ".join(f"{sid}:{count}/{limit}" for sid, count in sorted(counts.items()))
+                    goal_text = f" Goal: every camera needs {limit} synchronized set(s). Progress {progress}."
+                    lagging = sorted(sid for sid, count in counts.items() if count < limit)
+                    if lagging:
+                        goal_text += f" Still need shared views for: {', '.join(lagging)}."
             return (
-                "Auto capture armed (sync mode). Hold the board visible in at least 2 cameras."
-                + limit_text
+                "Auto capture armed (sync mode). Hold the board so it is visible in as many "
+                "cameras at once as possible; every camera must share views with the others."
+                + goal_text
                 + duration_text
             )
         target_text = ""
@@ -515,26 +570,36 @@ class MainWindow(QMainWindow):
             return f"{hours:d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:d}:{seconds:02d}"
 
+    def _synchronized_counts_by_source(self) -> dict[str, int]:
+        """Synchronized-set count per active camera (sets shared with >=1 other camera)."""
+        breakdown = self._calibration_manager.observations_breakdown_summary()
+        return {
+            source_id: int(breakdown.get(source_id, {}).get("synchronized", 0))
+            for source_id in self._active_source_ids()
+        }
+
     def _auto_capture_stop_message_if_limit_reached(self) -> str | None:
-        limit = self._active_mode_sample_limit()
+        limit = self._calibration_panel.auto_capture_max_samples()
         if limit <= 0:
             return None
         if self._calibration_workflow_mode() == "sync_extrinsics":
-            sync_count = self._calibration_manager.synchronized_capture_count()
-            if sync_count >= limit:
-                return f"Auto capture stopped at {sync_count}/{limit} synchronized set(s)."
+            source_ids = self._active_source_ids()
+            if len(source_ids) < 2:
+                return None
+            # The target only counts as complete once *every* camera has reached it,
+            # so a rig can't finish while one camera never shared a view with the others.
+            per_source = self._synchronized_counts_by_source()
+            if per_source and all(count >= limit for count in per_source.values()):
+                coverage_text = ", ".join(f"{sid}={count}" for sid, count in sorted(per_source.items()))
+                return (
+                    f"Auto capture stopped: every camera reached {limit} synchronized set(s) "
+                    f"({coverage_text})."
+                )
             return None
 
         source_ids = self._active_source_ids()
         if not source_ids:
             return None
-        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
-        if all(int(sample_counts.get(source_id, 0)) >= limit for source_id in source_ids):
-            progress_text = ", ".join(
-                f"{source_id}={int(sample_counts.get(source_id, 0))}/{limit}"
-                for source_id in source_ids
-            )
-            return f"Auto capture stopped at intrinsics max samples ({progress_text})."
         if all(self._source_spatial_grid_complete(source_id) for source_id in source_ids):
             target = self._spatial_target_samples_per_cell()
             coverage_text = ", ".join(
@@ -558,19 +623,17 @@ class MainWindow(QMainWindow):
         return True
 
     def _auto_capture_intrinsics_candidates(self, source_ids: list[str]) -> list[str]:
-        limit = self._intrinsics_max_samples()
+        limit = self._calibration_panel.auto_capture_max_samples()
         if limit <= 0 or self._calibration_workflow_mode() != "intrinsics":
             return list(source_ids)
-        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
         return [
             source_id
             for source_id in source_ids
-            if int(sample_counts.get(source_id, 0)) < limit
-            and not self._source_spatial_grid_complete(source_id)
+            if not self._source_spatial_grid_complete(source_id)
         ]
 
     def _source_spatial_grid_complete(self, source_id: str) -> bool:
-        if self._intrinsics_max_samples() <= 0:
+        if self._calibration_panel.auto_capture_max_samples() <= 0:
             return False
         target = self._spatial_target_samples_per_cell()
         summary = self._calibration_manager.spatial_coverage_summary(
@@ -595,6 +658,7 @@ class MainWindow(QMainWindow):
             return
         now = time.perf_counter()
         overlay_enabled = self._calibration_panel.overlay_enabled()
+        use_qt_overlay = self._uses_qt_preview_overlay()
         detection_needed = overlay_enabled or self._calibration_panel.auto_capture_enabled()
         detection_due = detection_needed and (
             force or now - self._last_calibration_detection_at >= self._calibration_detection_interval_sec
@@ -613,30 +677,25 @@ class MainWindow(QMainWindow):
         }
         detections = dict(self._latest_calibration_detections)
 
-        if detection_due:
-            detections = {}
-            for source_id, preview in previews.items():
-                detection = self._calibration_manager.detect_pattern(
-                    source_id=source_id,
-                    frame_bgr=preview,
-                    pattern=self._calibration_pattern,
-                )
-                detections[source_id] = detection
-                if self._calibration_panel.overlay_enabled_for(source_id):
-                    previews[source_id] = self._draw_calibration_preview_overlay(
-                        source_id=source_id,
-                        frame_bgr=preview,
-                        detection=detection,
-                        sample_count=sample_counts.get(source_id, 0),
-                    )
-                    self._latest_calibration_overlay_frames[source_id] = previews[source_id]
-
-            self._latest_calibration_detections = detections
+        if detection_due and not self._detection_request_in_flight:
+            # Hand detection to the background worker and keep rendering with the
+            # most recent detections. The result is applied asynchronously in
+            # _on_detection_result, which also drives auto-capture. The frames
+            # snapshot lets that step pair the detected corners with the exact
+            # frames they came from.
             self._last_calibration_detection_at = now
-            if self._maybe_auto_capture_calibration(detections):
-                return
-            sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
-        elif overlay_enabled:
+            self._detection_request_in_flight = True
+            self.request_detection.emit(
+                {
+                    "frames": dict(previews),
+                    "frames_snapshot": dict(self._latest_frames),
+                    "pattern": self._calibration_pattern,
+                }
+            )
+
+        if overlay_enabled and not use_qt_overlay:
+            # Legacy cv2-baked overlay path: bake using the latest known
+            # detections (the Qt overlay path renders the overlay separately).
             for source_id, preview in list(previews.items()):
                 detection = detections.get(source_id)
                 if detection is not None and self._calibration_panel.overlay_enabled_for(source_id):
@@ -646,29 +705,106 @@ class MainWindow(QMainWindow):
                         detection=detection,
                         sample_count=sample_counts.get(source_id, 0),
                     )
-                    self._latest_calibration_overlay_frames[source_id] = previews[source_id]
-                elif self._calibration_panel.overlay_enabled_for(source_id):
-                    previous_overlay = self._latest_calibration_overlay_frames.get(source_id)
-                    if previous_overlay is not None:
-                        previews[source_id] = previous_overlay
         elif not detection_needed and self._latest_calibration_detections:
             self._latest_calibration_detections.clear()
-            self._latest_calibration_overlay_frames.clear()
             detections = {}
             self._refresh_calibration_panel(force=True)
 
-        display_previews = self._finalize_calibration_preview_frames(previews, detections, overlay_enabled)
-        if hasattr(self._calibration_panel, "set_sync_progress_count"):
-            self._calibration_panel.set_sync_progress_count(self._calibration_manager.synchronized_capture_count())
-        self._calibration_panel.update_previews(display_previews, detections, sample_counts)
+        overlay_baked = overlay_enabled and not use_qt_overlay
+        display_previews = self._finalize_calibration_preview_frames(
+            previews,
+            detections,
+            overlay_baked=overlay_baked,
+        )
+        overlay_states = (
+            self._build_preview_overlay_states(detections, sample_counts)
+            if use_qt_overlay
+            else None
+        )
+        self._update_preview_panel(display_previews, detections, sample_counts, overlay_states)
         self._last_rendered_frame_indices = frame_indices
         if detection_due or force:
             self._refresh_calibration_panel()
 
+    def _on_detection_result(self, payload: object) -> None:
+        """Apply detection results produced by the background worker.
+
+        Runs on the UI thread, so all sample capture and manager mutation stay
+        single-threaded. Auto-capture uses the frames the detection was computed
+        on (``frames_snapshot``) so the stored corners and the capture frames
+        always belong to the same instant. The overlay/preview picks up the new
+        detections on the next display tick.
+        """
+        self._detection_request_in_flight = False
+        # A result can land just after live capture stopped; _latest_frames is
+        # only empty when not live, so drop the stale detection in that case.
+        if not self._latest_frames:
+            return
+        try:
+            data = dict(payload)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        detections = data.get("detections") or {}
+        self._latest_calibration_detections = detections
+        frames_snapshot = data.get("frames_snapshot") or {}
+        if self._maybe_auto_capture_calibration(detections, frames=frames_snapshot):
+            return
+        self._refresh_calibration_panel()
+
+    def _uses_qt_preview_overlay(self) -> bool:
+        flag = getattr(self._calibration_panel, "uses_qt_preview_overlay", None)
+        return bool(flag()) if callable(flag) else False
+
+    def _update_preview_panel(
+        self,
+        preview_frames: dict[str, Any],
+        detections: dict[str, ChessboardDetectionResult],
+        sample_counts: dict[str, int],
+        overlay_states: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        if overlay_states is not None and self._uses_qt_preview_overlay():
+            self._calibration_panel.update_previews(preview_frames, detections, sample_counts, overlay_states)
+            return
+        self._calibration_panel.update_previews(preview_frames, detections, sample_counts)
+
+    def _build_preview_overlay_states(
+        self,
+        detections: dict[str, ChessboardDetectionResult],
+        sample_counts: dict[str, int],
+        accepted_by_source: dict[str, bool | None] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        accepted_by_source = accepted_by_source or {}
+        target = self._spatial_target_samples_per_cell()
+        states: dict[str, dict[str, Any]] = {}
+        for source_id, detection in detections.items():
+            try:
+                summary = self._calibration_manager.spatial_coverage_summary(
+                    source_id,
+                    include_sync_only=False,
+                    include_sample_summaries=False,
+                    target_samples_per_cell=target,
+                )
+            except Exception:  # noqa: BLE001 - preview metadata must never stop video
+                summary = {}
+            states[source_id] = {
+                "overlay_enabled": self._calibration_panel.overlay_enabled_for(source_id),
+                "overlay_scale": self._overlay_scale(),
+                "mirror": self._calibration_panel.mirror_preview_enabled_for(source_id),
+                "sample_count": int(sample_counts.get(source_id, 0)),
+                "accepted": accepted_by_source.get(source_id),
+                "target_samples_per_cell": target,
+                "grid_shape": tuple(self._calibration_manager.spatial_grid_shape),
+                "hit_counts": summary.get("credited_cell_hit_counts", []),
+                "visited_cells": int(summary.get("credited_visited_cells", 0) or 0),
+                "total_cells": int(summary.get("total_cells", 0) or 0),
+                "coverage_ratio": float(summary.get("credited_grid_coverage_ratio", 0.0) or 0.0),
+                "detection_found": bool(detection.found),
+            }
+        return states
+
     def _prepare_calibration_preview_frame(self, source_id: str, frame_bgr: Any) -> Any:
         if not self._calibration_panel.undistort_enabled_for(source_id):
             return frame_bgr
-        self._latest_calibration_overlay_frames.pop(source_id, None)
         return self._calibration_manager.undistort_frame(
             source_id=source_id,
             frame_bgr=frame_bgr,
@@ -680,20 +816,51 @@ class MainWindow(QMainWindow):
             return frame_bgr
         return cv2.flip(frame_bgr, 1)
 
+    def _overlay_scale(self) -> float:
+        try:
+            return max(0.1, float(getattr(self._config, "overlay_scale", 1.0)))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _downscale_for_display(self, frame_bgr: Any) -> Any:
+        """Shrink a frame to the preview resolution for display only.
+
+        Detection, calibration and recording use the full capture-resolution
+        frame; this only reduces the cost of rendering the on-screen preview.
+        """
+        max_width = int(getattr(self._runtime_tuning, "preview_max_width", 0) or 0)
+        max_height = int(getattr(self._runtime_tuning, "preview_max_height", 0) or 0)
+        if max_width <= 0 and max_height <= 0:
+            return frame_bgr
+        height, width = frame_bgr.shape[:2]
+        if width <= 0 or height <= 0:
+            return frame_bgr
+        scale_candidates: list[float] = []
+        if max_width > 0:
+            scale_candidates.append(max_width / float(width))
+        if max_height > 0:
+            scale_candidates.append(max_height / float(height))
+        scale = min(scale_candidates) if scale_candidates else 1.0
+        if scale >= 1.0:
+            return frame_bgr
+        target_width = max(1, int(round(width * scale)))
+        target_height = max(1, int(round(height * scale)))
+        return cv2.resize(frame_bgr, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
     def _finalize_calibration_preview_frames(
         self,
         frames_by_source: dict[str, Any],
         detections: dict[str, ChessboardDetectionResult],
-        overlay_enabled: bool,
+        overlay_baked: bool,
     ) -> dict[str, Any]:
-        return {
-            source_id: (
-                frame_bgr
-                if overlay_enabled and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections
-                else self._display_calibration_preview_frame(source_id, frame_bgr)
-            )
-            for source_id, frame_bgr in frames_by_source.items()
-        }
+        finalized: dict[str, Any] = {}
+        for source_id, frame_bgr in frames_by_source.items():
+            if overlay_baked and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections:
+                finalized[source_id] = frame_bgr
+            else:
+                display = self._display_calibration_preview_frame(source_id, frame_bgr)
+                finalized[source_id] = self._downscale_for_display(display)
+        return finalized
 
     def _draw_calibration_preview_overlay(
         self,
@@ -704,20 +871,209 @@ class MainWindow(QMainWindow):
         accepted: bool | None = None,
     ) -> Any:
         mirror_preview = self._calibration_panel.mirror_preview_enabled_for(source_id)
-        display_frame = self._display_calibration_preview_frame(source_id, frame_bgr)
-        display_detection = self._mirror_detection_for_preview(detection, frame_bgr) if mirror_preview else detection
-        return self._calibration_manager.draw_detection_overlay(
-            display_frame,
+        display_frame = self._downscale_for_display(
+            self._display_calibration_preview_frame(source_id, frame_bgr)
+        )
+        display_detection = self._display_detection_for_preview(
+            detection=detection,
+            source_frame_bgr=frame_bgr,
+            display_frame_bgr=display_frame,
+            mirror_preview=mirror_preview,
+        )
+        return self._compose_cached_calibration_overlay(
+            source_id=source_id,
+            display_frame_bgr=display_frame,
             detection=display_detection,
+            sample_count=sample_count,
+            accepted=accepted,
+            mirror_preview=mirror_preview,
+        )
+
+    def _compose_cached_calibration_overlay(
+        self,
+        source_id: str,
+        display_frame_bgr: Any,
+        detection: ChessboardDetectionResult,
+        sample_count: int | None = None,
+        accepted: bool | None = None,
+        mirror_preview: bool = False,
+    ) -> Any:
+        key = self._calibration_overlay_cache_key(
+            display_frame_bgr=display_frame_bgr,
+            detection=detection,
+            sample_count=sample_count,
+            accepted=accepted,
+            mirror_preview=mirror_preview,
+        )
+        cached = self._calibration_overlay_cache.get(source_id)
+        if cached is None or cached[0] != key:
+            overlay_bgr, alpha = self._build_calibration_overlay_layer(
+                display_frame_bgr=display_frame_bgr,
+                detection=detection,
+                sample_count=sample_count,
+                accepted=accepted,
+                mirror_preview=mirror_preview,
+            )
+            cached = (key, overlay_bgr, alpha)
+            self._calibration_overlay_cache[source_id] = cached
+
+        _key, overlay_bgr, alpha = cached
+        return self._blend_calibration_overlay(display_frame_bgr, overlay_bgr, alpha)
+
+    def _calibration_overlay_cache_key(
+        self,
+        display_frame_bgr: Any,
+        detection: ChessboardDetectionResult,
+        sample_count: int | None,
+        accepted: bool | None,
+        mirror_preview: bool,
+    ) -> tuple[Any, ...]:
+        height, width = display_frame_bgr.shape[:2]
+        corners_sig: tuple[float, ...] = ()
+        if detection.corners is not None:
+            corners_sig = tuple(float(value) for value in np.round(detection.corners.reshape(-1), 1))
+        bbox_sig = tuple(round(float(value), 1) for value in detection.board_bbox_px or ())
+        center_sig = tuple(round(float(value), 1) for value in detection.board_center_px or ())
+        diagnostics_sig = tuple(detection.diagnostics[:3])
+        return (
+            int(width),
+            int(height),
+            detection.source_id,
+            detection.pattern_type,
+            bool(detection.found),
+            int(detection.detected_corners),
+            round(float(detection.quality_score), 3),
+            round(float(detection.coverage_ratio), 4),
+            round(float(detection.sharpness_score), 3),
+            int(sample_count if sample_count is not None else -1),
+            accepted,
+            bool(mirror_preview),
+            self._spatial_target_samples_per_cell(),
+            tuple(self._calibration_manager.spatial_grid_shape),
+            round(self._overlay_scale(), 3),
+            bbox_sig,
+            center_sig,
+            diagnostics_sig,
+            corners_sig,
+        )
+
+    def _build_calibration_overlay_layer(
+        self,
+        display_frame_bgr: Any,
+        detection: ChessboardDetectionResult,
+        sample_count: int | None,
+        accepted: bool | None,
+        mirror_preview: bool,
+    ) -> tuple[Any, Any]:
+        blank = np.zeros_like(display_frame_bgr)
+        overlay_bgr = self._calibration_manager.draw_detection_overlay(
+            blank,
+            detection=detection,
             accepted=accepted,
             sample_count=sample_count,
             mirror_x=mirror_preview,
             spatial_target_samples_per_cell=self._spatial_target_samples_per_cell(),
-            show_spatial_grid=self._calibration_workflow_mode() == "intrinsics",
+            overlay_scale=self._overlay_scale(),
+        )
+        alpha = np.max(overlay_bgr, axis=2).astype(np.float32) / 255.0
+        band_height = max(0, int(overlay_bgr.shape[0] - display_frame_bgr.shape[0]))
+        if band_height > 0:
+            alpha[:band_height, :] = 1.0
+        if band_height < alpha.shape[0]:
+            frame_overlay = overlay_bgr[band_height:, :, :]
+            frame_alpha = alpha[band_height:, :]
+            nonzero = np.any(frame_overlay > 0, axis=2)
+            frame_alpha[nonzero] = np.maximum(frame_alpha[nonzero], 0.18)
+        return overlay_bgr, np.clip(alpha, 0.0, 1.0)
+
+    def _blend_calibration_overlay(self, display_frame_bgr: Any, overlay_bgr: Any, alpha: Any) -> Any:
+        height, width = display_frame_bgr.shape[:2]
+        band_height = max(0, int(overlay_bgr.shape[0] - height))
+        if overlay_bgr.shape[1] != width or overlay_bgr.shape[0] < height:
+            return display_frame_bgr
+
+        canvas = np.zeros_like(overlay_bgr)
+        canvas[band_height:band_height + height, :width] = display_frame_bgr
+        alpha_3 = alpha[:, :, None].astype(np.float32)
+        blended = overlay_bgr.astype(np.float32) * alpha_3 + canvas.astype(np.float32) * (1.0 - alpha_3)
+        return np.clip(blended, 0, 255).astype(np.uint8)
+
+    def _display_detection_for_preview(
+        self,
+        detection: ChessboardDetectionResult,
+        source_frame_bgr: Any,
+        display_frame_bgr: Any,
+        mirror_preview: bool,
+    ) -> ChessboardDetectionResult:
+        transformed = (
+            self._mirror_detection_for_preview(detection, source_frame_bgr)
+            if mirror_preview
+            else detection
+        )
+        try:
+            target_height, target_width = display_frame_bgr.shape[:2]
+        except (AttributeError, IndexError, TypeError):
+            return transformed
+        return self._scale_detection_for_display(
+            detection=transformed,
+            target_size=(int(target_width), int(target_height)),
+        )
+
+    def _scale_detection_for_display(
+        self,
+        detection: ChessboardDetectionResult,
+        target_size: tuple[int, int],
+    ) -> ChessboardDetectionResult:
+        source_width, source_height = detection.image_size
+        target_width, target_height = target_size
+        if source_width <= 0 or source_height <= 0 or target_width <= 0 or target_height <= 0:
+            return detection
+
+        scale_x = float(target_width) / float(source_width)
+        scale_y = float(target_height) / float(source_height)
+        if scale_x == 1.0 and scale_y == 1.0:
+            return detection
+
+        corners = None
+        if detection.corners is not None:
+            corners = detection.corners.copy()
+            corners[..., 0] *= scale_x
+            corners[..., 1] *= scale_y
+
+        bbox = detection.board_bbox_px
+        scaled_bbox = None
+        if bbox is not None:
+            x_px, y_px, box_width, box_height = bbox
+            scaled_bbox = (
+                float(x_px) * scale_x,
+                float(y_px) * scale_y,
+                float(box_width) * scale_x,
+                float(box_height) * scale_y,
+            )
+
+        center = detection.board_center_px
+        scaled_center = None
+        if center is not None:
+            scaled_center = (float(center[0]) * scale_x, float(center[1]) * scale_y)
+
+        return ChessboardDetectionResult(
+            source_id=detection.source_id,
+            found=detection.found,
+            image_size=(int(target_width), int(target_height)),
+            pattern_type=detection.pattern_type,
+            corners=corners,
+            charuco_ids=detection.charuco_ids.copy() if detection.charuco_ids is not None else None,
+            detected_corners=detection.detected_corners,
+            quality_score=detection.quality_score,
+            coverage_ratio=detection.coverage_ratio,
+            sharpness_score=detection.sharpness_score,
+            board_bbox_px=scaled_bbox,
+            board_center_px=scaled_center,
+            diagnostics=list(detection.diagnostics),
         )
 
     def _spatial_target_samples_per_cell(self) -> int:
-        max_samples = self._intrinsics_max_samples()
+        max_samples = self._calibration_panel.auto_capture_max_samples()
         cols, rows = self._calibration_manager.spatial_grid_shape
         total_cells = max(1, int(cols) * int(rows))
         if max_samples <= 0:
@@ -729,7 +1085,7 @@ class MainWindow(QMainWindow):
         source_id: str,
         detection: ChessboardDetectionResult,
     ) -> bool:
-        if self._intrinsics_max_samples() <= 0:
+        if self._calibration_panel.auto_capture_max_samples() <= 0:
             return True
         if not detection.found or detection.corners is None:
             return True
@@ -889,9 +1245,7 @@ class MainWindow(QMainWindow):
 
         self._active_sources = sources
         self._latest_frames.clear()
-        self._measured_fps_by_source.clear()
         self._latest_calibration_detections.clear()
-        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._last_calibration_detection_at = 0.0
         source_ids = [source.source_id for source in sources]
@@ -901,13 +1255,8 @@ class MainWindow(QMainWindow):
         worker = LiveCaptureWorker(
             sources=sources,
             target_fps=self._runtime_tuning.capture_fps if self._runtime_tuning.capture_fps > 0 else target_fps,
-            max_frame_width=self._runtime_tuning.preview_max_width,
-            max_frame_height=self._runtime_tuning.preview_max_height,
             requested_width=self._runtime_tuning.capture_width,
             requested_height=self._runtime_tuning.capture_height,
-            exposure=self._runtime_tuning.camera_exposure,
-            fourcc=self._runtime_tuning.camera_fourcc,
-            camera_controls=self._runtime_tuning.camera_controls,
         )
         worker.batch_ready.connect(self._on_frame_batch)
         worker.state_changed.connect(self._on_live_state_changed)
@@ -945,6 +1294,7 @@ class MainWindow(QMainWindow):
             self._set_status(state)
 
     def _on_live_finished(self) -> None:
+        self._finalize_recording()
         if self._live_worker is not None and not self._live_worker.isRunning():
             self._live_worker = None
         self._active_sources = []
@@ -952,6 +1302,7 @@ class MainWindow(QMainWindow):
         self._refresh_live_status(force=True)
 
     def _on_stop_live(self) -> None:
+        self._finalize_recording()
         if self._live_worker is None:
             self._refresh_live_status(force=True)
             return
@@ -963,49 +1314,178 @@ class MainWindow(QMainWindow):
         self._live_worker = None
         self._active_sources = []
         self._latest_frames.clear()
-        self._measured_fps_by_source.clear()
         self._latest_calibration_detections.clear()
-        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
+        # Drop any in-flight detection gate so the next live session can submit
+        # immediately even if a result is still pending for the old frames.
+        self._detection_request_in_flight = False
         self._active_camera_count = 0
         self._refresh_live_status(force=True)
         self._refresh_calibration_panel(force=True)
         self._set_status("Live capture stopped")
 
+    def _default_recordings_base_dir(self) -> Path:
+        # config paths are normalized to the project root, so this stays inside
+        # the project regardless of any absolute paths in app_settings.json.
+        return self._config.app_root / "recordings"
+
+    def _choose_recording_base_dir(self) -> Path | None:
+        default = self._last_recording_dir or self._default_recordings_base_dir()
+        try:
+            default.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            default = self._default_recordings_base_dir()
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Kies een map om de opname in op te slaan",
+            str(default),
+        )
+        if not selected:
+            return None
+        chosen = Path(selected)
+        self._last_recording_dir = chosen
+        return chosen
+
+    def _on_record_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._finalize_recording()
+            return
+        if self._video_recorder is not None:
+            return
+        if self._live_worker is None or not self._live_worker.isRunning():
+            self._calibration_panel.set_recording_active(False)
+            self._show_warning("Start eerst de live weergave voordat je een opname maakt.")
+            return
+
+        base_dir = self._choose_recording_base_dir()
+        if base_dir is None:
+            self._calibration_panel.set_recording_active(False)
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = base_dir / f"rec_{timestamp}"
+        labels = {source.source_id: (source.label or source.source_id) for source in self._active_sources}
+        fps = self._runtime_tuning.capture_fps if self._runtime_tuning.capture_fps > 0 else self._calibration_panel.target_fps()
+        try:
+            self._video_recorder = VideoRecorder(output_dir=output_dir, fps=fps, labels=labels)
+        except OSError as exc:
+            LOGGER.error("Could not start recording: %s", exc)
+            self._calibration_panel.set_recording_active(False)
+            self._show_error(f"Kon de opname niet starten: {exc}")
+            return
+        self._live_worker.attach_recorder(self._video_recorder)
+        self._calibration_panel.set_recording_active(True)
+        self._calibration_panel.show_feedback(
+            f"Opname gestart (volledige capture-resolutie) -> {output_dir}", success=True
+        )
+        self._set_status(f"Opname gestart: {output_dir}")
+
+    def _finalize_recording(self) -> None:
+        recorder = self._video_recorder
+        self._video_recorder = None
+        if recorder is None:
+            return
+        # Stop the worker thread from writing before we release the writers.
+        if self._live_worker is not None and hasattr(self._live_worker, "detach_recorder"):
+            self._live_worker.detach_recorder()
+        self._calibration_panel.set_recording_active(False)
+        written = recorder.close()
+        if not written:
+            self._calibration_panel.show_feedback("Opname gestopt; geen frames opgeslagen.", success=False)
+            self._set_status("Opname gestopt (geen frames).")
+            return
+        self._handle_recording_result(recorder.output_dir, written, recorder.total_frames())
+
+    def _handle_recording_result(self, output_dir: Path, written: dict[str, Path], total_frames: int) -> None:
+        files_text = ", ".join(path.name for path in written.values())
+        box = QMessageBox(self)
+        box.setWindowTitle("Opname voltooid")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"Opname voltooid: {total_frames} frame(s) in {len(written)} bestand(en).\n"
+            f"{files_text}\n\nMap: {output_dir}\n\nWat wil je met deze opname doen?"
+        )
+        keep_button = box.addButton("Bewaren", QMessageBox.ButtonRole.AcceptRole)
+        rename_button = box.addButton("Naam aanpassen", QMessageBox.ButtonRole.ActionRole)
+        delete_button = box.addButton("Verwijderen", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(keep_button)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is delete_button:
+            self._delete_recording(output_dir)
+            return
+        if clicked is rename_button:
+            output_dir = self._rename_recording(output_dir) or output_dir
+
+        self._calibration_panel.show_feedback(f"Opname bewaard in {output_dir}", success=True)
+        self._set_status(f"Video opgeslagen in {output_dir}")
+        self._prompt_open_recording_folder(output_dir)
+
+    def _rename_recording(self, output_dir: Path) -> Path | None:
+        new_name, accepted = QInputDialog.getText(
+            self,
+            "Naam aanpassen",
+            "Nieuwe naam voor de opnamemap:",
+            text=output_dir.name,
+        )
+        if not accepted:
+            return None
+        cleaned = "".join(char for char in new_name if char not in '<>:"/\\|?*').strip()
+        if not cleaned or cleaned == output_dir.name:
+            return None
+        target = output_dir.parent / cleaned
+        if target.exists():
+            self._show_warning(f"Er bestaat al een map met de naam '{cleaned}'.")
+            return None
+        try:
+            renamed = output_dir.rename(target)
+        except OSError as exc:
+            self._show_error(f"Kon de opname niet hernoemen: {exc}")
+            return None
+        return renamed
+
+    def _delete_recording(self, output_dir: Path) -> None:
+        confirm = QMessageBox.question(
+            self,
+            "Opname verwijderen",
+            f"Weet je zeker dat je deze opname definitief wilt verwijderen?\n{output_dir}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            self._calibration_panel.show_feedback(f"Opname bewaard in {output_dir}", success=True)
+            self._set_status(f"Video opgeslagen in {output_dir}")
+            return
+        try:
+            shutil.rmtree(output_dir)
+        except OSError as exc:
+            self._show_error(f"Kon de opname niet verwijderen: {exc}")
+            return
+        self._calibration_panel.show_feedback("Opname verwijderd.", success=True)
+        self._set_status("Opname verwijderd.")
+
+    def _prompt_open_recording_folder(self, folder: Path) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Video opgeslagen",
+            f"Video('s) opgeslagen in:\n{folder}\n\nMap openen?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
     def _on_frame_batch(self, batch_obj: object) -> None:
         frames = dict(batch_obj)  # type: ignore[arg-type]
         if not frames:
             return
-        accepted = False
-        for source_id, frame in frames.items():
-            previous = self._latest_frames.get(source_id)
-            if previous is not None and frame.timestamp_sec < previous.timestamp_sec:
-                continue
-            if previous is not None and frame.timestamp_sec > previous.timestamp_sec:
-                delta_sec = frame.timestamp_sec - previous.timestamp_sec
-                if delta_sec > 0.0001:
-                    measured_fps = min(240.0, 1.0 / delta_sec)
-                    old_fps = self._measured_fps_by_source.get(source_id)
-                    self._measured_fps_by_source[source_id] = (
-                        measured_fps if old_fps is None else (old_fps * 0.8) + (measured_fps * 0.2)
-                    )
-            self._latest_frames[source_id] = frame
-            accepted = True
-        if not accepted:
-            return
-        active_source_ids = {source.source_id for source in self._active_sources}
-        if active_source_ids:
-            self._latest_frames = {
-                source_id: frame
-                for source_id, frame in self._latest_frames.items()
-                if source_id in active_source_ids
-            }
-            self._measured_fps_by_source = {
-                source_id: fps
-                for source_id, fps in self._measured_fps_by_source.items()
-                if source_id in active_source_ids
-            }
-        self._active_camera_count = len(self._latest_frames)
+        incoming_ts = max(frame.timestamp_sec for frame in frames.values())
+        if self._latest_frames:
+            latest_ts = max(frame.timestamp_sec for frame in self._latest_frames.values())
+            if incoming_ts < latest_ts:
+                return
+        self._latest_frames = frames
+        self._active_camera_count = len(frames)
         self._refresh_live_status()
 
     def _build_calibration_preview_frame(
@@ -1016,15 +1496,103 @@ class MainWindow(QMainWindow):
         accepted: bool | None = None,
     ) -> Any:
         preview = self._prepare_calibration_preview_frame(source_id, frame_bgr)
-        if not self._calibration_panel.overlay_enabled_for(source_id):
-            return self._display_calibration_preview_frame(source_id, preview)
-        return self._draw_calibration_preview_overlay(
+        if not self._calibration_panel.overlay_enabled_for(source_id) or self._uses_qt_preview_overlay():
+            return self._downscale_for_display(self._display_calibration_preview_frame(source_id, preview))
+        rendered = self._draw_calibration_preview_overlay(
             source_id=source_id,
             frame_bgr=preview,
             detection=detection,
             accepted=accepted,
             sample_count=self._calibration_manager.observation_count(source_id, include_sync_only=False),
         )
+        return self._downscale_for_display(rendered)
+
+    def _sync_capture_timing_metadata(
+        self,
+        frames: dict[str, FramePacket],
+    ) -> dict[str, Any]:
+        source_timestamps: dict[str, float] = {}
+        capture_started: dict[str, float] = {}
+        capture_completed: dict[str, float] = {}
+        batch_ids: set[str] = set()
+
+        for source_id, frame in frames.items():
+            timestamp = getattr(frame, "capture_started_sec", None)
+            if timestamp is None:
+                timestamp = frame.timestamp_sec
+            source_timestamps[source_id] = round(float(timestamp), 6)
+
+            started = getattr(frame, "capture_started_sec", None)
+            if started is not None:
+                capture_started[source_id] = round(float(started), 6)
+            completed = getattr(frame, "capture_completed_sec", None)
+            if completed is not None:
+                capture_completed[source_id] = round(float(completed), 6)
+            batch_id = getattr(frame, "batch_id", None)
+            if batch_id:
+                batch_ids.add(str(batch_id))
+
+        timestamps = list(source_timestamps.values())
+        skew_sec = max(timestamps) - min(timestamps) if len(timestamps) >= 2 else 0.0
+        return {
+            "software_sync": True,
+            "timestamp_source": "capture_started_sec",
+            "timestamp_skew_ms": round(skew_sec * 1000.0, 3),
+            "warning_timestamp_skew_ms": round(SYNC_SKEW_WARNING_SEC * 1000.0, 3),
+            "max_allowed_timestamp_skew_ms": round(SYNC_SKEW_REJECT_SEC * 1000.0, 3),
+            "batch_ids": sorted(batch_ids),
+            "source_timestamps_sec": source_timestamps,
+            "capture_started_sec": capture_started,
+            "capture_completed_sec": capture_completed,
+        }
+
+    def _validate_sync_capture_timing(
+        self,
+        frames: dict[str, FramePacket],
+        auto_trigger: bool,
+    ) -> tuple[bool, dict[str, Any]]:
+        metadata = self._sync_capture_timing_metadata(frames)
+        skew_ms = float(metadata.get("timestamp_skew_ms") or 0.0)
+        batch_ids = metadata.get("batch_ids", [])
+
+        if isinstance(batch_ids, list) and len(batch_ids) > 1:
+            message = "Sync capture rejected: frames came from different software batches."
+            if auto_trigger:
+                self._calibration_panel.set_auto_capture_status(message)
+            else:
+                self._calibration_panel.show_feedback(message, success=False)
+                self._set_status(message)
+            LOGGER.warning("%s batch_ids=%s", message, batch_ids)
+            return False, metadata
+
+        if skew_ms > SYNC_SKEW_REJECT_SEC * 1000.0:
+            message = (
+                "Sync capture rejected: camera timestamp skew "
+                f"{skew_ms:.1f} ms exceeds {SYNC_SKEW_REJECT_SEC * 1000.0:.0f} ms."
+            )
+            if auto_trigger:
+                self._calibration_panel.set_auto_capture_status(message)
+            else:
+                self._calibration_panel.show_feedback(message, success=False)
+                self._set_status(message)
+            LOGGER.warning("%s metadata=%s", message, metadata)
+            return False, metadata
+
+        if skew_ms > SYNC_SKEW_WARNING_SEC * 1000.0:
+            now = time.perf_counter()
+            if not auto_trigger or now - self._last_sync_timing_warning_at >= SYNC_WARNING_THROTTLE_SEC:
+                message = (
+                    "Sync capture warning: camera timestamp skew "
+                    f"{skew_ms:.1f} ms. Hold the calibration board still."
+                )
+                if auto_trigger:
+                    self._calibration_panel.set_auto_capture_status(message)
+                else:
+                    self._set_status(message)
+                LOGGER.warning("%s metadata=%s", message, metadata)
+                self._last_sync_timing_warning_at = now
+
+        return True, metadata
 
     def _apply_calibration_capture_feedback(
         self,
@@ -1032,20 +1600,25 @@ class MainWindow(QMainWindow):
         before_sync_sets: int,
         after_sync_sets: int,
         auto_trigger: bool,
+        sync_metadata: dict[str, Any] | None = None,
+        frames: dict[str, FramePacket] | None = None,
     ) -> bool:
+        active_frames = frames if frames is not None else self._latest_frames
         feedback_messages: list[str] = []
         accepted_total = 0
         preview_frames: dict[str, Any] = {}
         detections: dict[str, ChessboardDetectionResult] = {}
+        accepted_by_source: dict[str, bool | None] = {}
         sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
 
-        for source_id, frame in self._latest_frames.items():
+        for source_id, frame in active_frames.items():
             feedback = feedback_by_source.get(source_id)
             if feedback is not None:
                 feedback_messages.append(feedback.message)
                 if feedback.accepted:
                     accepted_total += 1
                 detections[source_id] = feedback.detection
+                accepted_by_source[source_id] = bool(feedback.accepted)
                 preview_frames[source_id] = self._build_calibration_preview_frame(
                     source_id=source_id,
                     frame_bgr=frame.frame_bgr,
@@ -1068,27 +1641,23 @@ class MainWindow(QMainWindow):
         if detections:
             self._latest_calibration_detections = detections
         if preview_frames:
-            if hasattr(self._calibration_panel, "set_sync_progress_count"):
-                self._calibration_panel.set_sync_progress_count(self._calibration_manager.synchronized_capture_count())
-            self._calibration_panel.update_previews(preview_frames, detections, sample_counts)
+            overlay_states = (
+                self._build_preview_overlay_states(detections, sample_counts, accepted_by_source)
+                if self._uses_qt_preview_overlay()
+                else None
+            )
+            self._update_preview_panel(preview_frames, detections, sample_counts, overlay_states)
         self._refresh_calibration_panel(force=True)
 
         if accepted_total > 0:
-            if self._calibration_workflow_mode() == "sync_extrinsics" and after_sync_sets > before_sync_sets:
-                limit = self._extrinsics_max_sync_sets()
-                limit_text = f"/{limit}" if limit > 0 else " / No limit"
-                cameras = " ".join(sorted(feedback_by_source.keys()))
-                message = f"Stored sync set {after_sync_sets}{limit_text}, cameras: {cameras}."
-            else:
-                limit = self._intrinsics_max_samples()
-                accepted_parts = []
-                for source_id, feedback in sorted(feedback_by_source.items()):
-                    if feedback.accepted:
-                        limit_text = f"/{limit}" if limit > 0 else " / No limit"
-                        accepted_parts.append(f"accepted {source_id} sample {feedback.sample_count}{limit_text}")
-                message = "; ".join(accepted_parts) if accepted_parts else f"Accepted {accepted_total} sample(s)."
-                if feedback_messages:
-                    message += " | " + " | ".join(feedback_messages)
+            sync_suffix = ""
+            if after_sync_sets > before_sync_sets:
+                sync_suffix = f" Created synchronized set #{after_sync_sets}."
+                if sync_metadata:
+                    skew_ms = float(sync_metadata.get("timestamp_skew_ms") or 0.0)
+                    if skew_ms > SYNC_SKEW_WARNING_SEC * 1000.0:
+                        sync_suffix += f" Software sync skew {skew_ms:.1f} ms."
+            message = f"Accepted {accepted_total} sample(s). " + " | ".join(feedback_messages) + sync_suffix
             self._set_status(message)
             self._calibration_panel.show_feedback(message, success=True)
             if auto_trigger:
@@ -1111,8 +1680,14 @@ class MainWindow(QMainWindow):
         self,
         auto_trigger: bool,
         detections: dict[str, ChessboardDetectionResult] | None = None,
+        frames: dict[str, FramePacket] | None = None,
     ) -> bool:
-        if not self._latest_frames:
+        # When detection runs on the background worker, ``frames`` is the exact
+        # snapshot the detection was computed on so the stored corners and the
+        # capture frames belong to the same instant. Manual capture falls back
+        # to the latest live frames.
+        active_frames = frames if frames is not None else self._latest_frames
+        if not active_frames:
             if not auto_trigger:
                 self._show_warning("No frames available. Start live capture first.")
             return False
@@ -1122,21 +1697,29 @@ class MainWindow(QMainWindow):
         allow_relaxed_sync = (
             self._calibration_panel.relaxed_sync_enabled() if workflow_mode == "sync_extrinsics" else False
         )
-        if workflow_mode == "sync_extrinsics" and len(self._latest_frames) < 2:
+        if workflow_mode == "sync_extrinsics" and len(active_frames) < 2:
             if not auto_trigger:
                 self._show_warning("Sync / Extrinsics mode requires at least 2 active camera feeds.")
             return False
+        sync_metadata: dict[str, Any] | None = None
+        if workflow_mode == "sync_extrinsics":
+            timing_ok, sync_metadata = self._validate_sync_capture_timing(
+                frames=active_frames,
+                auto_trigger=auto_trigger,
+            )
+            if not timing_ok:
+                return False
         active_detections = (
             {
                 source_id: detections[source_id]
-                for source_id in self._latest_frames
+                for source_id in active_frames
                 if detections is not None and source_id in detections
             }
             if detections
             else {}
         )
         if auto_trigger and workflow_mode == "intrinsics":
-            allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(self._latest_frames.keys())))
+            allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(active_frames.keys())))
             if not allowed_source_ids:
                 self._stop_auto_capture_if_limit_reached()
                 return False
@@ -1158,11 +1741,12 @@ class MainWindow(QMainWindow):
                 pattern=self._calibration_pattern,
                 allow_relaxed_sync=allow_relaxed_sync,
                 workflow_mode=workflow_mode,
+                sync_metadata=sync_metadata,
             )
         else:
             frames_by_source = {
                 source_id: frame.frame_bgr
-                for source_id, frame in self._latest_frames.items()
+                for source_id, frame in active_frames.items()
             }
             if auto_trigger and workflow_mode == "intrinsics":
                 allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(frames_by_source.keys())))
@@ -1179,6 +1763,7 @@ class MainWindow(QMainWindow):
                 pattern=self._calibration_pattern,
                 allow_relaxed_sync=allow_relaxed_sync,
                 workflow_mode=workflow_mode,
+                sync_metadata=sync_metadata,
             )
         after_sync_sets = self._calibration_manager.synchronized_capture_count()
         return self._apply_calibration_capture_feedback(
@@ -1186,11 +1771,14 @@ class MainWindow(QMainWindow):
             before_sync_sets=before_sync_sets,
             after_sync_sets=after_sync_sets,
             auto_trigger=auto_trigger,
+            sync_metadata=sync_metadata,
+            frames=active_frames,
         )
 
     def _maybe_auto_capture_calibration(
         self,
         detections: dict[str, ChessboardDetectionResult],
+        frames: dict[str, FramePacket] | None = None,
     ) -> bool:
         if self._intrinsics_solve_worker is not None:
             return False
@@ -1201,7 +1789,9 @@ class MainWindow(QMainWindow):
         now = time.perf_counter()
         if now - self._last_calibration_auto_capture_at < self._calibration_panel.auto_capture_cooldown_sec():
             return False
-        captured = self._capture_calibration_samples(auto_trigger=True, detections=detections)
+        captured = self._capture_calibration_samples(
+            auto_trigger=True, detections=detections, frames=frames
+        )
         if captured:
             self._stop_auto_capture_if_limit_reached()
         return captured
@@ -1312,7 +1902,27 @@ class MainWindow(QMainWindow):
                 return
             base_bundle = self._calibration_manager.solve_intrinsics()
 
-        reference_source_id = self._active_source_ids()[0] if self._active_source_ids() else None
+        active_ids = self._active_source_ids()
+        if len(active_ids) >= 2:
+            counts = self._synchronized_counts_by_source()
+            weak = sorted(sid for sid in active_ids if counts.get(sid, 0) < 3)
+            if weak:
+                reply = QMessageBox.question(
+                    self,
+                    "Extrinsics incomplete",
+                    "These camera(s) have too few synchronized sets with the others: "
+                    f"{', '.join(weak)}.\n\n"
+                    "For a reliable extrinsic calibration every camera must have seen the "
+                    "board together with the others. Solve anyway? These camera(s) may stay "
+                    "unsolved.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    self._set_status("Extrinsics solve cancelled: not all cameras share views yet.")
+                    return
+
+        reference_source_id = active_ids[0] if active_ids else None
         bundle = self._calibration_manager.solve_extrinsics(
             base_bundle=base_bundle,
             reference_source_id=reference_source_id,
@@ -1340,10 +1950,79 @@ class MainWindow(QMainWindow):
     def _on_reset_calibration_samples(self) -> None:
         self._calibration_manager.reset()
         self._latest_calibration_detections.clear()
-        self._latest_calibration_overlay_frames.clear()
         self._refresh_calibration_panel(force=True)
         self._calibration_panel.show_feedback("Calibration samples reset.", success=True)
         self._set_status("Calibration samples reset")
+
+    def _build_export_text(self, fmt: str) -> tuple[str | None, str | None, bool]:
+        """Return (text, info_message, usable). text is None when no calibration exists.
+
+        JSON is the full internal profile (re-loadable here); TOML is an
+        aniposelib/Anipose-compatible calibration usable to import into another
+        motion-analysis program.
+        """
+        bundle = self._current_calibration_bundle or self._calibration_manager.last_solution()
+        if bundle is None:
+            return None, None, False
+        payload = self._calibration_repo.to_payload(bundle)
+        if fmt == "json":
+            return calibration_export.to_json(payload), None, True
+        text, skipped, included = calibration_export.to_motion_capture_toml(payload)
+        if included == 0:
+            return (
+                text,
+                "Geen enkele camera heeft opgeloste extrinsics; los extrinsics op voordat je "
+                "naar TOML exporteert voor bewegingsanalyse.",
+                False,
+            )
+        if skipped:
+            return text, "TOML laat camera's zonder extrinsics weg: " + ", ".join(skipped) + ".", True
+        return text, None, True
+
+    def _on_export_preview(self, fmt: str) -> None:
+        fmt = (fmt or "toml").lower().strip()
+        text, message, _usable = self._build_export_text(fmt)
+        if text is None:
+            self._calibration_panel.show_export_preview(
+                "No solved calibration available yet. Capture samples and calculate intrinsics/extrinsics first."
+            )
+            return
+        self._calibration_panel.show_export_preview(text)
+        if message:
+            self._calibration_panel.show_feedback(message, success=False)
+        self._set_status(f"Calibration preview ({fmt.upper()})")
+
+    def _on_export_calibration(self, fmt: str) -> None:
+        fmt = (fmt or "toml").lower().strip()
+        text, message, usable = self._build_export_text(fmt)
+        if text is None:
+            self._show_warning("No solved calibration available to export.")
+            return
+        if not usable:
+            self._show_warning(message or "Calibration is not ready for export.")
+            return
+        extension = "json" if fmt == "json" else "toml"
+        file_filter = "JSON (*.json)" if fmt == "json" else "TOML (*.toml)"
+        default_path = self._config.calibration_dir / f"calibration.{extension}"
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export calibration",
+            str(default_path),
+            file_filter,
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            self._show_error(f"Could not export calibration: {exc}")
+            return
+        success_message = f"Calibration exported to {path}"
+        if message:
+            success_message += f" ({message})"
+        self._calibration_panel.show_feedback(success_message, success=True)
+        self._set_status(f"Calibration exported: {path.name}")
 
     def _on_new_project(self) -> None:
         reply = QMessageBox.question(
@@ -1362,7 +2041,6 @@ class MainWindow(QMainWindow):
 
         self._calibration_manager.reset_all()
         self._latest_calibration_detections.clear()
-        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._current_calibration_bundle = None
         self._calibration_loaded = False
@@ -1488,7 +2166,6 @@ class MainWindow(QMainWindow):
         self._current_calibration_bundle = None
         self._calibration_loaded = False
         self._latest_calibration_detections.clear()
-        self._latest_calibration_overlay_frames.clear()
         self._last_rendered_frame_indices.clear()
         self._calibration_path = self._default_calibration_path()
         try:
@@ -1514,13 +2191,9 @@ class MainWindow(QMainWindow):
         normalized = mode.lower().strip()
         if normalized not in {"intrinsics", "sync_extrinsics"}:
             normalized = "intrinsics"
-        self._latest_calibration_overlay_frames.clear()
         if normalized == "sync_extrinsics":
-            if hasattr(self._calibration_panel, "enable_all_overlays"):
-                self._calibration_panel.enable_all_overlays()
             message = (
-                "Calibration workflow set to Sync / Extrinsics: all camera overlays are enabled and only "
-                "synchronized multi-camera sets are stored."
+                "Calibration workflow set to Sync / Extrinsics: only synchronized multi-camera sets are stored."
             )
         else:
             message = (
@@ -1532,51 +2205,31 @@ class MainWindow(QMainWindow):
         self._update_calibration_preview(force=True)
 
     def _on_acceptance_thresholds_changed(self, min_quality: float, min_coverage_ratio: float) -> None:
-        if hasattr(self._calibration_panel, "intrinsics_threshold_values") and hasattr(
-            self._calibration_panel,
-            "extrinsics_threshold_values",
-        ):
-            intr_quality, intr_coverage = self._calibration_panel.intrinsics_threshold_values()
-            ext_quality, ext_coverage = self._calibration_panel.extrinsics_threshold_values()
-            self._calibration_manager.set_intrinsics_acceptance_thresholds(
-                min_quality_score=intr_quality,
-                min_coverage_ratio=intr_coverage,
-            )
+        if self._calibration_workflow_mode() == "sync_extrinsics":
             self._calibration_manager.set_sync_acceptance_thresholds(
-                min_quality_score=ext_quality,
-                min_coverage_ratio=ext_coverage,
+                min_quality_score=min_quality,
+                min_coverage_ratio=min_coverage_ratio,
             )
             message = (
-                "Calibration thresholds updated: "
-                f"intrinsics q >= {intr_quality:.2f}, cov >= {intr_coverage * 100.0:.1f}%; "
-                f"extrinsics q >= {ext_quality:.2f}, cov >= {ext_coverage * 100.0:.1f}%."
+                "Sync thresholds updated: "
+                f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
             )
         else:
-            if self._calibration_workflow_mode() == "sync_extrinsics":
-                self._calibration_manager.set_sync_acceptance_thresholds(
-                    min_quality_score=min_quality,
-                    min_coverage_ratio=min_coverage_ratio,
-                )
-                message = (
-                    "Extrinsics thresholds updated: "
-                    f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
-                )
-            else:
-                self._calibration_manager.set_intrinsics_acceptance_thresholds(
-                    min_quality_score=min_quality,
-                    min_coverage_ratio=min_coverage_ratio,
-                )
-                message = (
-                    "Intrinsics thresholds updated: "
-                    f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
-                )
+            self._calibration_manager.set_intrinsics_acceptance_thresholds(
+                min_quality_score=min_quality,
+                min_coverage_ratio=min_coverage_ratio,
+            )
+            message = (
+                "Intrinsics thresholds updated: "
+                f"quality >= {min_quality:.2f}, coverage >= {min_coverage_ratio * 100.0:.1f}%."
+            )
         self._calibration_panel.show_feedback(message, success=True)
         self._refresh_calibration_panel(force=True)
         self._update_calibration_preview(force=True)
 
     def _on_spatial_grid_changed(self, cols: int, rows: int) -> None:
         self._calibration_manager.set_spatial_coverage_grid(cols=cols, rows=rows)
-        max_samples = self._intrinsics_max_samples()
+        max_samples = self._calibration_panel.auto_capture_max_samples()
         target = self._spatial_target_samples_per_cell()
         target_text = (
             f"{target} sample(s) per cell"
@@ -1608,4 +2261,5 @@ class MainWindow(QMainWindow):
             return
         self._on_stop_live()
         self._stop_camera_probe_worker()
+        self._shutdown_detection_worker()
         super().closeEvent(event)

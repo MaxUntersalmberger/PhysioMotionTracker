@@ -258,7 +258,7 @@ class CalibrationPanelWidget(QWidget):
         self._preview_resolution_combo.addItem("1280 px", 1280)
         self._preview_resolution_combo.addItem("960 px", 960)
         self._preview_resolution_combo.addItem("640 px", 640)
-        self._preview_resolution_combo.setCurrentIndex(2)
+        self._preview_resolution_combo.setCurrentIndex(4)
         self._capture_resolution_combo = QComboBox()
         self._capture_resolution_combo.addItem("Auto", (0, 0))
         self._capture_resolution_combo.addItem("640 x 480", (640, 480))
@@ -269,7 +269,7 @@ class CalibrationPanelWidget(QWidget):
         self._calib_detect_hz_spin = QDoubleSpinBox()
         self._calib_detect_hz_spin.setRange(0.5, 20.0)
         self._calib_detect_hz_spin.setDecimals(1)
-        self._calib_detect_hz_spin.setValue(10.0)
+        self._calib_detect_hz_spin.setValue(5.0)
         self._calib_detect_hz_spin.setSingleStep(0.5)
         self._chessboard_cols_spin = QSpinBox()
         self._chessboard_cols_spin.setRange(2, 30)
@@ -734,6 +734,9 @@ class CalibrationPanelWidget(QWidget):
         csv = ",".join(str(camera.index) for camera in found[:4])
         if csv:
             self._camera_input.setText(csv)
+
+    def probe_max_index(self) -> int:
+        return int(self._probe_max_spin.value())
 
     def set_intrinsics_solve_running(self, running: bool, message: str = "Solving intrinsics...") -> None:
         self._solve_progress.setVisible(running)

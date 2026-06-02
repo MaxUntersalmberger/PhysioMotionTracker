@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 import cv2
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -45,7 +45,6 @@ from PySide6.QtWidgets import (
 )
 
 from mocap_app.io.calibration_io import ChessboardDetectionResult
-from mocap_app.io.toml_export import calibration_bundle_to_toml
 from mocap_app.models.types import (
     CalibrationBoardSettings,
     CalibrationBundle,
@@ -57,6 +56,18 @@ from mocap_app.models.types import (
 from mocap_app.ui.main_window import MainWindow as FunctionalMainWindow
 from ui.gui import Ui_MainWindow
 from ui.guiStyle import apply_styles
+
+
+class _AggregateCheckBox(QCheckBox):
+    """Checkbox that can display a partial (mixed) state for per-camera options,
+    yet only toggles between checked and unchecked on a user click."""
+
+    def nextCheckState(self) -> None:  # type: ignore[override]
+        self.setCheckState(
+            Qt.CheckState.Unchecked
+            if self.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
 
 
 class ConsoleStream(io.StringIO):
@@ -71,6 +82,359 @@ class ConsoleStream(io.StringIO):
 
     def flush(self) -> None:
         return None
+
+
+class _PreviewCanvas(QLabel):
+    def __init__(self, message: str = "No frame", parent: QWidget | None = None) -> None:
+        super().__init__(message, parent)
+        self._frame_pixmap: QPixmap | None = None
+        self._detection: ChessboardDetectionResult | None = None
+        self._overlay_state: dict[str, Any] = {}
+        self._status = ""
+        self._sample_count = 0
+        self._overlay_cache_key: tuple[Any, ...] | None = None
+        self._overlay_cache: QPixmap | None = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(1, 1)
+        self.setStyleSheet("background-color: black; color: white;")
+
+    def set_frame_pixmap(self, pixmap: QPixmap) -> None:
+        self._frame_pixmap = pixmap
+        self.update()
+
+    def set_overlay_data(
+        self,
+        detection: ChessboardDetectionResult | None,
+        overlay_state: dict[str, Any] | None,
+        status: str = "",
+        sample_count: int = 0,
+    ) -> None:
+        self._detection = detection
+        self._overlay_state = dict(overlay_state or {})
+        self._status = status
+        self._sample_count = int(sample_count)
+        self.update()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        self._overlay_cache_key = None
+        super().resizeEvent(event)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        painter = QtGui.QPainter(self)
+        painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0))
+        if self._frame_pixmap is None or self._frame_pixmap.isNull():
+            painter.setPen(QtGui.QColor(245, 250, 255))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text() or "No frame")
+            painter.end()
+            return
+
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
+        image_rect = self._image_rect()
+        painter.drawPixmap(image_rect, self._frame_pixmap, QtCore.QRectF(self._frame_pixmap.rect()))
+        overlay = self._overlay_pixmap(image_rect)
+        if overlay is not None:
+            painter.drawPixmap(0, 0, overlay)
+        painter.end()
+
+    def _image_rect(self) -> QtCore.QRectF:
+        if self._frame_pixmap is None or self._frame_pixmap.isNull():
+            return QtCore.QRectF(self.rect())
+        pixmap_size = self._frame_pixmap.size()
+        if pixmap_size.width() <= 0 or pixmap_size.height() <= 0:
+            return QtCore.QRectF(self.rect())
+        scale = min(
+            self.width() / float(pixmap_size.width()),
+            self.height() / float(pixmap_size.height()),
+        )
+        draw_w = pixmap_size.width() * scale
+        draw_h = pixmap_size.height() * scale
+        x = (self.width() - draw_w) / 2.0
+        y = (self.height() - draw_h) / 2.0
+        return QtCore.QRectF(x, y, draw_w, draw_h)
+
+    def _overlay_pixmap(self, image_rect: QtCore.QRectF) -> QPixmap | None:
+        if self._detection is None or not self._overlay_state.get("overlay_enabled", False):
+            self._overlay_cache_key = None
+            self._overlay_cache = None
+            return None
+        key = self._overlay_key(image_rect)
+        if self._overlay_cache_key == key and self._overlay_cache is not None:
+            return self._overlay_cache
+
+        overlay = QPixmap(self.size())
+        overlay.fill(Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(overlay)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+        self._draw_overlay(painter, image_rect)
+        painter.end()
+
+        self._overlay_cache_key = key
+        self._overlay_cache = overlay
+        return overlay
+
+    def _overlay_key(self, image_rect: QtCore.QRectF) -> tuple[Any, ...]:
+        detection = self._detection
+        corners_sig: tuple[float, ...] = ()
+        if detection is not None and detection.corners is not None:
+            corners_sig = tuple(round(float(value), 1) for value in detection.corners.reshape(-1))
+        state = self._overlay_state
+        return (
+            round(image_rect.x(), 1),
+            round(image_rect.y(), 1),
+            round(image_rect.width(), 1),
+            round(image_rect.height(), 1),
+            detection.source_id if detection else "",
+            detection.pattern_type if detection else "",
+            tuple(detection.image_size) if detection else (),
+            bool(detection.found) if detection else False,
+            int(detection.detected_corners) if detection else 0,
+            round(float(detection.quality_score), 3) if detection else 0.0,
+            round(float(detection.coverage_ratio), 4) if detection else 0.0,
+            tuple(detection.diagnostics[:3]) if detection else (),
+            corners_sig,
+            tuple(tuple(row) for row in state.get("hit_counts", []) if isinstance(row, list)),
+            tuple(state.get("grid_shape", (0, 0))),
+            int(state.get("target_samples_per_cell", 0) or 0),
+            int(state.get("sample_count", self._sample_count) or 0),
+            state.get("accepted"),
+            bool(state.get("mirror", False)),
+            int(state.get("visited_cells", 0) or 0),
+            int(state.get("total_cells", 0) or 0),
+            round(float(state.get("coverage_ratio", 0.0) or 0.0), 4),
+            round(self._overlay_scale(), 3),
+        )
+
+    def _overlay_scale(self) -> float:
+        try:
+            return max(0.3, min(3.0, float(self._overlay_state.get("overlay_scale", 1.0))))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _draw_overlay(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        if self._detection is None:
+            return
+        self._draw_grid(painter, image_rect)
+        self._draw_detection_marks(painter, image_rect)
+        self._draw_header(painter, image_rect)
+        self._draw_coverage_label(painter, image_rect)
+
+    def _draw_header(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        detection = self._detection
+        if detection is None:
+            return
+        sample_count = int(self._overlay_state.get("sample_count", self._sample_count) or 0)
+        accepted = self._overlay_state.get("accepted")
+        state_text = "Detected" if detection.found else "Not detected"
+        if accepted is True:
+            state_text = "Accepted"
+        elif accepted is False:
+            state_text = "Rejected"
+        header = f"{detection.source_id} | samples:{sample_count} | {detection.pattern_type} | {state_text}"
+        metrics = (
+            f"corners:{detection.detected_corners} | "
+            f"quality:{detection.quality_score:.2f} | coverage:{detection.coverage_ratio * 100:.1f}%"
+        )
+        lines = [header, metrics]
+        if detection.diagnostics:
+            lines.append(detection.diagnostics[0])
+
+        scale = self._overlay_scale()
+        font = QtGui.QFont("Segoe UI")
+        font.setPixelSize(max(7, int(max(11, min(22, int(image_rect.height() / 34))) * scale)))
+        font.setBold(True)
+        small = QtGui.QFont("Segoe UI")
+        small.setPixelSize(max(7, int(font.pixelSize() * 0.78)))
+        margin = max(4, int(image_rect.height() * 0.016 * scale))
+        x = image_rect.left() + margin
+        y = image_rect.top() + margin
+        color = QtGui.QColor(255, 118, 76) if not detection.found else QtGui.QColor(95, 235, 140)
+        for index, text in enumerate(lines):
+            painter.setFont(font if index == 0 else small)
+            metrics_obj = QtGui.QFontMetrics(painter.font())
+            rect = QtCore.QRectF(
+                x,
+                y,
+                metrics_obj.horizontalAdvance(text) + 10,
+                metrics_obj.height() + 4,
+            )
+            painter.fillRect(rect, QtGui.QColor(0, 0, 0, 175))
+            painter.setPen(color if index == 0 else QtGui.QColor(245, 250, 255))
+            painter.drawText(rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, text)
+            y += rect.height() + 1
+
+    def _draw_grid(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        cols, rows = self._grid_shape()
+        if cols <= 0 or rows <= 0:
+            return
+        target = max(1, int(self._overlay_state.get("target_samples_per_cell", 3) or 3))
+        cell_w = image_rect.width() / cols
+        cell_h = image_rect.height() / rows
+        hit_counts = self._overlay_state.get("hit_counts", [])
+        current_cells = self._current_detection_cells(cols, rows)
+
+        for row in range(rows):
+            for col in range(cols):
+                hit_count = self._hit_count_for_cell(hit_counts, row, col, cols)
+                if hit_count > 0:
+                    painter.fillRect(
+                        QtCore.QRectF(
+                            image_rect.left() + col * cell_w,
+                            image_rect.top() + row * cell_h,
+                            cell_w,
+                            cell_h,
+                        ),
+                        self._cell_tint(hit_count, target),
+                    )
+
+        dark_pen = QtGui.QPen(QtGui.QColor(20, 24, 28, 215), 3)
+        light_pen = QtGui.QPen(QtGui.QColor(235, 245, 250, 190), 1)
+        for col in range(1, cols):
+            x = image_rect.left() + col * cell_w
+            painter.setPen(dark_pen)
+            painter.drawLine(QtCore.QPointF(x, image_rect.top()), QtCore.QPointF(x, image_rect.bottom()))
+            painter.setPen(light_pen)
+            painter.drawLine(QtCore.QPointF(x, image_rect.top()), QtCore.QPointF(x, image_rect.bottom()))
+        for row in range(1, rows):
+            y = image_rect.top() + row * cell_h
+            painter.setPen(dark_pen)
+            painter.drawLine(QtCore.QPointF(image_rect.left(), y), QtCore.QPointF(image_rect.right(), y))
+            painter.setPen(light_pen)
+            painter.drawLine(QtCore.QPointF(image_rect.left(), y), QtCore.QPointF(image_rect.right(), y))
+
+        font = QtGui.QFont("Segoe UI")
+        font.setBold(True)
+        font.setPixelSize(max(7, int(max(11, min(24, int(min(cell_w, cell_h) * 0.18))) * self._overlay_scale())))
+        painter.setFont(font)
+        metrics_obj = QtGui.QFontMetrics(font)
+        for row in range(rows):
+            for col in range(cols):
+                x0 = image_rect.left() + col * cell_w
+                y0 = image_rect.top() + row * cell_h
+                text = f"{self._hit_count_for_cell(hit_counts, row, col, cols)}/{target}"
+                text_rect = QtCore.QRectF(
+                    x0 + 4,
+                    y0 + 4,
+                    metrics_obj.horizontalAdvance(text) + 9,
+                    metrics_obj.height() + 5,
+                )
+                painter.fillRect(text_rect, QtGui.QColor(0, 0, 0, 185))
+                painter.setPen(QtGui.QColor(255, 255, 255))
+                painter.drawText(text_rect.adjusted(4, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter, text)
+                if (row, col) in current_cells:
+                    painter.setPen(QtGui.QPen(QtGui.QColor(0, 220, 255), 2))
+                    painter.drawRect(
+                        QtCore.QRectF(x0 + 1, y0 + 1, max(1.0, cell_w - 2), max(1.0, cell_h - 2))
+                    )
+
+    def _draw_detection_marks(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        detection = self._detection
+        if detection is None or not detection.found or detection.corners is None:
+            return
+        points = [self._map_point(float(point[0]), float(point[1]), image_rect) for point in detection.corners.reshape(-1, 2)]
+        if detection.pattern_type != "charuco" and len(points) > 1:
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 165, 255), 2))
+            for left, right in zip(points, points[1:]):
+                painter.drawLine(left, right)
+        painter.setBrush(QtGui.QColor(70, 220, 120))
+        painter.setPen(QtGui.QPen(QtGui.QColor(12, 24, 18), 1))
+        radius = max(1.5, min(5.0, image_rect.height() / 160.0) * self._overlay_scale())
+        for point in points:
+            painter.drawEllipse(point, radius, radius)
+
+    def _draw_coverage_label(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        visited = int(self._overlay_state.get("visited_cells", 0) or 0)
+        total = int(self._overlay_state.get("total_cells", 0) or 0)
+        ratio = float(self._overlay_state.get("coverage_ratio", 0.0) or 0.0)
+        if total <= 0:
+            cols, rows = self._grid_shape()
+            total = cols * rows
+        text = f"coverage grid {visited}/{total} ({ratio * 100.0:.0f}%)"
+        font = QtGui.QFont("Segoe UI")
+        font.setBold(True)
+        font.setPixelSize(max(7, int(max(10, min(18, int(image_rect.height() / 38))) * self._overlay_scale())))
+        painter.setFont(font)
+        metrics_obj = QtGui.QFontMetrics(font)
+        rect = QtCore.QRectF(
+            image_rect.left() + 8,
+            image_rect.bottom() - metrics_obj.height() - 10,
+            metrics_obj.horizontalAdvance(text) + 10,
+            metrics_obj.height() + 5,
+        )
+        painter.fillRect(rect, QtGui.QColor(0, 0, 0, 170))
+        painter.setPen(QtGui.QColor(245, 250, 255))
+        painter.drawText(rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, text)
+
+    def _grid_shape(self) -> tuple[int, int]:
+        value = self._overlay_state.get("grid_shape", (6, 4))
+        if isinstance(value, tuple) and len(value) == 2:
+            return max(1, int(value[0])), max(1, int(value[1]))
+        if isinstance(value, list) and len(value) == 2:
+            return max(1, int(value[0])), max(1, int(value[1]))
+        return 6, 4
+
+    def _hit_count_for_cell(self, hit_counts: Any, row: int, col: int, cols: int) -> int:
+        source_col = cols - 1 - col if self._overlay_state.get("mirror", False) else col
+        if isinstance(hit_counts, list) and row < len(hit_counts):
+            row_counts = hit_counts[row]
+            if isinstance(row_counts, list) and source_col < len(row_counts):
+                return int(row_counts[source_col])
+        return 0
+
+    def _cell_tint(self, hit_count: int, target: int) -> QtGui.QColor:
+        if hit_count >= target:
+            return QtGui.QColor(60, 185, 80, 40)
+        if hit_count >= max(1, int(target * 2 / 3)):
+            return QtGui.QColor(70, 205, 150, 38)
+        return QtGui.QColor(95, 215, 240, 36)
+
+    def _current_detection_cells(self, cols: int, rows: int) -> set[tuple[int, int]]:
+        detection = self._detection
+        if detection is None or not detection.found:
+            return set()
+        points: list[tuple[float, float]] = []
+        if detection.corners is not None:
+            points.extend((float(point[0]), float(point[1])) for point in detection.corners.reshape(-1, 2))
+        if detection.board_bbox_px is not None:
+            x_px, y_px, width, height = detection.board_bbox_px
+            points.extend(
+                [
+                    (x_px, y_px),
+                    (x_px + width, y_px),
+                    (x_px, y_px + height),
+                    (x_px + width, y_px + height),
+                ]
+            )
+        if detection.board_center_px is not None:
+            points.append(detection.board_center_px)
+        return {self._point_to_grid_cell(x, y, cols, rows) for x, y in points}
+
+    def _point_to_grid_cell(self, x_px: float, y_px: float, cols: int, rows: int) -> tuple[int, int]:
+        detection = self._detection
+        if detection is None:
+            return 0, 0
+        width, height = detection.image_size
+        safe_width = max(1.0, float(width))
+        safe_height = max(1.0, float(height))
+        if self._overlay_state.get("mirror", False):
+            x_px = safe_width - 1.0 - x_px
+        col = min(max(int(x_px * cols / safe_width), 0), cols - 1)
+        row = min(max(int(y_px * rows / safe_height), 0), rows - 1)
+        return row, col
+
+    def _map_point(self, x_px: float, y_px: float, image_rect: QtCore.QRectF) -> QtCore.QPointF:
+        detection = self._detection
+        if detection is None:
+            return QtCore.QPointF(image_rect.left(), image_rect.top())
+        width, height = detection.image_size
+        safe_width = max(1.0, float(width))
+        safe_height = max(1.0, float(height))
+        if self._overlay_state.get("mirror", False):
+            x_px = safe_width - 1.0 - x_px
+        return QtCore.QPointF(
+            image_rect.left() + (x_px / safe_width) * image_rect.width(),
+            image_rect.top() + (y_px / safe_height) * image_rect.height(),
+        )
 
 
 class DesignedPreviewPopout(QDialog):
@@ -116,11 +480,7 @@ class DesignedPreviewPopout(QDialog):
         controls.addWidget(self._undistort_button)
         controls.addWidget(self._delete_button)
 
-        self._image = QLabel("No frame")
-        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image.setMinimumSize(1, 1)
-        self._image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self._image.setStyleSheet("background-color: black; color: white;")
+        self._image = _PreviewCanvas("No frame")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -159,27 +519,17 @@ class DesignedPreviewPopout(QDialog):
         self._undistort_button.setChecked(active)
         self._undistort_button.blockSignals(False)
 
-    def set_frame(self, pixmap: QPixmap) -> None:
+    def set_frame(
+        self,
+        pixmap: QPixmap,
+        detection: ChessboardDetectionResult | None = None,
+        overlay_state: dict[str, Any] | None = None,
+        status: str = "",
+        sample_count: int = 0,
+    ) -> None:
         self._last_pixmap = pixmap
-        self._render()
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        self._render()
-        super().resizeEvent(event)
-
-    def _render(self) -> None:
-        if self._last_pixmap is None:
-            return
-        target_size = self._image.size()
-        if target_size.width() <= 0 or target_size.height() <= 0:
-            return
-        self._image.setPixmap(
-            self._last_pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        self._image.set_frame_pixmap(pixmap)
+        self._image.set_overlay_data(detection, overlay_state, status, sample_count)
 
 
 class DesignedPreviewTile(QFrame):
@@ -194,6 +544,10 @@ class DesignedPreviewTile(QFrame):
         super().__init__()
         self._source_id = source_id
         self._last_pixmap: QPixmap | None = None
+        self._last_detection: ChessboardDetectionResult | None = None
+        self._last_overlay_state: dict[str, Any] = {}
+        self._last_status = ""
+        self._last_sample_count = 0
         self._popout: DesignedPreviewPopout | None = None
 
         self._display_name = source_id
@@ -236,11 +590,8 @@ class DesignedPreviewTile(QFrame):
         controls.addWidget(self._undistort)
         controls.addWidget(self._delete_button)
 
-        self._image = QLabel("No frame")
-        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image = _PreviewCanvas("No frame")
         self._image.setMinimumSize(320, 220)
-        self._image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self._image.setStyleSheet("background-color: black; color: white;")
 
         self._status = QLabel("Waiting for live feed")
         self._status.setWordWrap(True)
@@ -332,43 +683,38 @@ class DesignedPreviewTile(QFrame):
             self._popout.set_mirror_active(active)
         self.preview_options_changed.emit()
 
-    def set_progress(self, current: int, maximum: int, label: str | None = None) -> None:
-        current = max(0, int(current))
-        maximum = max(0, int(maximum))
-        if maximum <= 0:
-            self._progress.setRange(0, 100)
-            self._progress.setValue(0)
-            self._progress.setFormat(label or f"{current} / No limit")
-            return
-        self._progress.setRange(0, 100)
-        percent = int(round(min(current, maximum) * 100.0 / maximum))
-        self._progress.setValue(max(0, min(100, percent)))
-        self._progress.setFormat(label or f"{current}/{maximum}")
-
     def set_sample_count(self, count: int) -> None:
-        self.set_progress(count, 100, f"{int(count)}/100")
+        self._progress.setValue(min(max(int(count), 0), 100))
+        self._progress.setFormat(f"{int(count)}/100")
 
     def set_frame(
         self,
         frame_bgr: Any,
         status: str,
-        progress_current: int,
-        progress_maximum: int,
-        progress_label: str | None = None,
+        sample_count: int,
+        detection: ChessboardDetectionResult | None = None,
+        overlay_state: dict[str, Any] | None = None,
     ) -> None:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         image = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
         self._last_pixmap = QPixmap.fromImage(image)
+        self._last_detection = detection
+        self._last_overlay_state = dict(overlay_state or {})
+        self._last_status = status
+        self._last_sample_count = int(sample_count)
         self._status.setText(status)
-        self.set_progress(progress_current, progress_maximum, progress_label)
-        self._render()
+        self.set_sample_count(sample_count)
+        self._image.set_frame_pixmap(self._last_pixmap)
+        self._image.set_overlay_data(detection, self._last_overlay_state, status, sample_count)
         if self._popout is not None:
-            self._popout.set_frame(self._last_pixmap)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        self._render()
-        super().resizeEvent(event)
+            self._popout.set_frame(
+                self._last_pixmap,
+                detection=self._last_detection,
+                overlay_state=self._last_overlay_state,
+                status=self._last_status,
+                sample_count=self._last_sample_count,
+            )
 
     def _toggle_popout(self, checked: bool) -> None:
         if checked:
@@ -440,7 +786,13 @@ class DesignedPreviewTile(QFrame):
             self._popout.set_mirror_active(self._mirror_button.isChecked())
             self._popout.set_undistort_active(self._undistort.isChecked())
         if self._last_pixmap is not None:
-            self._popout.set_frame(self._last_pixmap)
+            self._popout.set_frame(
+                self._last_pixmap,
+                detection=self._last_detection,
+                overlay_state=self._last_overlay_state,
+                status=self._last_status,
+                sample_count=self._last_sample_count,
+            )
         self._popout.show()
         self._popout.raise_()
         self._popout.activateWindow()
@@ -453,21 +805,6 @@ class DesignedPreviewTile(QFrame):
         self._open_button.blockSignals(True)
         self._open_button.setChecked(False)
         self._open_button.blockSignals(False)
-
-    def _render(self) -> None:
-        if self._last_pixmap is None:
-            return
-        target_size = self._image.size()
-        if target_size.width() <= 0 or target_size.height() <= 0:
-            return
-        self._image.setPixmap(
-            self._last_pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-
 
 class DesignedCalibrationPanel(QtCore.QObject):
     new_project_requested = Signal()
@@ -491,21 +828,24 @@ class DesignedCalibrationPanel(QtCore.QObject):
     spatial_grid_changed = Signal(int, int)
     sources_changed = Signal(object)
     preview_options_changed = Signal()
+    record_toggled = Signal(bool)
+    export_preview_requested = Signal(str)
+    export_requested = Signal(str)
 
     def __init__(self, window: "DesignedMainWindow", default_camera_csv: str, default_fps: float) -> None:
         super().__init__(window)
         self.window = window
         self._tiles: dict[str, DesignedPreviewTile] = {}
         self._source_order: list[str] = []
-        self._last_camera_grid_columns = 0
+        self._video_sources: list[CameraSourceConfig] = []
+        self._detected_cameras: list[CameraProbeResult] = []
+        self._camera_probe_running = False
+        self._advanced_scroll: QScrollArea | None = None
         self._live_active = False
         self._active_cameras = 0
-        self._sync_progress_count = 0
         self._project_root = Path.cwd()
         self._icon_provider = QFileIconProvider()
         self._camera_names = dict(getattr(self.window._config, "camera_labels", {}) or {})
-        self._wheel_guarded_widgets: list[QtCore.QObject] = []
-        self._last_results_bundle: CalibrationBundle | None = None
 
         self._setup_navigation()
         self._setup_console()
@@ -535,44 +875,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         sys.stdout = ConsoleStream(self.window.plaintextedit_console)
         sys.stderr = ConsoleStream(self.window.plaintextedit_console)
 
-    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
-        if (
-            hasattr(self, "_camera_scroll")
-            and watched is self._camera_scroll.viewport()
-            and event.type() == QtCore.QEvent.Type.Resize
-        ):
-            QtCore.QTimer.singleShot(0, self._rebuild_camera_grid_if_columns_changed)
-        if (
-            event.type() == QtCore.QEvent.Type.Wheel
-            and watched in self._wheel_guarded_widgets
-        ):
-            event.ignore()
-            return True
-        return super().eventFilter(watched, event)
-
-    def _block_wheel_changes(self, *widgets: QWidget) -> None:
-        for widget in widgets:
-            if widget in self._wheel_guarded_widgets:
-                continue
-            widget.installEventFilter(self)
-            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            self._wheel_guarded_widgets.append(widget)
-
-    def _prepare_settings_container(self, root: QWidget) -> None:
-        root.setMaximumWidth(760)
-        root.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-
-        for widget in root.findChildren(QSpinBox):
-            widget.setMaximumWidth(145)
-            self._block_wheel_changes(widget)
-        for widget in root.findChildren(QDoubleSpinBox):
-            widget.setMaximumWidth(165)
-            self._block_wheel_changes(widget)
-        for widget in root.findChildren(QComboBox):
-            widget.setMaximumWidth(240)
-            self._block_wheel_changes(widget)
-        for widget in root.findChildren(QLineEdit):
-            widget.setMaximumWidth(360)
+    def uses_qt_preview_overlay(self) -> bool:
+        return True
 
     def _setup_camera_page(self, default_camera_csv: str, default_fps: float) -> None:
         self._setup_camera_splitter()
@@ -580,35 +884,29 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window.spin_cap_fps.setValue(max(1, int(round(default_fps))))
         self.window.btn_cap_intrinsics_start.setCheckable(True)
         self.window.btn_cap_extrinsics_start.setCheckable(True)
-        self.window.btn_cap_intrinsics_start.setText("Intrinsics Mode")
-        self.window.btn_cap_extrinsics_start.setText("Extrinsics Mode")
 
         self.window.combo_cap_pattern.blockSignals(True)
         self.window.combo_cap_pattern.clear()
         self.window.combo_cap_pattern.addItem("Chessboard", "chessboard")
         self.window.combo_cap_pattern.addItem("Charuco", "charuco")
         self.window.combo_cap_pattern.blockSignals(False)
-        self._block_wheel_changes(self.window.spin_cap_fps, self.window.combo_cap_pattern)
 
         self.window.btn_camera_detect.clicked.connect(
             lambda: self.probe_cameras_requested.emit(int(self._probe_max_spin.value()))
         )
         self.window.btn_camera_start_live.clicked.connect(self._emit_start_live)
         self.window.btn_camera_stop_live.clicked.connect(self.stop_live_requested)
+        self.window.btn_camera_record.toggled.connect(self._toggle_record)
+        self.window.btn_camera_load_video.clicked.connect(self._load_video_sources)
 
         self._camera_scroll = QScrollArea()
         self._camera_scroll.setWidgetResizable(True)
-        self._camera_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._camera_scroll_content = QWidget()
-        self._camera_scroll_content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._camera_grid = QGridLayout(self._camera_scroll_content)
         self._camera_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self._camera_grid.setContentsMargins(4, 4, 4, 4)
-        self._camera_grid.setSpacing(8)
-        for col in range(2):
+        for col in range(3):
             self._camera_grid.setColumnStretch(col, 1)
         self._camera_scroll.setWidget(self._camera_scroll_content)
-        self._camera_scroll.viewport().installEventFilter(self)
         self.window.gridLayout_6.addWidget(self._camera_scroll)
 
         self._add_camera_button = QPushButton("+ Camera Toevoegen")
@@ -632,7 +930,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         splitter.addWidget(self.window.frame_cam)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([180, 650])
+        splitter.setSizes([116, 720])
         page_layout.addWidget(splitter, stretch=1)
         self.window._camera_splitter = splitter
 
@@ -642,19 +940,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._frames_text = self._plain_text_in_frame(self.window.frame_res_aantal_frames)
         self._camera_info_text = self._plain_text_in_frame(self.window.frame_res_camera_info)
         self._error_text = self._plain_text_in_frame(self.window.frame_res_error)
-        for text in [
-            self._intrinsics_text,
-            self._extrinsics_text,
-            self._frames_text,
-            self._camera_info_text,
-            self._error_text,
-        ]:
-            text.setMinimumHeight(96)
 
         existing_preview = self.window.frame_res_preview_tmol.findChild(QPlainTextEdit)
         self._tmol_preview = existing_preview or QPlainTextEdit()
         self._tmol_preview.setReadOnly(True)
         self._tmol_preview.setPlainText("No export preview available yet.")
+        self._tmol_preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._tmol_preview.setFont(QtGui.QFont("Consolas", 9))
         if existing_preview is None:
             preview_layout = self.window.frame_res_preview_tmol.layout()
             if preview_layout is None:
@@ -662,9 +954,24 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 preview_layout.setContentsMargins(4, 4, 4, 4)
             preview_layout.addWidget(self._tmol_preview)
 
-        self.window.btn_res_show_tmol.clicked.connect(self._preview_toml)
+        # Format selector (TOML / JSON) for both preview and export.
+        self._export_format_combo = QComboBox()
+        self._export_format_combo.addItem("TOML", "toml")
+        self._export_format_combo.addItem("JSON", "json")
+        export_bar = self.window.frame_4.layout()
+        if export_bar is not None:
+            format_label = QLabel("Formaat:")
+            insert_at = max(0, export_bar.indexOf(self.window.btn_res_show_tmol))
+            export_bar.insertWidget(insert_at, format_label)
+            export_bar.insertWidget(insert_at + 1, self._export_format_combo)
+        self.window.btn_res_show_tmol.setText("Preview")
+        self.window.btn_res_show_tmol.setToolTip("Toon de huidige kalibratie in het gekozen formaat")
+        self.window.export_toml.setText("Export")
+        self.window.export_toml.setToolTip("Exporteer de huidige kalibratie naar een bestand")
+
+        self.window.btn_res_show_tmol.clicked.connect(self._request_export_preview)
         self.window.pushButton.clicked.connect(lambda: self.window.stackedWidget_2.setCurrentIndex(0))
-        self.window.export_toml.clicked.connect(self._export_toml_file)
+        self.window.export_toml.clicked.connect(self._request_export)
 
     def _setup_directory_page(self) -> None:
         layout = QVBoxLayout(self.window.frame_directory)
@@ -724,7 +1031,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         self._sources_input = QLineEdit(default_camera_csv)
         self._preview_fps_spin = self._double_spin(1.0, 120.0, min(default_fps, 30.0), 1.0, 1)
-        self._detect_hz_spin = self._double_spin(0.5, 20.0, 4.0, 0.5, 1)
+        self._detect_hz_spin = self._double_spin(0.5, 20.0, 5.0, 0.5, 1)
         self._capture_resolution_combo = QComboBox()
         self._capture_resolution_combo.addItem("Auto", (0, 0))
         self._capture_resolution_combo.addItem("640 x 480", (640, 480))
@@ -738,39 +1045,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._preview_resolution_combo.addItem("960 x 540", (960, 540))
         self._preview_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._preview_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        self._preview_resolution_combo.setCurrentIndex(3)
-        self._camera_exposure_spin = self._spin(-13, 0, -1)
-        self._camera_exposure_spin.setSpecialValueText("Auto")
-        self._camera_fourcc_combo = QComboBox()
-        self._camera_fourcc_combo.addItem("MJPG", "MJPG")
-        self._camera_fourcc_combo.addItem("YUY2", "YUY2")
-        self._camera_auto_exposure_combo = self._camera_mode_combo(
-            [("Auto", 0.75), ("Manual", 0.25)]
-        )
-        self._camera_auto_wb_combo = self._camera_mode_combo([("On", 1.0), ("Off", 0.0)])
-        self._camera_autofocus_combo = self._camera_mode_combo([("On", 1.0), ("Off", 0.0)])
-        self._camera_control_spins: dict[str, QDoubleSpinBox] = {
-            "brightness": self._camera_control_spin(),
-            "contrast": self._camera_control_spin(),
-            "saturation": self._camera_control_spin(),
-            "hue": self._camera_control_spin(),
-            "gain": self._camera_control_spin(),
-            "sharpness": self._camera_control_spin(),
-            "gamma": self._camera_control_spin(),
-            "temperature": self._camera_control_spin(maximum=20000.0),
-            "backlight": self._camera_control_spin(),
-            "wb_temperature": self._camera_control_spin(maximum=20000.0),
-            "focus": self._camera_control_spin(maximum=20000.0),
-            "zoom": self._camera_control_spin(maximum=20000.0),
-            "pan": self._camera_control_spin(),
-            "tilt": self._camera_control_spin(),
-            "roll": self._camera_control_spin(),
-            "iris": self._camera_control_spin(maximum=20000.0),
-            "trigger": self._camera_control_spin(),
-            "trigger_delay": self._camera_control_spin(),
-            "aperture": self._camera_control_spin(maximum=20000.0),
-            "exposure_program": self._camera_control_spin(),
-        }
+        self._preview_resolution_combo.setCurrentIndex(1)
         self._probe_max_spin = self._spin(1, 20, 10)
 
         self._chess_cols_spin = self._spin(2, 30, 9)
@@ -785,23 +1060,21 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._workflow_combo = QComboBox()
         self._workflow_combo.addItem("Intrinsics", "intrinsics")
         self._workflow_combo.addItem("Sync / Extrinsics", "sync_extrinsics")
-        self._overlay_checkbox = QCheckBox("Show Detection Overlay")
+        self._overlay_checkbox = _AggregateCheckBox("Show Detection Overlay")
+        self._overlay_checkbox.setTristate(True)
         self._overlay_checkbox.setChecked(True)
-        self._mirror_checkbox = QCheckBox("Mirror Preview")
+        self._mirror_checkbox = _AggregateCheckBox("Mirror Preview")
+        self._mirror_checkbox.setTristate(True)
         self._auto_capture_checkbox = QCheckBox("Auto Capture Valid Samples")
+        self._relaxed_sync_checkbox = QCheckBox("Relax Sync Thresholds")
+        self._relaxed_sync_checkbox.setChecked(True)
         self._auto_cooldown_spin = self._double_spin(0.1, 10.0, 0.33, 0.01, 2)
-        self._intrinsics_max_spin = self._spin(0, 1000, 60)
-        self._intrinsics_max_spin.setSpecialValueText("No limit")
-        self._intrinsics_max_spin.setSuffix(" samples")
-        self._extrinsics_max_spin = self._spin(0, 1000, 30)
-        self._extrinsics_max_spin.setSpecialValueText("No limit")
-        self._extrinsics_max_spin.setSuffix(" sync sets")
-        self._intrinsics_quality_spin = self._double_spin(0.0, 1.0, 0.25, 0.05, 2)
-        self._intrinsics_coverage_spin = self._double_spin(0.0, 25.0, 1.8, 0.2, 1)
-        self._intrinsics_coverage_spin.setSuffix(" %")
-        self._extrinsics_quality_spin = self._double_spin(0.0, 1.0, 0.15, 0.05, 2)
-        self._extrinsics_coverage_spin = self._double_spin(0.0, 25.0, 1.0, 0.2, 1)
-        self._extrinsics_coverage_spin.setSuffix(" %")
+        self._auto_max_spin = self._spin(0, 1000, 60)
+        self._auto_max_spin.setSpecialValueText("No limit")
+        self._auto_max_spin.setSuffix(" samples")
+        self._quality_spin = self._double_spin(0.0, 1.0, 0.25, 0.05, 2)
+        self._coverage_spin = self._double_spin(0.0, 25.0, 1.8, 0.2, 1)
+        self._coverage_spin.setSuffix(" %")
         self._grid_cols_spin = self._spin(1, 20, 6)
         self._grid_rows_spin = self._spin(1, 20, 4)
 
@@ -821,8 +1094,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_sync_button = QPushButton("Capture Sync Set(s)")
         self._start_auto_button = QPushButton("Start Auto Capture")
         self._apply_live_settings_button = QPushButton("Apply Live Source Settings")
-        self._apply_camera_controls_button = QPushButton("Apply Camera Image Controls")
-        self._reset_camera_controls_button = QPushButton("Reset to Defaults")
         self._apply_chessboard_button = QPushButton("Apply Chessboard Settings")
         self._apply_charuco_button = QPushButton("Apply ChArUco Settings")
         self._apply_workflow_button = QPushButton("Apply Workflow Settings")
@@ -830,24 +1101,24 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._load_profile_button = QPushButton("Load Profile")
         self._reset_samples_button = QPushButton("Reset Samples")
 
+        self._compact_advanced_controls()
+
         advanced_root = QWidget()
         advanced_layout = QVBoxLayout(advanced_root)
         advanced_layout.setContentsMargins(4, 4, 4, 4)
         advanced_layout.setSpacing(8)
         advanced_layout.addWidget(self._section("Live source settings", self._live_settings_form()))
-        advanced_layout.addWidget(self._section("Camera image controls", self._camera_controls_form()))
         advanced_layout.addWidget(self._section("Chessboard settings", self._chessboard_settings_form()))
         advanced_layout.addWidget(self._section("ChArUco settings", self._charuco_settings_form()))
         advanced_layout.addWidget(self._section("Workflow and thresholds", self._workflow_settings_form()))
         advanced_layout.addWidget(self._section("Advanced actions", self._advanced_actions_widget()))
         advanced_layout.addWidget(self._section("Status and warnings", self._status_widget()))
         advanced_layout.addStretch(1)
-        self._prepare_settings_container(advanced_root)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         scroll.setWidget(advanced_root)
+        self._advanced_scroll = scroll
         page_layout = self.window.page_advanced_settings.layout()
         if page_layout is None:
             page_layout = QVBoxLayout(self.window.page_advanced_settings)
@@ -857,9 +1128,56 @@ class DesignedCalibrationPanel(QtCore.QObject):
         page_layout.addWidget(scroll)
 
         self._connect_advanced_controls()
-        self._set_mode_button_state(self.current_workflow_mode())
-        for tile in self._tiles.values():
-            tile.set_progress(0, self.active_progress_maximum(), self.active_progress_label(0))
+
+    def _compact_advanced_controls(self) -> None:
+        self._compact_field(self._sources_input, 360)
+        for widget in [
+            self._capture_resolution_combo,
+            self._preview_resolution_combo,
+            self._workflow_combo,
+            self.window.combo_cap_pattern,
+        ]:
+            self._compact_field(widget, 180)
+            self._wheel_scrolls_page(widget)
+
+        for widget in [
+            self.window.spin_cap_fps,
+            self._preview_fps_spin,
+            self._detect_hz_spin,
+            self._probe_max_spin,
+            self._chess_cols_spin,
+            self._chess_rows_spin,
+            self.window.doubleSpinBox,
+            self._charuco_x_spin,
+            self._charuco_y_spin,
+            self._charuco_square_spin,
+            self._charuco_marker_spin,
+            self._auto_cooldown_spin,
+            self._auto_max_spin,
+            self._quality_spin,
+            self._coverage_spin,
+            self._grid_cols_spin,
+            self._grid_rows_spin,
+        ]:
+            self._compact_field(widget, 120)
+            self._wheel_scrolls_page(widget)
+
+        for button in [
+            self._apply_live_settings_button,
+            self._apply_chessboard_button,
+            self._apply_charuco_button,
+            self._apply_workflow_button,
+        ]:
+            button.setMaximumWidth(280)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def _compact_field(self, widget: QWidget, width: int) -> None:
+        widget.setFixedWidth(width)
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def _wheel_scrolls_page(self, widget: QWidget) -> None:
+        widget.setProperty("wheel-scrolls-advanced-page", True)
+        widget.installEventFilter(self)
 
     def _connect_designed_actions(self) -> None:
         self.window.btn_newproject.clicked.connect(self.new_project_requested)
@@ -869,8 +1187,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window.actionQuit.triggered.connect(self.window.close)
         self.window.actionOpen_documentation.triggered.connect(self._open_documentation)
 
-        self.window.btn_cap_intrinsics_start.clicked.connect(self._activate_intrinsics_mode)
-        self.window.btn_cap_extrinsics_start.clicked.connect(self._activate_extrinsics_mode)
+        self.window.btn_cap_intrinsics_start.clicked.connect(self._toggle_intrinsics_start)
+        self.window.btn_cap_extrinsics_start.clicked.connect(self._toggle_extrinsics_start)
         self.window.btn_cap_calculate_intrinsics.clicked.connect(self.solve_requested)
         self.window.btn_cap_calculate_extrinsics.clicked.connect(self._emit_solve_extrinsics)
         self.window.btn_cap_reset_calibration.clicked.connect(self._emit_reset)
@@ -885,8 +1203,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_sync_button.clicked.connect(self._capture_sync_sample)
         self._start_auto_button.clicked.connect(self.auto_capture_start_requested)
         self._apply_live_settings_button.clicked.connect(self._apply_live_settings)
-        self._apply_camera_controls_button.clicked.connect(self._apply_camera_controls)
-        self._reset_camera_controls_button.clicked.connect(self._reset_camera_image_controls)
         self._apply_chessboard_button.clicked.connect(lambda: self._apply_board_settings("Chessboard settings applied."))
         self._apply_charuco_button.clicked.connect(lambda: self._apply_board_settings("ChArUco settings applied."))
         self._apply_workflow_button.clicked.connect(self._apply_workflow_settings)
@@ -894,6 +1210,10 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._load_profile_button.clicked.connect(self.load_profile_requested)
         self._reset_samples_button.clicked.connect(self._emit_reset)
         self.window.doubleSpinBox.valueChanged.connect(lambda _value: None)
+        # Reflect the current per-camera overlay/mirror state back into the
+        # advanced checkboxes whenever a tile option changes.
+        self.preview_options_changed.connect(self._sync_advanced_checkboxes_from_tiles)
+        self._sync_advanced_checkboxes_from_tiles()
 
     def _plain_text_in_frame(self, frame: QFrame) -> QPlainTextEdit:
         existing = frame.findChild(QPlainTextEdit)
@@ -942,27 +1262,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
         spin.setValue(value)
         return spin
 
-    def _camera_mode_combo(self, choices: list[tuple[str, float]]) -> QComboBox:
-        combo = QComboBox()
-        combo.addItem("Auto", None)
-        for label, value in choices:
-            combo.addItem(label, value)
-        return combo
-
-    def _camera_control_spin(
-        self,
-        minimum: float = -10000.0,
-        maximum: float = 10000.0,
-        step: float = 1.0,
-    ) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
-        spin.setRange(minimum, maximum)
-        spin.setDecimals(2)
-        spin.setSingleStep(step)
-        spin.setValue(minimum)
-        spin.setSpecialValueText("Auto")
-        return spin
-
     def _section(self, title: str, content: QWidget) -> QFrame:
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -974,14 +1273,20 @@ class DesignedCalibrationPanel(QtCore.QObject):
         layout.addWidget(content)
         return frame
 
+    def _setup_compact_form(self, form: QFormLayout) -> None:
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(8)
+
     def _live_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("Sources (CSV)", self._sources_input)
-        form.addRow("Capture FPS", QLabel("Use the FPS field on the Camera page"))
+        form.addRow("Capture FPS", self.window.spin_cap_fps)
         form.addRow("Capture Resolution", self._capture_resolution_combo)
-        form.addRow("Camera Exposure", self._camera_exposure_spin)
-        form.addRow("Pixel Format", self._camera_fourcc_combo)
         form.addRow("Preview FPS", self._preview_fps_spin)
         form.addRow("Preview Resolution", self._preview_resolution_combo)
         form.addRow("Calibration Detect Hz", self._detect_hz_spin)
@@ -990,47 +1295,10 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form.addRow("", self._apply_live_settings_button)
         return form_widget
 
-    def _camera_controls_form(self) -> QWidget:
-        form_widget = QWidget()
-        form = QFormLayout(form_widget)
-        note = QLabel("Auto = laat de camera-driver de waarde kiezen of laat de property ongemoeid.")
-        note.setWordWrap(True)
-        form.addRow("", note)
-        form.addRow("Auto Exposure Mode", self._camera_auto_exposure_combo)
-        form.addRow("Brightness", self._camera_control_spins["brightness"])
-        form.addRow("Contrast", self._camera_control_spins["contrast"])
-        form.addRow("Saturation", self._camera_control_spins["saturation"])
-        form.addRow("Hue", self._camera_control_spins["hue"])
-        form.addRow("Gain", self._camera_control_spins["gain"])
-        form.addRow("Sharpness", self._camera_control_spins["sharpness"])
-        form.addRow("Gamma", self._camera_control_spins["gamma"])
-        form.addRow("Temperature", self._camera_control_spins["temperature"])
-        form.addRow("Backlight", self._camera_control_spins["backlight"])
-        form.addRow("Auto White Balance", self._camera_auto_wb_combo)
-        form.addRow("White Balance Temperature", self._camera_control_spins["wb_temperature"])
-        form.addRow("Autofocus", self._camera_autofocus_combo)
-        form.addRow("Focus", self._camera_control_spins["focus"])
-        form.addRow("Zoom", self._camera_control_spins["zoom"])
-        form.addRow("Pan", self._camera_control_spins["pan"])
-        form.addRow("Tilt", self._camera_control_spins["tilt"])
-        form.addRow("Roll", self._camera_control_spins["roll"])
-        form.addRow("Iris", self._camera_control_spins["iris"])
-        form.addRow("Trigger", self._camera_control_spins["trigger"])
-        form.addRow("Trigger Delay", self._camera_control_spins["trigger_delay"])
-        form.addRow("Aperture", self._camera_control_spins["aperture"])
-        form.addRow("Exposure Program", self._camera_control_spins["exposure_program"])
-        actions = QWidget()
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(8)
-        actions_layout.addWidget(self._reset_camera_controls_button)
-        actions_layout.addWidget(self._apply_camera_controls_button)
-        form.addRow("", actions)
-        return form_widget
-
     def _chessboard_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("Columns", self._chess_cols_spin)
         form.addRow("Rows", self._chess_rows_spin)
         form.addRow("Square", self.window.doubleSpinBox)
@@ -1040,6 +1308,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def _charuco_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("ChArUco Squares X", self._charuco_x_spin)
         form.addRow("ChArUco Squares Y", self._charuco_y_spin)
         form.addRow("ChArUco Square", self._charuco_square_spin)
@@ -1050,18 +1319,17 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def _workflow_settings_form(self) -> QWidget:
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self._setup_compact_form(form)
         form.addRow("Workflow", self._workflow_combo)
-        form.addRow("Pattern", QLabel("Use the Pattern field on the Camera page"))
+        form.addRow("Pattern", self.window.combo_cap_pattern)
         form.addRow("Overlay", self._overlay_checkbox)
         form.addRow("Mirror", self._mirror_checkbox)
         form.addRow("Auto Capture", self._auto_capture_checkbox)
         form.addRow("Cooldown", self._auto_cooldown_spin)
-        form.addRow("Intrinsics Max Samples", self._intrinsics_max_spin)
-        form.addRow("Extrinsics Max Sync Sets", self._extrinsics_max_spin)
-        form.addRow("Intrinsics Min Quality", self._intrinsics_quality_spin)
-        form.addRow("Intrinsics Min Coverage", self._intrinsics_coverage_spin)
-        form.addRow("Extrinsics Min Quality", self._extrinsics_quality_spin)
-        form.addRow("Extrinsics Min Coverage", self._extrinsics_coverage_spin)
+        form.addRow("Max Samples", self._auto_max_spin)
+        form.addRow("Relaxed Sync", self._relaxed_sync_checkbox)
+        form.addRow("Min Quality", self._quality_spin)
+        form.addRow("Min Coverage", self._coverage_spin)
         grid = QWidget()
         grid_layout = QHBoxLayout(grid)
         grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -1166,85 +1434,98 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._emit_runtime_tuning_changed()
         self.show_feedback("Live source settings applied.", success=True)
 
-    def _apply_camera_controls(self, message: str = "Camera image controls applied.") -> None:
-        self._emit_runtime_tuning_changed()
-        self.show_feedback(message, success=True)
-
-    def _reset_camera_image_controls(self) -> None:
-        defaults = RuntimeTuning()
-        self._camera_exposure_spin.setValue(defaults.camera_exposure)
-        fourcc_index = self._camera_fourcc_combo.findData(defaults.camera_fourcc)
-        self._camera_fourcc_combo.setCurrentIndex(fourcc_index if fourcc_index >= 0 else 0)
-
-        for combo in [
-            self._camera_auto_exposure_combo,
-            self._camera_auto_wb_combo,
-            self._camera_autofocus_combo,
-        ]:
-            combo.setCurrentIndex(0)
-
-        for spin in self._camera_control_spins.values():
-            spin.setValue(spin.minimum())
-
-        self._apply_camera_controls("Camera image controls reset to defaults.")
-
     def _apply_workflow_settings(self) -> None:
+        self._apply_preview_options_to_tiles()
         self._emit_runtime_tuning_changed()
+        self._emit_workflow_mode_changed()
         self._emit_acceptance_thresholds_changed()
         self._emit_spatial_grid_changed()
-        self._emit_workflow_mode_changed()
         self.show_feedback("Workflow settings applied.", success=True)
+
+    def _apply_preview_options_to_tiles(self) -> None:
+        """Push the advanced overlay/mirror/auto-capture options onto every camera tile.
+
+        A checkbox left in the mixed (partial) state means "leave each camera as
+        it is", so only a deliberate checked/unchecked choice forces all cameras.
+        """
+        overlay_state = self._overlay_checkbox.checkState()
+        mirror_state = self._mirror_checkbox.checkState()
+        # Block panel signals while updating tiles: set_overlay_active/set_mirror_active
+        # emit preview_options_changed per tile, which can re-enter set_sources and
+        # mutate self._tiles mid-iteration. Iterate over a snapshot and refresh once.
+        self.blockSignals(True)
+        try:
+            for tile in list(self._tiles.values()):
+                if overlay_state != Qt.CheckState.PartiallyChecked:
+                    tile.set_overlay_active(overlay_state == Qt.CheckState.Checked)
+                if mirror_state != Qt.CheckState.PartiallyChecked:
+                    tile.set_mirror_active(mirror_state == Qt.CheckState.Checked)
+        finally:
+            self.blockSignals(False)
+        self._on_tile_auto_capture_toggled(self._auto_capture_checkbox.isChecked())
+        self.preview_options_changed.emit()
+
+    def _sync_advanced_checkboxes_from_tiles(self) -> None:
+        """Reflect the aggregate per-camera overlay/mirror state in the checkboxes."""
+        if not getattr(self, "_overlay_checkbox", None) or not getattr(self, "_mirror_checkbox", None):
+            return
+        if not self._tiles:
+            return
+        self._set_aggregate_check_state(
+            self._overlay_checkbox, [tile.overlay_enabled() for tile in self._tiles.values()]
+        )
+        self._set_aggregate_check_state(
+            self._mirror_checkbox, [tile.mirror_enabled() for tile in self._tiles.values()]
+        )
+
+    def _set_aggregate_check_state(self, checkbox: QCheckBox, states: list[bool]) -> None:
+        if not states:
+            return
+        if all(states):
+            state = Qt.CheckState.Checked
+        elif not any(states):
+            state = Qt.CheckState.Unchecked
+        else:
+            state = Qt.CheckState.PartiallyChecked
+        checkbox.blockSignals(True)
+        checkbox.setCheckState(state)
+        checkbox.blockSignals(False)
+
+    def eventFilter(self, obj: object, event: object) -> bool:
+        if (
+            isinstance(obj, QWidget)
+            and obj.property("wheel-scrolls-advanced-page")
+            and isinstance(event, QtGui.QWheelEvent)
+            and event.type() == QEvent.Type.Wheel
+        ):
+            scroll = self._advanced_scroll
+            if scroll is not None:
+                delta = event.pixelDelta().y()
+                if delta == 0:
+                    delta = event.angleDelta().y()
+                if delta != 0:
+                    bar = scroll.verticalScrollBar()
+                    bar.setValue(bar.value() - delta)
+            return True
+        return super().eventFilter(obj, event)
 
     def _apply_board_settings(self, message: str) -> None:
         self.board_settings_applied.emit(self.board_settings())
         self.show_feedback(message, success=True)
 
-    def _current_toml_bundle(self) -> CalibrationBundle | None:
-        bundle = self._last_results_bundle or getattr(self.window, "_current_calibration_bundle", None)
-        if bundle is not None:
-            return bundle
-        manager = getattr(self.window, "_calibration_manager", None)
-        if manager is None:
-            return None
-        return manager.last_solution()
+    def _current_export_format(self) -> str:
+        data = self._export_format_combo.currentData()
+        return str(data if data is not None else "toml").lower().strip()
 
-    def _preview_toml(self) -> None:
-        bundle = self._current_toml_bundle()
-        if bundle is None:
-            self._tmol_preview.setPlainText("Nog geen kalibratie om te exporteren. Solve eerst.")
-        else:
-            self._tmol_preview.setPlainText(calibration_bundle_to_toml(bundle))
+    def _request_export_preview(self) -> None:
+        self.export_preview_requested.emit(self._current_export_format())
+
+    def _request_export(self) -> None:
+        self.export_requested.emit(self._current_export_format())
+
+    def show_export_preview(self, text: str) -> None:
+        self._tmol_preview.setPlainText(text)
         self.window.stackedWidget_2.setCurrentIndex(1)
-
-    def _export_toml_file(self) -> None:
-        bundle = self._current_toml_bundle()
-        if bundle is None:
-            QMessageBox.information(
-                self.window,
-                "Export",
-                "Er is nog geen kalibratie om te exporteren. Solve eerst.",
-            )
-            return
-
-        default_path = self.window._config.calibration_dir / "calibration.toml"
-        selected, _ = QFileDialog.getSaveFileName(
-            self.window,
-            "Export calibration as TOML",
-            str(default_path),
-            "TOML files (*.toml);;All files (*.*)",
-        )
-        if not selected:
-            return
-
-        toml_text = calibration_bundle_to_toml(bundle)
-        try:
-            Path(selected).write_text(toml_text, encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self.window, "Export mislukt", str(exc))
-            return
-
-        self._tmol_preview.setPlainText(toml_text)
-        self.show_feedback(f"TOML geexporteerd naar {selected}", success=True)
 
     def _emit_start_live(self) -> None:
         try:
@@ -1254,28 +1535,112 @@ class DesignedCalibrationPanel(QtCore.QObject):
             return
         self.start_live_requested.emit(sources, self.target_fps())
 
-    def _set_mode_button_state(self, mode: str) -> None:
-        intrinsics_active = mode == "intrinsics"
-        extrinsics_active = mode == "sync_extrinsics"
-        active_style = "background-color: #0078d7; color: white; font-weight: bold;"
-        for button, active in (
-            (self.window.btn_cap_intrinsics_start, intrinsics_active),
-            (self.window.btn_cap_extrinsics_start, extrinsics_active),
-        ):
-            button.blockSignals(True)
-            button.setChecked(active)
-            button.setStyleSheet(active_style if active else "")
-            button.blockSignals(False)
-        self.window.btn_cap_intrinsics_start.setText("Intrinsics Mode")
-        self.window.btn_cap_extrinsics_start.setText("Extrinsics Mode")
+    def _toggle_record(self, checked: bool) -> None:
+        self.record_toggled.emit(checked)
 
-    def _activate_intrinsics_mode(self, _checked: bool = True) -> None:
-        self.set_workflow_mode("intrinsics")
-        self.workflow_mode_changed.emit("intrinsics")
+    def set_recording_active(self, active: bool) -> None:
+        button = self.window.btn_camera_record
+        button.blockSignals(True)
+        button.setChecked(active)
+        button.blockSignals(False)
+        button.setText("Stop opname" if active else "Opnemen")
+        button.setStyleSheet(
+            "background-color: #c62828; color: white; font-weight: bold;" if active else ""
+        )
 
-    def _activate_extrinsics_mode(self, _checked: bool = True) -> None:
-        self.set_workflow_mode("sync_extrinsics")
-        self.workflow_mode_changed.emit("sync_extrinsics")
+    def _update_record_button_enabled(self) -> None:
+        button = getattr(self.window, "btn_camera_record", None)
+        if button is None:
+            return
+        button.setEnabled(not self._video_sources)
+        if self._video_sources:
+            button.setToolTip("Opnemen is uitgeschakeld zolang video's als bron geladen zijn.")
+        else:
+            button.setToolTip("Neem de live beelden op en sla ze op als videobestand")
+        self._refresh_add_camera_button()
+
+    def _load_video_sources(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(
+            self.window,
+            "Selecteer video('s) voor kalibratie",
+            str(self._project_root),
+            "Videobestanden (*.mp4 *.avi *.mov *.mkv *.m4v);;Alle bestanden (*)",
+        )
+        if not files:
+            return
+        files = files[:4]
+        sources: list[CameraSourceConfig] = []
+        for index, file_path in enumerate(files):
+            source_id = f"cam{index}"
+            sources.append(
+                CameraSourceConfig(
+                    source_id=source_id,
+                    kind="video",
+                    uri=file_path,
+                    label=Path(file_path).name,
+                )
+            )
+        self._video_sources = sources
+        self.set_sources([source.source_id for source in sources])
+        for source in sources:
+            tile = self._tiles.get(source.source_id)
+            if tile is not None:
+                tile.set_display_name(source.label)
+        self._apply_video_fps(files[0])
+        self._update_record_button_enabled()
+        self._emit_sources_changed()
+        self.start_live_requested.emit(sources, self.target_fps())
+        names = ", ".join(source.label for source in sources)
+        self.show_feedback(
+            f"{len(sources)} video('s) geladen: {names}. "
+            "Druk op Start bij Intrinsics of Extrinsics om te berekenen.",
+            success=True,
+        )
+        self.switch_page(1)
+
+    def _apply_video_fps(self, video_path: str) -> None:
+        try:
+            capture = cv2.VideoCapture(video_path)
+            fps = capture.get(cv2.CAP_PROP_FPS)
+            capture.release()
+        except Exception:  # noqa: BLE001 - best effort, fall back to current value
+            return
+        if fps and fps > 0:
+            self.window.spin_cap_fps.setValue(max(1, min(120, int(round(fps)))))
+
+    def _toggle_intrinsics_start(self, checked: bool) -> None:
+        if checked:
+            self.set_workflow_mode("intrinsics")
+            self.workflow_mode_changed.emit("intrinsics")
+            self.set_auto_capture_enabled(True)
+            self.window.btn_cap_intrinsics_start.setText("Stop")
+            self.window.btn_cap_intrinsics_start.setStyleSheet(
+                "background-color: #0078d7; color: white; font-weight: bold;"
+            )
+            self._emit_start_live()
+            self.auto_capture_start_requested.emit()
+            return
+        self.set_auto_capture_enabled(False)
+        self.stop_live_requested.emit()
+        self.window.btn_cap_intrinsics_start.setText("Start")
+        self.window.btn_cap_intrinsics_start.setStyleSheet("")
+
+    def _toggle_extrinsics_start(self, checked: bool) -> None:
+        if checked:
+            self.set_workflow_mode("sync_extrinsics")
+            self.workflow_mode_changed.emit("sync_extrinsics")
+            self.set_auto_capture_enabled(True)
+            self.window.btn_cap_extrinsics_start.setText("Stop")
+            self.window.btn_cap_extrinsics_start.setStyleSheet(
+                "background-color: #0078d7; color: white; font-weight: bold;"
+            )
+            self._emit_start_live()
+            self.auto_capture_start_requested.emit()
+            return
+        self.set_auto_capture_enabled(False)
+        self.stop_live_requested.emit()
+        self.window.btn_cap_extrinsics_start.setText("Start")
+        self.window.btn_cap_extrinsics_start.setStyleSheet("")
 
     def _emit_solve_extrinsics(self) -> None:
         self.set_workflow_mode("sync_extrinsics")
@@ -1283,10 +1648,14 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.solve_extrinsics_requested.emit()
 
     def _emit_reset(self) -> None:
-        self._sync_progress_count = 0
-        self._set_mode_button_state(self.current_workflow_mode())
+        self.window.btn_cap_intrinsics_start.setChecked(False)
+        self.window.btn_cap_extrinsics_start.setChecked(False)
+        self.window.btn_cap_intrinsics_start.setText("Start")
+        self.window.btn_cap_extrinsics_start.setText("Start")
+        self.window.btn_cap_intrinsics_start.setStyleSheet("")
+        self.window.btn_cap_extrinsics_start.setStyleSheet("")
         for tile in self._tiles.values():
-            tile.set_progress(0, self.active_progress_maximum(), self.active_progress_label(0))
+            tile.set_sample_count(0)
         self.reset_requested.emit()
 
     def _capture_intrinsics_sample(self) -> None:
@@ -1303,9 +1672,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.pattern_changed.emit(self.current_pattern())
 
     def _emit_workflow_mode_changed(self) -> None:
-        mode = self.current_workflow_mode()
-        self.set_workflow_mode(mode)
-        self.workflow_mode_changed.emit(mode)
+        self.workflow_mode_changed.emit(self.current_workflow_mode())
 
     def _emit_acceptance_thresholds_changed(self) -> None:
         quality, coverage = self.acceptance_threshold_values()
@@ -1320,24 +1687,48 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window.text_diag_current_fps.setPlainText(str(self.window.spin_cap_fps.value()))
 
     def _sync_source_input_preview(self) -> None:
+        self._video_sources = []
+        self._update_record_button_enabled()
         self._source_csv = self._sources_input.text().strip()
         self.set_sources(self._source_ids_for_csv(self._source_csv))
         self._emit_sources_changed()
+        self._refresh_add_camera_button()
 
     def _append_camera_source(self) -> None:
+        if self._video_sources:
+            self.ui_message.emit("Verwijder eerst de geladen video's voordat je webcams toevoegt.")
+            return
         tokens = [token.strip() for token in self._sources_input.text().split(",") if token.strip()]
         numeric_tokens = {int(token) for token in tokens if token.isdigit()}
-        next_index = 0
-        while next_index in numeric_tokens:
-            next_index += 1
         if len(tokens) >= 4:
             self.ui_message.emit("Use up to 4 sources for calibration.")
+            return
+        next_index = self._next_detected_camera_index(numeric_tokens)
+        if next_index is None:
+            if self._camera_probe_running:
+                self.ui_message.emit("Camera scan loopt nog. Wacht even tot de scan klaar is.")
+            elif self._detected_cameras:
+                self.ui_message.emit("Alle gevonden camera's zijn al toegevoegd.")
+            else:
+                self.ui_message.emit("Geen gevonden camera's bekend. Gebruik eerst Detect Cameras.")
+            self._refresh_add_camera_button()
             return
         tokens.append(str(next_index))
         self._sources_input.setText(",".join(tokens))
         self._sync_source_input_preview()
 
     def _remove_source(self, source_id: str) -> None:
+        if self._video_sources:
+            self._video_sources = [
+                source for source in self._video_sources if source.source_id != source_id
+            ]
+            tile = self._tiles.get(source_id)
+            if tile is not None:
+                tile.close_popout()
+            self.set_sources([source.source_id for source in self._video_sources])
+            self._update_record_button_enabled()
+            self._emit_sources_changed()
+            return
         try:
             index = self._source_order.index(source_id)
         except ValueError:
@@ -1350,6 +1741,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             del tokens[index]
         self._sources_input.setText(",".join(tokens))
         self._sync_source_input_preview()
+        self._refresh_add_camera_button()
 
     def _source_ids_for_csv(self, csv: str) -> list[str]:
         tokens = [token.strip() for token in csv.split(",") if token.strip()]
@@ -1366,6 +1758,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.sources_changed.emit(sources)
 
     def current_sources(self) -> list[CameraSourceConfig]:
+        if self._video_sources:
+            return list(self._video_sources)
         raw = self._sources_input.text().strip()
         if not raw:
             raise ValueError("Camera CSV is empty. Provide at least one source.")
@@ -1401,21 +1795,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def target_fps(self) -> float:
         return float(self.window.spin_cap_fps.value())
 
-    def _camera_controls(self) -> dict[str, float]:
-        controls: dict[str, float] = {}
-        for key, combo in (
-            ("auto_exposure", self._camera_auto_exposure_combo),
-            ("auto_wb", self._camera_auto_wb_combo),
-            ("autofocus", self._camera_autofocus_combo),
-        ):
-            value = combo.currentData()
-            if value is not None:
-                controls[key] = float(value)
-        for key, spin in self._camera_control_spins.items():
-            if float(spin.value()) > float(spin.minimum()):
-                controls[key] = float(spin.value())
-        return controls
-
     def runtime_tuning(self) -> RuntimeTuning:
         capture_size = self._capture_resolution_combo.currentData()
         if not isinstance(capture_size, tuple) or len(capture_size) != 2:
@@ -1431,9 +1810,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
             preview_max_width=int(preview_size[0]),
             preview_max_height=int(preview_size[1]),
             calibration_detection_hz=float(self._detect_hz_spin.value()),
-            camera_exposure=int(self._camera_exposure_spin.value()),
-            camera_fourcc=str(self._camera_fourcc_combo.currentData() or "MJPG"),
-            camera_controls=self._camera_controls(),
             overlays_enabled=self._overlay_checkbox.isChecked(),
             detection_capture_enabled=False,
             detection_reconstruction_enabled=False,
@@ -1442,6 +1818,10 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
     def set_sources(self, source_ids: list[str]) -> None:
         source_ids = source_ids[:4]
+        if source_ids == self._source_order and set(self._tiles) == set(source_ids):
+            # Nothing changed: keep the existing grid so live tiles don't flicker
+            # or jump cells when this is called on every refresh.
+            return
         existing = set(self._tiles)
         requested = set(source_ids)
 
@@ -1461,12 +1841,12 @@ class DesignedCalibrationPanel(QtCore.QObject):
             tile.preview_options_changed.connect(self.preview_options_changed)
             tile.remove_requested.connect(self._remove_source)
             tile.name_changed.connect(self._on_camera_name_changed)
-            if hasattr(self, "_intrinsics_max_spin"):
-                tile.set_progress(0, self.active_progress_maximum(), self.active_progress_label(0))
             self._tiles[source_id] = tile
 
         self._source_order = list(source_ids)
         self._rebuild_camera_grid()
+        self._sync_advanced_checkboxes_from_tiles()
+        self._refresh_add_camera_button()
 
     def _rebuild_camera_grid(self) -> None:
         while self._camera_grid.count():
@@ -1474,41 +1854,95 @@ class DesignedCalibrationPanel(QtCore.QObject):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
-
-        columns = self._camera_grid_columns()
-        self._last_camera_grid_columns = columns
-        for col in range(3):
-            self._camera_grid.setColumnStretch(col, 1 if col < columns else 0)
-
         for index, source_id in enumerate(self._source_order):
-            self._camera_grid.addWidget(self._tiles[source_id], index // columns, index % columns)
+            self._camera_grid.addWidget(self._tiles[source_id], index // 3, index % 3)
         self._camera_grid.addWidget(
             self._add_camera_button,
-            len(self._source_order) // columns,
-            len(self._source_order) % columns,
+            len(self._source_order) // 3,
+            len(self._source_order) % 3,
         )
+        self._refresh_add_camera_button()
 
-    def _camera_grid_columns(self) -> int:
-        viewport_width = self._camera_scroll.viewport().width() if hasattr(self, "_camera_scroll") else 0
-        minimum_tile_width = 520
-        minimum_gap = self._camera_grid.spacing()
-        if viewport_width >= (minimum_tile_width * 2 + minimum_gap):
-            return 2
-        return 1
+    def _current_source_tokens(self) -> list[str]:
+        if not hasattr(self, "_sources_input"):
+            return []
+        return [token.strip() for token in self._sources_input.text().split(",") if token.strip()]
 
-    def _rebuild_camera_grid_if_columns_changed(self) -> None:
-        if not hasattr(self, "_camera_grid"):
+    def _detected_camera_indices(self) -> list[int]:
+        return [camera.index for camera in self._detected_cameras]
+
+    def _next_detected_camera_index(self, used_indices: set[int] | None = None) -> int | None:
+        used = set(used_indices or set())
+        for index in self._detected_camera_indices():
+            if index not in used:
+                return index
+        return None
+
+    def _sync_sources_to_detected_cameras(self) -> None:
+        if not self._detected_cameras or self._video_sources:
             return
-        columns = self._camera_grid_columns()
-        if columns != self._last_camera_grid_columns:
-            self._rebuild_camera_grid()
+        detected = self._detected_camera_indices()
+        tokens = self._current_source_tokens()
+        next_tokens: list[str] = []
+        used: set[int] = set()
+        non_numeric = [token for token in tokens if not token.isdigit()]
+
+        for token in tokens:
+            if not token.isdigit():
+                continue
+            index = int(token)
+            if index in detected and index not in used:
+                next_tokens.append(str(index))
+                used.add(index)
+
+        if not next_tokens and not non_numeric and detected:
+            next_tokens.append(str(detected[0]))
+
+        next_tokens.extend(non_numeric)
+        next_tokens = next_tokens[:4]
+        if next_tokens != tokens:
+            self._sources_input.setText(",".join(next_tokens))
+            self._sync_source_input_preview()
+        else:
+            self._refresh_add_camera_button()
+
+    def _refresh_add_camera_button(self) -> None:
+        if not hasattr(self, "_add_camera_button") or not hasattr(self, "_sources_input"):
+            return
+        tokens = self._current_source_tokens()
+        numeric_tokens = {int(token) for token in tokens if token.isdigit()}
+        next_index = self._next_detected_camera_index(numeric_tokens)
+        can_add = (
+            not self._camera_probe_running
+            and not self._video_sources
+            and len(tokens) < 4
+            and next_index is not None
+        )
+        self._add_camera_button.setEnabled(can_add)
+        if self._camera_probe_running:
+            self._add_camera_button.setText("Camera scan...")
+            self._add_camera_button.setToolTip("Wacht tot de camera scan klaar is.")
+        elif self._video_sources:
+            self._add_camera_button.setText("+ Camera Toevoegen")
+            self._add_camera_button.setToolTip("Verwijder eerst geladen video's om webcams toe te voegen.")
+        elif next_index is None and self._detected_cameras:
+            self._add_camera_button.setText("Alle camera's toegevoegd")
+            self._add_camera_button.setToolTip("Alle gevonden camera's staan al in de bronlijst.")
+        elif next_index is None:
+            self._add_camera_button.setText("+ Camera Toevoegen")
+            self._add_camera_button.setToolTip("Geen scanresultaat beschikbaar. Gebruik Detect Cameras.")
+        else:
+            self._add_camera_button.setText(f"+ Camera {next_index} Toevoegen")
+            self._add_camera_button.setToolTip(f"Voeg gevonden webcam index {next_index} toe.")
 
     def update_previews(
         self,
         preview_frames: dict[str, Any],
         detections: dict[str, ChessboardDetectionResult],
         sample_counts: dict[str, int],
+        overlay_states: dict[str, dict[str, Any]] | None = None,
     ) -> None:
+        overlay_states = overlay_states or {}
         for source_id, frame_bgr in preview_frames.items():
             tile = self._tiles.get(source_id)
             if tile is None:
@@ -1525,18 +1959,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 )
             elif detection is not None:
                 status += f" | {detection.pattern_type} not found"
-            if self.current_workflow_mode() == "sync_extrinsics":
-                progress_current = self._sync_progress_count
-                progress_maximum = self.extrinsics_max_sync_sets()
-                progress_label = self.active_progress_label(progress_current)
-            else:
-                progress_current = count
-                progress_maximum = self.intrinsics_max_samples()
-                progress_label = self.active_progress_label(progress_current)
-            tile.set_frame(frame_bgr, status, progress_current, progress_maximum, progress_label)
-
-    def set_sync_progress_count(self, count: int) -> None:
-        self._sync_progress_count = max(0, int(count))
+            tile.set_frame(
+                frame_bgr,
+                status,
+                count,
+                detection=detection,
+                overlay_state=overlay_states.get(source_id),
+            )
 
     def _display_name(self, source_id: str) -> str:
         tile = self._tiles.get(source_id)
@@ -1568,7 +1997,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
         bundle: CalibrationBundle | None,
         live_detection: dict[str, ChessboardDetectionResult] | None = None,
     ) -> None:
-        self._last_results_bundle = bundle
         intrinsics: list[str] = []
         extrinsics: list[str] = []
         frames: list[str] = []
@@ -1620,56 +2048,51 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def show_warnings(self, lines: list[str]) -> None:
         self._warnings.setPlainText("\n".join(lines))
 
-    def set_live_status(
-        self,
-        live_active: bool,
-        active_cameras: int,
-        per_camera_fps: dict[str, float] | None = None,
-    ) -> None:
+    def set_live_status(self, live_active: bool, active_cameras: int) -> None:
         self._live_active = live_active
         self._active_cameras = active_cameras
         self.window.btn_camera_start_live.setEnabled(not live_active)
         self.window.btn_camera_stop_live.setEnabled(live_active)
         self.window.text_diag_used_cams.setPlainText(str(active_cameras))
         state = "On" if live_active else "Off"
-        fps_text = ""
-        if per_camera_fps:
-            fps_text = " | FPS: " + ", ".join(
-                f"{self._display_name(source_id)} {fps:.1f}"
-                for source_id, fps in sorted(per_camera_fps.items())
-            )
-        self._feedback.setText(f"Live: {state} | Cameras: {active_cameras}{fps_text}")
+        self._feedback.setText(f"Live: {state} | Cameras: {active_cameras}")
         if not live_active:
             for button in [self.window.btn_cap_intrinsics_start, self.window.btn_cap_extrinsics_start]:
                 button.blockSignals(True)
-                button.setText("Intrinsics Mode" if button is self.window.btn_cap_intrinsics_start else "Extrinsics Mode")
+                button.setChecked(False)
+                button.setText("Start")
+                button.setStyleSheet("")
                 button.blockSignals(False)
 
     def set_camera_probe_running(self, running: bool) -> None:
+        self._camera_probe_running = running
         self._probe_button.setEnabled(not running)
         self.window.btn_camera_detect.setEnabled(not running)
         self._probe_max_spin.setEnabled(not running)
         self._probe_button.setText("Scanning..." if running else "Detect Cameras")
         self.window.btn_camera_detect.setText("Scanning..." if running else "Detect Cameras")
+        self._probe_status.setText("Camera scan: scanning..." if running else self._probe_status.text())
+        self._refresh_add_camera_button()
 
     def set_detected_cameras(self, cameras: list[CameraProbeResult]) -> None:
+        self._detected_cameras = sorted(cameras, key=lambda camera: camera.index)
         if not cameras:
             self._probe_status.setText("Camera scan: no cameras found.")
             self._log("Camera scan: no cameras found.")
+            self._refresh_add_camera_button()
             return
-        found = sorted(cameras, key=lambda camera: camera.index)
         parts = []
-        for camera in found:
+        for camera in self._detected_cameras:
             resolution = f"{camera.width}x{camera.height}" if camera.width > 0 and camera.height > 0 else "unknown res"
             backend = f" ({camera.backend})" if camera.backend else ""
             parts.append(f"{camera.index}: {resolution}{backend}")
         text = "Camera scan: " + " | ".join(parts)
         self._probe_status.setText(text)
         self._log(text)
-        csv = ",".join(str(camera.index) for camera in found[:4])
-        if csv:
-            self._sources_input.setText(csv)
-            self._sync_source_input_preview()
+        self._sync_sources_to_detected_cameras()
+
+    def probe_max_index(self) -> int:
+        return int(self._probe_max_spin.value())
 
     def set_intrinsics_solve_running(self, running: bool, message: str = "Solving intrinsics...") -> None:
         for button in [
@@ -1680,8 +2103,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
             self._reset_samples_button,
             self._load_profile_button,
             self._apply_live_settings_button,
-            self._apply_camera_controls_button,
-            self._reset_camera_controls_button,
             self._apply_chessboard_button,
             self._apply_charuco_button,
             self._apply_workflow_button,
@@ -1733,26 +2154,15 @@ class DesignedCalibrationPanel(QtCore.QObject):
         return "sync_extrinsics" if mode == "sync_extrinsics" else "intrinsics"
 
     def set_workflow_mode(self, mode: str) -> None:
-        normalized = "sync_extrinsics" if mode.lower().strip() == "sync_extrinsics" else "intrinsics"
-        index = self._workflow_combo.findData(normalized)
+        index = self._workflow_combo.findData(mode.lower().strip())
         self._workflow_combo.blockSignals(True)
         self._workflow_combo.setCurrentIndex(index if index >= 0 else 0)
         self._workflow_combo.blockSignals(False)
-        self._set_mode_button_state(normalized)
-        if normalized == "sync_extrinsics":
-            self.enable_all_overlays()
+        if mode == "sync_extrinsics":
             self._capture_button.setText("Capture Intrinsics Sample(s)")
             self._capture_sync_button.setEnabled(True)
         else:
             self._capture_sync_button.setEnabled(True)
-
-    def enable_all_overlays(self) -> None:
-        self._overlay_checkbox.blockSignals(True)
-        self._overlay_checkbox.setChecked(True)
-        self._overlay_checkbox.blockSignals(False)
-        for tile in self._tiles.values():
-            tile.set_overlay_active(True)
-        self.preview_options_changed.emit()
 
     def auto_capture_enabled(self) -> bool:
         return self._auto_capture_checkbox.isChecked()
@@ -1765,32 +2175,14 @@ class DesignedCalibrationPanel(QtCore.QObject):
     def auto_capture_cooldown_sec(self) -> float:
         return float(self._auto_cooldown_spin.value())
 
-    def intrinsics_max_samples(self) -> int:
-        return int(self._intrinsics_max_spin.value())
-
-    def extrinsics_max_sync_sets(self) -> int:
-        return int(self._extrinsics_max_spin.value())
-
     def auto_capture_max_samples(self) -> int:
-        if self.current_workflow_mode() == "sync_extrinsics":
-            return self.extrinsics_max_sync_sets()
-        return self.intrinsics_max_samples()
-
-    def active_progress_maximum(self) -> int:
-        return self.auto_capture_max_samples()
-
-    def active_progress_label(self, current: int) -> str:
-        maximum = self.active_progress_maximum()
-        if maximum <= 0:
-            return f"{int(current)} / No limit"
-        suffix = " sync" if self.current_workflow_mode() == "sync_extrinsics" else ""
-        return f"{int(current)}/{maximum}{suffix}"
+        return int(self._auto_max_spin.value())
 
     def set_auto_capture_status(self, message: str) -> None:
         self._auto_status.setText(message)
 
     def relaxed_sync_enabled(self) -> bool:
-        return True
+        return self._relaxed_sync_checkbox.isChecked()
 
     def overlay_enabled(self) -> bool:
         if not self._tiles:
@@ -1824,35 +2216,15 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._grid_rows_spin.blockSignals(False)
 
     def set_acceptance_threshold_values(self, min_quality: float, min_coverage_ratio: float) -> None:
-        if self.current_workflow_mode() == "sync_extrinsics":
-            quality_spin = self._extrinsics_quality_spin
-            coverage_spin = self._extrinsics_coverage_spin
-        else:
-            quality_spin = self._intrinsics_quality_spin
-            coverage_spin = self._intrinsics_coverage_spin
-        quality_spin.blockSignals(True)
-        coverage_spin.blockSignals(True)
-        quality_spin.setValue(float(min_quality))
-        coverage_spin.setValue(float(min_coverage_ratio) * 100.0)
-        quality_spin.blockSignals(False)
-        coverage_spin.blockSignals(False)
+        self._quality_spin.blockSignals(True)
+        self._coverage_spin.blockSignals(True)
+        self._quality_spin.setValue(float(min_quality))
+        self._coverage_spin.setValue(float(min_coverage_ratio) * 100.0)
+        self._quality_spin.blockSignals(False)
+        self._coverage_spin.blockSignals(False)
 
     def acceptance_threshold_values(self) -> tuple[float, float]:
-        if self.current_workflow_mode() == "sync_extrinsics":
-            return self.extrinsics_threshold_values()
-        return self.intrinsics_threshold_values()
-
-    def intrinsics_threshold_values(self) -> tuple[float, float]:
-        return (
-            float(self._intrinsics_quality_spin.value()),
-            float(self._intrinsics_coverage_spin.value()) / 100.0,
-        )
-
-    def extrinsics_threshold_values(self) -> tuple[float, float]:
-        return (
-            float(self._extrinsics_quality_spin.value()),
-            float(self._extrinsics_coverage_spin.value()) / 100.0,
-        )
+        return float(self._quality_spin.value()), float(self._coverage_spin.value()) / 100.0
 
     def load_root_directory(self, directory_path: Path | str) -> None:
         path = Path(directory_path)
@@ -1966,6 +2338,16 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         self.btn_camera_stop_live.setObjectName("btn_camera_stop_live")
         self.btn_camera_stop_live.setEnabled(False)
 
+        self.btn_camera_record = QPushButton("Opnemen", self.frame)
+        self.btn_camera_record.setObjectName("btn_camera_record")
+        self.btn_camera_record.setCheckable(True)
+        self.btn_camera_record.setToolTip("Neem de live beelden op en sla ze op als videobestand")
+        self.btn_camera_load_video = QPushButton("Video laden", self.frame)
+        self.btn_camera_load_video.setObjectName("btn_camera_load_video")
+        self.btn_camera_load_video.setToolTip(
+            "Laad een videobestand om de intrinsics/extrinsics daaruit te berekenen"
+        )
+
         live_actions = QWidget(self.frame)
         live_actions_layout = QHBoxLayout(live_actions)
         live_actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -1974,25 +2356,38 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         live_actions_layout.addWidget(self.btn_camera_start_live)
         live_actions_layout.addWidget(self.btn_camera_stop_live)
 
+        video_actions = QWidget(self.frame)
+        video_actions_layout = QHBoxLayout(video_actions)
+        video_actions_layout.setContentsMargins(0, 0, 0, 0)
+        video_actions_layout.setSpacing(6)
+        video_actions_layout.addWidget(self.btn_camera_record)
+        video_actions_layout.addWidget(self.btn_camera_load_video)
+
         top_layout = self.frame.layout()
         if isinstance(top_layout, QGridLayout):
-            top_layout.setContentsMargins(10, 8, 10, 8)
+            top_layout.setContentsMargins(8, 6, 8, 6)
             top_layout.setHorizontalSpacing(8)
-            top_layout.setVerticalSpacing(6)
-            top_layout.addWidget(self.lab_cap_fps, 0, 0)
-            top_layout.addWidget(self.spin_cap_fps, 0, 1)
-            top_layout.addWidget(self.lab_cap_pattern, 1, 0)
-            top_layout.addWidget(self.combo_cap_pattern, 1, 1)
-            top_layout.addWidget(live_actions, 2, 0, 1, 2)
-            top_layout.addWidget(self.frame_2, 0, 2, 3, 1)
-            top_layout.addWidget(self.frame_3, 0, 3, 3, 1)
+            top_layout.setVerticalSpacing(4)
+            for widget in [
+                self.lab_cap_fps,
+                self.spin_cap_fps,
+                self.lab_cap_pattern,
+                self.combo_cap_pattern,
+            ]:
+                top_layout.removeWidget(widget)
+                widget.setParent(None)
+
+            top_layout.addWidget(live_actions, 0, 0, 1, 2)
+            top_layout.addWidget(video_actions, 1, 0, 1, 2)
+            top_layout.addWidget(self.frame_2, 0, 2, 2, 1)
+            top_layout.addWidget(self.frame_3, 0, 3, 2, 1)
             top_layout.addWidget(
                 self.btn_cap_reset_calibration,
                 0,
                 4,
+                2,
                 1,
-                1,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+                Qt.AlignmentFlag.AlignRight,
             )
             top_layout.setColumnStretch(0, 0)
             top_layout.setColumnStretch(1, 1)
@@ -2000,14 +2395,11 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             top_layout.setColumnStretch(3, 1)
             top_layout.setColumnStretch(4, 0)
 
-        for widget in [self.spin_cap_fps, self.combo_cap_pattern]:
-            widget.setMaximumWidth(420)
-
         for panel in [self.frame_2, self.frame_3]:
             layout = panel.layout()
             if isinstance(layout, QVBoxLayout):
-                layout.setContentsMargins(8, 6, 8, 6)
-                layout.setSpacing(5)
+                layout.setContentsMargins(8, 4, 8, 4)
+                layout.setSpacing(3)
 
         for button in [
             self.btn_cap_intrinsics_start,
@@ -2017,17 +2409,22 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             self.btn_camera_detect,
             self.btn_camera_start_live,
             self.btn_camera_stop_live,
+            self.btn_camera_record,
+            self.btn_camera_load_video,
         ]:
-            button.setMinimumHeight(28)
+            button.setMinimumHeight(24)
 
         self.btn_cap_reset_calibration.setText("")
         self.btn_cap_reset_calibration.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload)
         )
         self.btn_cap_reset_calibration.setToolTip("Reset calibration")
-        self.btn_cap_reset_calibration.setFixedSize(36, 36)
+        self.btn_cap_reset_calibration.setMinimumWidth(36)
+        self.btn_cap_reset_calibration.setMaximumWidth(36)
+        self.btn_cap_reset_calibration.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.btn_cap_reset_calibration.setProperty("danger", True)
-        self.frame.setMinimumHeight(130)
+        self.frame.setMinimumHeight(104)
+        self.frame.setMaximumHeight(124)
 
     def _setup_resizable_shell(self) -> None:
         central_layout = self.centralwidget.layout()
@@ -2109,8 +2506,36 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             self._ui_scale_actions.append(action)
 
         self.menuSettings.addMenu(self.menuUiScale)
+
+        self.menuOverlayScale = QtWidgets.QMenu(self.menuSettings)
+        self.menuOverlayScale.setObjectName("menuOverlayScale")
+        self.menuOverlayScale.setTitle("Overlay scale")
+        self._overlay_scale_actions: list[QtGui.QAction] = []
+        self._overlay_scale_group = QtGui.QActionGroup(self)
+        self._overlay_scale_group.setExclusive(True)
+
+        for label, value in [
+            ("50%", 0.50),
+            ("75%", 0.75),
+            ("100%", 1.00),
+            ("125%", 1.25),
+            ("150%", 1.50),
+            ("200%", 2.00),
+        ]:
+            action = QtGui.QAction(label, self)
+            action.setCheckable(True)
+            action.setData(value)
+            action.triggered.connect(
+                lambda checked=False, scale=value: self._apply_overlay_scale(scale)
+            )
+            self._overlay_scale_group.addAction(action)
+            self.menuOverlayScale.addAction(action)
+            self._overlay_scale_actions.append(action)
+
+        self.menuSettings.addMenu(self.menuOverlayScale)
         self.menuBar.insertMenu(self.menuHelp.menuAction(), self.menuSettings)
         self._sync_ui_scale_menu()
+        self._sync_overlay_scale_menu()
 
     def _setup_ui(self) -> None:
         self._designed_status_bar().showMessage("Idle")
@@ -2162,6 +2587,36 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         if not actions:
             return
         current = getattr(self, "_current_ui_scale", self._configured_ui_scale())
+        for action in actions:
+            action.blockSignals(True)
+            action.setChecked(abs(float(action.data()) - current) < 0.001)
+            action.blockSignals(False)
+
+    def _configured_overlay_scale(self) -> float:
+        try:
+            value = float(getattr(self._config, "overlay_scale", 1.0))
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.3, min(3.0, value))
+
+    def _apply_overlay_scale(self, scale: float) -> None:
+        scale = max(0.3, min(3.0, float(scale)))
+        self._config.overlay_scale = scale
+        try:
+            self._config.save()
+        except Exception:  # noqa: BLE001
+            pass
+        self._sync_overlay_scale_menu()
+        # Force a preview refresh so overlays are redrawn at the new scale.
+        panel = getattr(self, "_calibration_panel", None)
+        if panel is not None and hasattr(panel, "preview_options_changed"):
+            panel.preview_options_changed.emit()
+
+    def _sync_overlay_scale_menu(self) -> None:
+        actions = getattr(self, "_overlay_scale_actions", [])
+        if not actions:
+            return
+        current = self._configured_overlay_scale()
         for action in actions:
             action.blockSignals(True)
             action.setChecked(abs(float(action.data()) - current) < 0.001)
