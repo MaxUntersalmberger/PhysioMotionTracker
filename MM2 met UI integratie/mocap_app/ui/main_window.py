@@ -398,13 +398,15 @@ class MainWindow(QMainWindow):
         warnings: list[str] = []
         if not source_ids:
             warnings.append("Configure at least one camera source before capturing calibration samples.")
+        sync_target = self._calibration_panel.auto_capture_max_samples()
+        sync_required = sync_target if sync_target > 0 else 3
         for source_id in source_ids:
             if mode == "sync_extrinsics":
                 sync_count_for_source = int(sample_breakdown.get(source_id, {}).get("synchronized", 0))
-                if sync_count_for_source < 3:
+                if sync_count_for_source < sync_required:
                     warnings.append(
-                        f"{source_id}: too few synchronized sets ({sync_count_for_source}/3). "
-                        "Extrinsics may be unstable."
+                        f"{source_id}: too few synchronized sets ({sync_count_for_source}/{sync_required}). "
+                        "Every camera must share views with the others for reliable extrinsics."
                     )
             else:
                 count = sample_counts.get(source_id, 0)
@@ -466,9 +468,19 @@ class MainWindow(QMainWindow):
         duration_sec = float(collection.get("duration_sec", 0.0) or 0.0)
         duration_text = f" Collected for {self._format_duration_sec(duration_sec)}." if duration_sec > 0 else ""
         if self._calibration_workflow_mode() == "sync_extrinsics":
+            goal_text = ""
+            if limit > 0:
+                counts = self._synchronized_counts_by_source()
+                if counts:
+                    progress = ", ".join(f"{sid}:{count}/{limit}" for sid, count in sorted(counts.items()))
+                    goal_text = f" Goal: every camera needs {limit} synchronized set(s). Progress {progress}."
+                    lagging = sorted(sid for sid, count in counts.items() if count < limit)
+                    if lagging:
+                        goal_text += f" Still need shared views for: {', '.join(lagging)}."
             return (
-                "Auto capture armed (sync mode). Hold the board visible in at least 2 cameras."
-                + limit_text
+                "Auto capture armed (sync mode). Hold the board so it is visible in as many "
+                "cameras at once as possible; every camera must share views with the others."
+                + goal_text
                 + duration_text
             )
         target_text = ""
@@ -489,14 +501,31 @@ class MainWindow(QMainWindow):
             return f"{hours:d}:{minutes:02d}:{seconds:02d}"
         return f"{minutes:d}:{seconds:02d}"
 
+    def _synchronized_counts_by_source(self) -> dict[str, int]:
+        """Synchronized-set count per active camera (sets shared with >=1 other camera)."""
+        breakdown = self._calibration_manager.observations_breakdown_summary()
+        return {
+            source_id: int(breakdown.get(source_id, {}).get("synchronized", 0))
+            for source_id in self._active_source_ids()
+        }
+
     def _auto_capture_stop_message_if_limit_reached(self) -> str | None:
         limit = self._calibration_panel.auto_capture_max_samples()
         if limit <= 0:
             return None
         if self._calibration_workflow_mode() == "sync_extrinsics":
-            sync_count = self._calibration_manager.synchronized_capture_count()
-            if sync_count >= limit:
-                return f"Auto capture stopped at {sync_count}/{limit} synchronized set(s)."
+            source_ids = self._active_source_ids()
+            if len(source_ids) < 2:
+                return None
+            # The target only counts as complete once *every* camera has reached it,
+            # so a rig can't finish while one camera never shared a view with the others.
+            per_source = self._synchronized_counts_by_source()
+            if per_source and all(count >= limit for count in per_source.values()):
+                coverage_text = ", ".join(f"{sid}={count}" for sid, count in sorted(per_source.items()))
+                return (
+                    f"Auto capture stopped: every camera reached {limit} synchronized set(s) "
+                    f"({coverage_text})."
+                )
             return None
 
         source_ids = self._active_source_ids()
@@ -1407,7 +1436,27 @@ class MainWindow(QMainWindow):
                 return
             base_bundle = self._calibration_manager.solve_intrinsics()
 
-        reference_source_id = self._active_source_ids()[0] if self._active_source_ids() else None
+        active_ids = self._active_source_ids()
+        if len(active_ids) >= 2:
+            counts = self._synchronized_counts_by_source()
+            weak = sorted(sid for sid in active_ids if counts.get(sid, 0) < 3)
+            if weak:
+                reply = QMessageBox.question(
+                    self,
+                    "Extrinsics incomplete",
+                    "These camera(s) have too few synchronized sets with the others: "
+                    f"{', '.join(weak)}.\n\n"
+                    "For a reliable extrinsic calibration every camera must have seen the "
+                    "board together with the others. Solve anyway? These camera(s) may stay "
+                    "unsolved.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    self._set_status("Extrinsics solve cancelled: not all cameras share views yet.")
+                    return
+
+        reference_source_id = active_ids[0] if active_ids else None
         bundle = self._calibration_manager.solve_extrinsics(
             base_bundle=base_bundle,
             reference_source_id=reference_source_id,
