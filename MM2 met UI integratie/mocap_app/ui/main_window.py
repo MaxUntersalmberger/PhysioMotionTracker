@@ -12,7 +12,7 @@ from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
 
-from mocap_app.core.config import AppConfig, _app_root
+from mocap_app.core.config import AppConfig
 from mocap_app.io.calibration_io import (
     CalibrationManager,
     CalibrationRepository,
@@ -922,9 +922,9 @@ class MainWindow(QMainWindow):
         self._set_status("Live capture stopped")
 
     def _default_recordings_base_dir(self) -> Path:
-        # Derived from the module location (the project folder), so it is
-        # independent of any absolute paths baked into app_settings.json.
-        return _app_root() / "recordings"
+        # config paths are normalized to the project root, so this stays inside
+        # the project regardless of any absolute paths in app_settings.json.
+        return self._config.app_root / "recordings"
 
     def _choose_recording_base_dir(self) -> Path | None:
         default = self._last_recording_dir or self._default_recordings_base_dir()
