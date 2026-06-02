@@ -944,8 +944,11 @@ class MainWindow(QMainWindow):
             self._calibration_panel.set_recording_active(False)
             self._show_error(f"Kon de opname niet starten: {exc}")
             return
+        self._live_worker.attach_recorder(self._video_recorder)
         self._calibration_panel.set_recording_active(True)
-        self._calibration_panel.show_feedback(f"Opname gestart -> {output_dir}", success=True)
+        self._calibration_panel.show_feedback(
+            f"Opname gestart (volledige capture-resolutie) -> {output_dir}", success=True
+        )
         self._set_status(f"Opname gestart: {output_dir}")
 
     def _finalize_recording(self) -> None:
@@ -953,6 +956,9 @@ class MainWindow(QMainWindow):
         self._video_recorder = None
         if recorder is None:
             return
+        # Stop the worker thread from writing before we release the writers.
+        if self._live_worker is not None and hasattr(self._live_worker, "detach_recorder"):
+            self._live_worker.detach_recorder()
         self._calibration_panel.set_recording_active(False)
         written = recorder.close()
         if not written:
@@ -990,8 +996,6 @@ class MainWindow(QMainWindow):
                 return
         self._latest_frames = frames
         self._active_camera_count = len(frames)
-        if self._video_recorder is not None:
-            self._video_recorder.write_batch(frames)
         self._refresh_live_status()
 
     def _build_calibration_preview_frame(

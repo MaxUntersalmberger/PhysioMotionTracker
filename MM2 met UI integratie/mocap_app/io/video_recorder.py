@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import cv2
-
-from mocap_app.models.types import FramePacket
 
 LOGGER = logging.getLogger(__name__)
 
@@ -15,8 +14,9 @@ class VideoRecorder:
 
     The recorder lazily opens a :class:`cv2.VideoWriter` for each source the
     first time a frame for that source arrives, so the file dimensions always
-    match the captured frames. The resulting clips are clean (no overlays,
-    mirroring or undistortion) so they can be re-used to validate the
+    match the captured frames. It is fed the full capture-resolution frames
+    (before any preview downscaling) so the clips are full quality and clean
+    (no overlays, mirroring or undistortion), ready to validate the
     calibration in external tooling.
     """
 
@@ -80,19 +80,21 @@ class VideoRecorder:
         self._frame_counts[source_id] = 0
         return writer
 
-    def write_batch(self, frames: dict[str, FramePacket]) -> None:
-        for source_id, packet in frames.items():
-            frame = packet.frame_bgr
-            if frame is None:
-                continue
-            writer = self._ensure_writer(source_id, frame)
-            if writer is None:
-                continue
-            expected = self._sizes[source_id]
-            if (int(frame.shape[1]), int(frame.shape[0])) != expected:
-                frame = cv2.resize(frame, expected)
-            writer.write(frame)
-            self._frame_counts[source_id] += 1
+    def write_frame(self, source_id: str, frame: Any) -> None:
+        if frame is None:
+            return
+        writer = self._ensure_writer(source_id, frame)
+        if writer is None:
+            return
+        expected = self._sizes[source_id]
+        if (int(frame.shape[1]), int(frame.shape[0])) != expected:
+            frame = cv2.resize(frame, expected)
+        writer.write(frame)
+        self._frame_counts[source_id] += 1
+
+    def write_frames(self, frames: dict[str, Any]) -> None:
+        for source_id, frame in frames.items():
+            self.write_frame(source_id, frame)
 
     def total_frames(self) -> int:
         return sum(self._frame_counts.values())

@@ -9,6 +9,7 @@ from typing import Any
 import cv2
 from PySide6.QtCore import QThread, Signal
 
+from mocap_app.io.video_recorder import VideoRecorder
 from mocap_app.models.types import CameraSourceConfig, FramePacket
 
 
@@ -37,9 +38,23 @@ class LiveCaptureWorker(QThread):
         self._requested_width = max(0, int(requested_width))
         self._requested_height = max(0, int(requested_height))
         self._stop_event = threading.Event()
+        self._recorder_lock = threading.Lock()
+        self._recorder: VideoRecorder | None = None
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def attach_recorder(self, recorder: VideoRecorder) -> None:
+        """Start recording the full-resolution captured frames."""
+        with self._recorder_lock:
+            self._recorder = recorder
+
+    def detach_recorder(self) -> VideoRecorder | None:
+        """Stop recording and return the active recorder, if any."""
+        with self._recorder_lock:
+            recorder = self._recorder
+            self._recorder = None
+        return recorder
 
     def run(self) -> None:
         captures: dict[str, cv2.VideoCapture] = {}
@@ -66,6 +81,7 @@ class LiveCaptureWorker(QThread):
                 loop_start = time.perf_counter()
                 timestamp_sec = time.time()
                 batch: dict[str, FramePacket] = {}
+                record_batch: dict[str, Any] = {}
 
                 for source_id, capture in captures.items():
                     ok, frame = capture.read()
@@ -78,13 +94,21 @@ class LiveCaptureWorker(QThread):
                         continue
 
                     frame_indices[source_id] += 1
-                    frame = self._maybe_resize(frame)
+                    # Record the full capture-resolution frame before any preview
+                    # downscaling so recordings are independent of the preview size.
+                    record_batch[source_id] = frame
+                    preview_frame = self._maybe_resize(frame)
                     batch[source_id] = FramePacket(
                         source_id=source_id,
                         frame_index=frame_indices[source_id],
                         timestamp_sec=timestamp_sec,
-                        frame_bgr=frame,
+                        frame_bgr=preview_frame,
                     )
+
+                if record_batch:
+                    with self._recorder_lock:
+                        if self._recorder is not None:
+                            self._recorder.write_frames(record_batch)
 
                 if batch:
                     self.batch_ready.emit(batch)
