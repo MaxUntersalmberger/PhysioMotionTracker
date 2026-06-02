@@ -367,7 +367,7 @@ class CameraFrame(QtWidgets.QFrame):
                         pixmap.scaled(
                             self.popout_window.label_video.size(),
                             QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                            QtCore.Qt.TransformationMode.SmoothTransformation,
+                            QtCore.Qt.TransformationMode.FastTransformation,
                         )
                     )
                 QtWidgets.QDialog.resizeEvent(self.popout_window, event)
@@ -395,7 +395,7 @@ class CameraFrame(QtWidgets.QFrame):
                 pixmap.scaled(
                     self.popout_window.label_video.size(),
                     QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                    QtCore.Qt.TransformationMode.SmoothTransformation,
+                    QtCore.Qt.TransformationMode.FastTransformation,
                 )
             )
             if self.video_label.text() != "Gemaximaliseerd...":
@@ -405,7 +405,7 @@ class CameraFrame(QtWidgets.QFrame):
                 pixmap.scaled(
                     self.video_label.size(),
                     QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                    QtCore.Qt.TransformationMode.SmoothTransformation,
+                    QtCore.Qt.TransformationMode.FastTransformation,
                 )
             )
 

@@ -2,7 +2,7 @@
   "app_name": "PhysioMotionTracker",
   "target_fps": 30.0,
   "default_camera_csv": "0",
-  "ui_scale": 0.7,
+  "ui_scale": 0.9,
   "overlay_scale": 1.0,
   "camera_labels": {
     "cam0": "Webcam",

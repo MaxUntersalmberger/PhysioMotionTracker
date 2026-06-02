@@ -152,6 +152,6 @@ class CameraFrameWidget(QFrame):
             self._last_pixmap.scaled(
                 self._image_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+                Qt.TransformationMode.FastTransformation,
             )
         )

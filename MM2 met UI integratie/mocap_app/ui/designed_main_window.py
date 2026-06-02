@@ -84,6 +84,359 @@ class ConsoleStream(io.StringIO):
         return None
 
 
+class _PreviewCanvas(QLabel):
+    def __init__(self, message: str = "No frame", parent: QWidget | None = None) -> None:
+        super().__init__(message, parent)
+        self._frame_pixmap: QPixmap | None = None
+        self._detection: ChessboardDetectionResult | None = None
+        self._overlay_state: dict[str, Any] = {}
+        self._status = ""
+        self._sample_count = 0
+        self._overlay_cache_key: tuple[Any, ...] | None = None
+        self._overlay_cache: QPixmap | None = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(1, 1)
+        self.setStyleSheet("background-color: black; color: white;")
+
+    def set_frame_pixmap(self, pixmap: QPixmap) -> None:
+        self._frame_pixmap = pixmap
+        self.update()
+
+    def set_overlay_data(
+        self,
+        detection: ChessboardDetectionResult | None,
+        overlay_state: dict[str, Any] | None,
+        status: str = "",
+        sample_count: int = 0,
+    ) -> None:
+        self._detection = detection
+        self._overlay_state = dict(overlay_state or {})
+        self._status = status
+        self._sample_count = int(sample_count)
+        self.update()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        self._overlay_cache_key = None
+        super().resizeEvent(event)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        painter = QtGui.QPainter(self)
+        painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0))
+        if self._frame_pixmap is None or self._frame_pixmap.isNull():
+            painter.setPen(QtGui.QColor(245, 250, 255))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text() or "No frame")
+            painter.end()
+            return
+
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
+        image_rect = self._image_rect()
+        painter.drawPixmap(image_rect, self._frame_pixmap, QtCore.QRectF(self._frame_pixmap.rect()))
+        overlay = self._overlay_pixmap(image_rect)
+        if overlay is not None:
+            painter.drawPixmap(0, 0, overlay)
+        painter.end()
+
+    def _image_rect(self) -> QtCore.QRectF:
+        if self._frame_pixmap is None or self._frame_pixmap.isNull():
+            return QtCore.QRectF(self.rect())
+        pixmap_size = self._frame_pixmap.size()
+        if pixmap_size.width() <= 0 or pixmap_size.height() <= 0:
+            return QtCore.QRectF(self.rect())
+        scale = min(
+            self.width() / float(pixmap_size.width()),
+            self.height() / float(pixmap_size.height()),
+        )
+        draw_w = pixmap_size.width() * scale
+        draw_h = pixmap_size.height() * scale
+        x = (self.width() - draw_w) / 2.0
+        y = (self.height() - draw_h) / 2.0
+        return QtCore.QRectF(x, y, draw_w, draw_h)
+
+    def _overlay_pixmap(self, image_rect: QtCore.QRectF) -> QPixmap | None:
+        if self._detection is None or not self._overlay_state.get("overlay_enabled", False):
+            self._overlay_cache_key = None
+            self._overlay_cache = None
+            return None
+        key = self._overlay_key(image_rect)
+        if self._overlay_cache_key == key and self._overlay_cache is not None:
+            return self._overlay_cache
+
+        overlay = QPixmap(self.size())
+        overlay.fill(Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(overlay)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+        self._draw_overlay(painter, image_rect)
+        painter.end()
+
+        self._overlay_cache_key = key
+        self._overlay_cache = overlay
+        return overlay
+
+    def _overlay_key(self, image_rect: QtCore.QRectF) -> tuple[Any, ...]:
+        detection = self._detection
+        corners_sig: tuple[float, ...] = ()
+        if detection is not None and detection.corners is not None:
+            corners_sig = tuple(round(float(value), 1) for value in detection.corners.reshape(-1))
+        state = self._overlay_state
+        return (
+            round(image_rect.x(), 1),
+            round(image_rect.y(), 1),
+            round(image_rect.width(), 1),
+            round(image_rect.height(), 1),
+            detection.source_id if detection else "",
+            detection.pattern_type if detection else "",
+            tuple(detection.image_size) if detection else (),
+            bool(detection.found) if detection else False,
+            int(detection.detected_corners) if detection else 0,
+            round(float(detection.quality_score), 3) if detection else 0.0,
+            round(float(detection.coverage_ratio), 4) if detection else 0.0,
+            tuple(detection.diagnostics[:3]) if detection else (),
+            corners_sig,
+            tuple(tuple(row) for row in state.get("hit_counts", []) if isinstance(row, list)),
+            tuple(state.get("grid_shape", (0, 0))),
+            int(state.get("target_samples_per_cell", 0) or 0),
+            int(state.get("sample_count", self._sample_count) or 0),
+            state.get("accepted"),
+            bool(state.get("mirror", False)),
+            int(state.get("visited_cells", 0) or 0),
+            int(state.get("total_cells", 0) or 0),
+            round(float(state.get("coverage_ratio", 0.0) or 0.0), 4),
+            round(self._overlay_scale(), 3),
+        )
+
+    def _overlay_scale(self) -> float:
+        try:
+            return max(0.3, min(3.0, float(self._overlay_state.get("overlay_scale", 1.0))))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _draw_overlay(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        if self._detection is None:
+            return
+        self._draw_grid(painter, image_rect)
+        self._draw_detection_marks(painter, image_rect)
+        self._draw_header(painter, image_rect)
+        self._draw_coverage_label(painter, image_rect)
+
+    def _draw_header(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        detection = self._detection
+        if detection is None:
+            return
+        sample_count = int(self._overlay_state.get("sample_count", self._sample_count) or 0)
+        accepted = self._overlay_state.get("accepted")
+        state_text = "Detected" if detection.found else "Not detected"
+        if accepted is True:
+            state_text = "Accepted"
+        elif accepted is False:
+            state_text = "Rejected"
+        header = f"{detection.source_id} | samples:{sample_count} | {detection.pattern_type} | {state_text}"
+        metrics = (
+            f"corners:{detection.detected_corners} | "
+            f"quality:{detection.quality_score:.2f} | coverage:{detection.coverage_ratio * 100:.1f}%"
+        )
+        lines = [header, metrics]
+        if detection.diagnostics:
+            lines.append(detection.diagnostics[0])
+
+        scale = self._overlay_scale()
+        font = QtGui.QFont("Segoe UI")
+        font.setPixelSize(max(7, int(max(11, min(22, int(image_rect.height() / 34))) * scale)))
+        font.setBold(True)
+        small = QtGui.QFont("Segoe UI")
+        small.setPixelSize(max(7, int(font.pixelSize() * 0.78)))
+        margin = max(4, int(image_rect.height() * 0.016 * scale))
+        x = image_rect.left() + margin
+        y = image_rect.top() + margin
+        color = QtGui.QColor(255, 118, 76) if not detection.found else QtGui.QColor(95, 235, 140)
+        for index, text in enumerate(lines):
+            painter.setFont(font if index == 0 else small)
+            metrics_obj = QtGui.QFontMetrics(painter.font())
+            rect = QtCore.QRectF(
+                x,
+                y,
+                metrics_obj.horizontalAdvance(text) + 10,
+                metrics_obj.height() + 4,
+            )
+            painter.fillRect(rect, QtGui.QColor(0, 0, 0, 175))
+            painter.setPen(color if index == 0 else QtGui.QColor(245, 250, 255))
+            painter.drawText(rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, text)
+            y += rect.height() + 1
+
+    def _draw_grid(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        cols, rows = self._grid_shape()
+        if cols <= 0 or rows <= 0:
+            return
+        target = max(1, int(self._overlay_state.get("target_samples_per_cell", 3) or 3))
+        cell_w = image_rect.width() / cols
+        cell_h = image_rect.height() / rows
+        hit_counts = self._overlay_state.get("hit_counts", [])
+        current_cells = self._current_detection_cells(cols, rows)
+
+        for row in range(rows):
+            for col in range(cols):
+                hit_count = self._hit_count_for_cell(hit_counts, row, col, cols)
+                if hit_count > 0:
+                    painter.fillRect(
+                        QtCore.QRectF(
+                            image_rect.left() + col * cell_w,
+                            image_rect.top() + row * cell_h,
+                            cell_w,
+                            cell_h,
+                        ),
+                        self._cell_tint(hit_count, target),
+                    )
+
+        dark_pen = QtGui.QPen(QtGui.QColor(20, 24, 28, 215), 3)
+        light_pen = QtGui.QPen(QtGui.QColor(235, 245, 250, 190), 1)
+        for col in range(1, cols):
+            x = image_rect.left() + col * cell_w
+            painter.setPen(dark_pen)
+            painter.drawLine(QtCore.QPointF(x, image_rect.top()), QtCore.QPointF(x, image_rect.bottom()))
+            painter.setPen(light_pen)
+            painter.drawLine(QtCore.QPointF(x, image_rect.top()), QtCore.QPointF(x, image_rect.bottom()))
+        for row in range(1, rows):
+            y = image_rect.top() + row * cell_h
+            painter.setPen(dark_pen)
+            painter.drawLine(QtCore.QPointF(image_rect.left(), y), QtCore.QPointF(image_rect.right(), y))
+            painter.setPen(light_pen)
+            painter.drawLine(QtCore.QPointF(image_rect.left(), y), QtCore.QPointF(image_rect.right(), y))
+
+        font = QtGui.QFont("Segoe UI")
+        font.setBold(True)
+        font.setPixelSize(max(7, int(max(11, min(24, int(min(cell_w, cell_h) * 0.18))) * self._overlay_scale())))
+        painter.setFont(font)
+        metrics_obj = QtGui.QFontMetrics(font)
+        for row in range(rows):
+            for col in range(cols):
+                x0 = image_rect.left() + col * cell_w
+                y0 = image_rect.top() + row * cell_h
+                text = f"{self._hit_count_for_cell(hit_counts, row, col, cols)}/{target}"
+                text_rect = QtCore.QRectF(
+                    x0 + 4,
+                    y0 + 4,
+                    metrics_obj.horizontalAdvance(text) + 9,
+                    metrics_obj.height() + 5,
+                )
+                painter.fillRect(text_rect, QtGui.QColor(0, 0, 0, 185))
+                painter.setPen(QtGui.QColor(255, 255, 255))
+                painter.drawText(text_rect.adjusted(4, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter, text)
+                if (row, col) in current_cells:
+                    painter.setPen(QtGui.QPen(QtGui.QColor(0, 220, 255), 2))
+                    painter.drawRect(
+                        QtCore.QRectF(x0 + 1, y0 + 1, max(1.0, cell_w - 2), max(1.0, cell_h - 2))
+                    )
+
+    def _draw_detection_marks(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        detection = self._detection
+        if detection is None or not detection.found or detection.corners is None:
+            return
+        points = [self._map_point(float(point[0]), float(point[1]), image_rect) for point in detection.corners.reshape(-1, 2)]
+        if detection.pattern_type != "charuco" and len(points) > 1:
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 165, 255), 2))
+            for left, right in zip(points, points[1:]):
+                painter.drawLine(left, right)
+        painter.setBrush(QtGui.QColor(70, 220, 120))
+        painter.setPen(QtGui.QPen(QtGui.QColor(12, 24, 18), 1))
+        radius = max(1.5, min(5.0, image_rect.height() / 160.0) * self._overlay_scale())
+        for point in points:
+            painter.drawEllipse(point, radius, radius)
+
+    def _draw_coverage_label(self, painter: QtGui.QPainter, image_rect: QtCore.QRectF) -> None:
+        visited = int(self._overlay_state.get("visited_cells", 0) or 0)
+        total = int(self._overlay_state.get("total_cells", 0) or 0)
+        ratio = float(self._overlay_state.get("coverage_ratio", 0.0) or 0.0)
+        if total <= 0:
+            cols, rows = self._grid_shape()
+            total = cols * rows
+        text = f"coverage grid {visited}/{total} ({ratio * 100.0:.0f}%)"
+        font = QtGui.QFont("Segoe UI")
+        font.setBold(True)
+        font.setPixelSize(max(7, int(max(10, min(18, int(image_rect.height() / 38))) * self._overlay_scale())))
+        painter.setFont(font)
+        metrics_obj = QtGui.QFontMetrics(font)
+        rect = QtCore.QRectF(
+            image_rect.left() + 8,
+            image_rect.bottom() - metrics_obj.height() - 10,
+            metrics_obj.horizontalAdvance(text) + 10,
+            metrics_obj.height() + 5,
+        )
+        painter.fillRect(rect, QtGui.QColor(0, 0, 0, 170))
+        painter.setPen(QtGui.QColor(245, 250, 255))
+        painter.drawText(rect.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, text)
+
+    def _grid_shape(self) -> tuple[int, int]:
+        value = self._overlay_state.get("grid_shape", (6, 4))
+        if isinstance(value, tuple) and len(value) == 2:
+            return max(1, int(value[0])), max(1, int(value[1]))
+        if isinstance(value, list) and len(value) == 2:
+            return max(1, int(value[0])), max(1, int(value[1]))
+        return 6, 4
+
+    def _hit_count_for_cell(self, hit_counts: Any, row: int, col: int, cols: int) -> int:
+        source_col = cols - 1 - col if self._overlay_state.get("mirror", False) else col
+        if isinstance(hit_counts, list) and row < len(hit_counts):
+            row_counts = hit_counts[row]
+            if isinstance(row_counts, list) and source_col < len(row_counts):
+                return int(row_counts[source_col])
+        return 0
+
+    def _cell_tint(self, hit_count: int, target: int) -> QtGui.QColor:
+        if hit_count >= target:
+            return QtGui.QColor(60, 185, 80, 40)
+        if hit_count >= max(1, int(target * 2 / 3)):
+            return QtGui.QColor(70, 205, 150, 38)
+        return QtGui.QColor(95, 215, 240, 36)
+
+    def _current_detection_cells(self, cols: int, rows: int) -> set[tuple[int, int]]:
+        detection = self._detection
+        if detection is None or not detection.found:
+            return set()
+        points: list[tuple[float, float]] = []
+        if detection.corners is not None:
+            points.extend((float(point[0]), float(point[1])) for point in detection.corners.reshape(-1, 2))
+        if detection.board_bbox_px is not None:
+            x_px, y_px, width, height = detection.board_bbox_px
+            points.extend(
+                [
+                    (x_px, y_px),
+                    (x_px + width, y_px),
+                    (x_px, y_px + height),
+                    (x_px + width, y_px + height),
+                ]
+            )
+        if detection.board_center_px is not None:
+            points.append(detection.board_center_px)
+        return {self._point_to_grid_cell(x, y, cols, rows) for x, y in points}
+
+    def _point_to_grid_cell(self, x_px: float, y_px: float, cols: int, rows: int) -> tuple[int, int]:
+        detection = self._detection
+        if detection is None:
+            return 0, 0
+        width, height = detection.image_size
+        safe_width = max(1.0, float(width))
+        safe_height = max(1.0, float(height))
+        if self._overlay_state.get("mirror", False):
+            x_px = safe_width - 1.0 - x_px
+        col = min(max(int(x_px * cols / safe_width), 0), cols - 1)
+        row = min(max(int(y_px * rows / safe_height), 0), rows - 1)
+        return row, col
+
+    def _map_point(self, x_px: float, y_px: float, image_rect: QtCore.QRectF) -> QtCore.QPointF:
+        detection = self._detection
+        if detection is None:
+            return QtCore.QPointF(image_rect.left(), image_rect.top())
+        width, height = detection.image_size
+        safe_width = max(1.0, float(width))
+        safe_height = max(1.0, float(height))
+        if self._overlay_state.get("mirror", False):
+            x_px = safe_width - 1.0 - x_px
+        return QtCore.QPointF(
+            image_rect.left() + (x_px / safe_width) * image_rect.width(),
+            image_rect.top() + (y_px / safe_height) * image_rect.height(),
+        )
+
+
 class DesignedPreviewPopout(QDialog):
     rename_requested = Signal()
     auto_capture_toggled = Signal(bool)
@@ -127,10 +480,7 @@ class DesignedPreviewPopout(QDialog):
         controls.addWidget(self._undistort_button)
         controls.addWidget(self._delete_button)
 
-        self._image = QLabel("No frame")
-        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image.setMinimumSize(1, 1)
-        self._image.setStyleSheet("background-color: black; color: white;")
+        self._image = _PreviewCanvas("No frame")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -169,24 +519,17 @@ class DesignedPreviewPopout(QDialog):
         self._undistort_button.setChecked(active)
         self._undistort_button.blockSignals(False)
 
-    def set_frame(self, pixmap: QPixmap) -> None:
+    def set_frame(
+        self,
+        pixmap: QPixmap,
+        detection: ChessboardDetectionResult | None = None,
+        overlay_state: dict[str, Any] | None = None,
+        status: str = "",
+        sample_count: int = 0,
+    ) -> None:
         self._last_pixmap = pixmap
-        self._render()
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        self._render()
-        super().resizeEvent(event)
-
-    def _render(self) -> None:
-        if self._last_pixmap is None:
-            return
-        self._image.setPixmap(
-            self._last_pixmap.scaled(
-                self._image.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        self._image.set_frame_pixmap(pixmap)
+        self._image.set_overlay_data(detection, overlay_state, status, sample_count)
 
 
 class DesignedPreviewTile(QFrame):
@@ -201,6 +544,10 @@ class DesignedPreviewTile(QFrame):
         super().__init__()
         self._source_id = source_id
         self._last_pixmap: QPixmap | None = None
+        self._last_detection: ChessboardDetectionResult | None = None
+        self._last_overlay_state: dict[str, Any] = {}
+        self._last_status = ""
+        self._last_sample_count = 0
         self._popout: DesignedPreviewPopout | None = None
 
         self._display_name = source_id
@@ -243,10 +590,8 @@ class DesignedPreviewTile(QFrame):
         controls.addWidget(self._undistort)
         controls.addWidget(self._delete_button)
 
-        self._image = QLabel("No frame")
-        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image = _PreviewCanvas("No frame")
         self._image.setMinimumSize(320, 220)
-        self._image.setStyleSheet("background-color: black; color: white;")
 
         self._status = QLabel("Waiting for live feed")
         self._status.setWordWrap(True)
@@ -342,20 +687,34 @@ class DesignedPreviewTile(QFrame):
         self._progress.setValue(min(max(int(count), 0), 100))
         self._progress.setFormat(f"{int(count)}/100")
 
-    def set_frame(self, frame_bgr: Any, status: str, sample_count: int) -> None:
+    def set_frame(
+        self,
+        frame_bgr: Any,
+        status: str,
+        sample_count: int,
+        detection: ChessboardDetectionResult | None = None,
+        overlay_state: dict[str, Any] | None = None,
+    ) -> None:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         image = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
         self._last_pixmap = QPixmap.fromImage(image)
+        self._last_detection = detection
+        self._last_overlay_state = dict(overlay_state or {})
+        self._last_status = status
+        self._last_sample_count = int(sample_count)
         self._status.setText(status)
         self.set_sample_count(sample_count)
-        self._render()
+        self._image.set_frame_pixmap(self._last_pixmap)
+        self._image.set_overlay_data(detection, self._last_overlay_state, status, sample_count)
         if self._popout is not None:
-            self._popout.set_frame(self._last_pixmap)
-
-    def resizeEvent(self, event) -> None:  # type: ignore[override]
-        self._render()
-        super().resizeEvent(event)
+            self._popout.set_frame(
+                self._last_pixmap,
+                detection=self._last_detection,
+                overlay_state=self._last_overlay_state,
+                status=self._last_status,
+                sample_count=self._last_sample_count,
+            )
 
     def _toggle_popout(self, checked: bool) -> None:
         if checked:
@@ -427,7 +786,13 @@ class DesignedPreviewTile(QFrame):
             self._popout.set_mirror_active(self._mirror_button.isChecked())
             self._popout.set_undistort_active(self._undistort.isChecked())
         if self._last_pixmap is not None:
-            self._popout.set_frame(self._last_pixmap)
+            self._popout.set_frame(
+                self._last_pixmap,
+                detection=self._last_detection,
+                overlay_state=self._last_overlay_state,
+                status=self._last_status,
+                sample_count=self._last_sample_count,
+            )
         self._popout.show()
         self._popout.raise_()
         self._popout.activateWindow()
@@ -440,18 +805,6 @@ class DesignedPreviewTile(QFrame):
         self._open_button.blockSignals(True)
         self._open_button.setChecked(False)
         self._open_button.blockSignals(False)
-
-    def _render(self) -> None:
-        if self._last_pixmap is None:
-            return
-        self._image.setPixmap(
-            self._last_pixmap.scaled(
-                self._image.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
-
 
 class DesignedCalibrationPanel(QtCore.QObject):
     new_project_requested = Signal()
@@ -522,6 +875,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
         sys.stdout = ConsoleStream(self.window.plaintextedit_console)
         sys.stderr = ConsoleStream(self.window.plaintextedit_console)
 
+    def uses_qt_preview_overlay(self) -> bool:
+        return True
+
     def _setup_camera_page(self, default_camera_csv: str, default_fps: float) -> None:
         self._setup_camera_splitter()
         self.window.spin_cap_fps.setRange(1, 120)
@@ -574,7 +930,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         splitter.addWidget(self.window.frame_cam)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([180, 650])
+        splitter.setSizes([116, 720])
         page_layout.addWidget(splitter, stretch=1)
         self.window._camera_splitter = splitter
 
@@ -675,7 +1031,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         self._sources_input = QLineEdit(default_camera_csv)
         self._preview_fps_spin = self._double_spin(1.0, 120.0, min(default_fps, 30.0), 1.0, 1)
-        self._detect_hz_spin = self._double_spin(0.5, 20.0, 10.0, 0.5, 1)
+        self._detect_hz_spin = self._double_spin(0.5, 20.0, 5.0, 0.5, 1)
         self._capture_resolution_combo = QComboBox()
         self._capture_resolution_combo.addItem("Auto", (0, 0))
         self._capture_resolution_combo.addItem("640 x 480", (640, 480))
@@ -689,7 +1045,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._preview_resolution_combo.addItem("960 x 540", (960, 540))
         self._preview_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._preview_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        self._preview_resolution_combo.setCurrentIndex(3)
+        self._preview_resolution_combo.setCurrentIndex(1)
         self._probe_max_spin = self._spin(1, 20, 10)
 
         self._chess_cols_spin = self._spin(2, 30, 9)
@@ -779,11 +1135,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
             self._capture_resolution_combo,
             self._preview_resolution_combo,
             self._workflow_combo,
+            self.window.combo_cap_pattern,
         ]:
             self._compact_field(widget, 180)
             self._wheel_scrolls_page(widget)
 
         for widget in [
+            self.window.spin_cap_fps,
             self._preview_fps_spin,
             self._detect_hz_spin,
             self._probe_max_spin,
@@ -927,7 +1285,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form = QFormLayout(form_widget)
         self._setup_compact_form(form)
         form.addRow("Sources (CSV)", self._sources_input)
-        form.addRow("Capture FPS", QLabel("Use the FPS field on the Camera page"))
+        form.addRow("Capture FPS", self.window.spin_cap_fps)
         form.addRow("Capture Resolution", self._capture_resolution_combo)
         form.addRow("Preview FPS", self._preview_fps_spin)
         form.addRow("Preview Resolution", self._preview_resolution_combo)
@@ -963,7 +1321,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         form = QFormLayout(form_widget)
         self._setup_compact_form(form)
         form.addRow("Workflow", self._workflow_combo)
-        form.addRow("Pattern", QLabel("Use the Pattern field on the Camera page"))
+        form.addRow("Pattern", self.window.combo_cap_pattern)
         form.addRow("Overlay", self._overlay_checkbox)
         form.addRow("Mirror", self._mirror_checkbox)
         form.addRow("Auto Capture", self._auto_capture_checkbox)
@@ -1582,7 +1940,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
         preview_frames: dict[str, Any],
         detections: dict[str, ChessboardDetectionResult],
         sample_counts: dict[str, int],
+        overlay_states: dict[str, dict[str, Any]] | None = None,
     ) -> None:
+        overlay_states = overlay_states or {}
         for source_id, frame_bgr in preview_frames.items():
             tile = self._tiles.get(source_id)
             if tile is None:
@@ -1599,7 +1959,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 )
             elif detection is not None:
                 status += f" | {detection.pattern_type} not found"
-            tile.set_frame(frame_bgr, status, count)
+            tile.set_frame(
+                frame_bgr,
+                status,
+                count,
+                detection=detection,
+                overlay_state=overlay_states.get(source_id),
+            )
 
     def _display_name(self, source_id: str) -> str:
         tile = self._tiles.get(source_id)
@@ -1999,24 +2365,29 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
 
         top_layout = self.frame.layout()
         if isinstance(top_layout, QGridLayout):
-            top_layout.setContentsMargins(10, 8, 10, 8)
+            top_layout.setContentsMargins(8, 6, 8, 6)
             top_layout.setHorizontalSpacing(8)
-            top_layout.setVerticalSpacing(6)
-            top_layout.addWidget(self.lab_cap_fps, 0, 0)
-            top_layout.addWidget(self.spin_cap_fps, 0, 1)
-            top_layout.addWidget(self.lab_cap_pattern, 1, 0)
-            top_layout.addWidget(self.combo_cap_pattern, 1, 1)
-            top_layout.addWidget(live_actions, 2, 0, 1, 2)
-            top_layout.addWidget(video_actions, 3, 0, 1, 2)
-            top_layout.addWidget(self.frame_2, 0, 2, 3, 1)
-            top_layout.addWidget(self.frame_3, 0, 3, 3, 1)
+            top_layout.setVerticalSpacing(4)
+            for widget in [
+                self.lab_cap_fps,
+                self.spin_cap_fps,
+                self.lab_cap_pattern,
+                self.combo_cap_pattern,
+            ]:
+                top_layout.removeWidget(widget)
+                widget.setParent(None)
+
+            top_layout.addWidget(live_actions, 0, 0, 1, 2)
+            top_layout.addWidget(video_actions, 1, 0, 1, 2)
+            top_layout.addWidget(self.frame_2, 0, 2, 2, 1)
+            top_layout.addWidget(self.frame_3, 0, 3, 2, 1)
             top_layout.addWidget(
                 self.btn_cap_reset_calibration,
                 0,
                 4,
+                2,
                 1,
-                1,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+                Qt.AlignmentFlag.AlignRight,
             )
             top_layout.setColumnStretch(0, 0)
             top_layout.setColumnStretch(1, 1)
@@ -2024,14 +2395,11 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             top_layout.setColumnStretch(3, 1)
             top_layout.setColumnStretch(4, 0)
 
-        for widget in [self.spin_cap_fps, self.combo_cap_pattern]:
-            widget.setMaximumWidth(420)
-
         for panel in [self.frame_2, self.frame_3]:
             layout = panel.layout()
             if isinstance(layout, QVBoxLayout):
-                layout.setContentsMargins(8, 6, 8, 6)
-                layout.setSpacing(5)
+                layout.setContentsMargins(8, 4, 8, 4)
+                layout.setSpacing(3)
 
         for button in [
             self.btn_cap_intrinsics_start,
@@ -2044,16 +2412,19 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             self.btn_camera_record,
             self.btn_camera_load_video,
         ]:
-            button.setMinimumHeight(28)
+            button.setMinimumHeight(24)
 
         self.btn_cap_reset_calibration.setText("")
         self.btn_cap_reset_calibration.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_BrowserReload)
         )
         self.btn_cap_reset_calibration.setToolTip("Reset calibration")
-        self.btn_cap_reset_calibration.setFixedSize(36, 36)
+        self.btn_cap_reset_calibration.setMinimumWidth(36)
+        self.btn_cap_reset_calibration.setMaximumWidth(36)
+        self.btn_cap_reset_calibration.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.btn_cap_reset_calibration.setProperty("danger", True)
-        self.frame.setMinimumHeight(160)
+        self.frame.setMinimumHeight(104)
+        self.frame.setMaximumHeight(124)
 
     def _setup_resizable_shell(self) -> None:
         central_layout = self.centralwidget.layout()

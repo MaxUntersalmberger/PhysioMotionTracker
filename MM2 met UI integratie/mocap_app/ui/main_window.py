@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-from PySide6.QtCore import QTimer, QUrl
+import numpy as np
+from PySide6.QtCore import QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMessageBox
 
@@ -32,6 +33,7 @@ from mocap_app.ui.widgets.calibration_panel import CalibrationPanelWidget
 from mocap_app.workers.calibration_solve_worker import IntrinsicsSolveWorker
 from mocap_app.workers.camera_probe_worker import CameraProbeWorker
 from mocap_app.workers.capture_worker import LiveCaptureWorker
+from mocap_app.workers.detection_worker import CalibrationDetectionWorker
 
 
 LOGGER = logging.getLogger(__name__)
@@ -42,6 +44,10 @@ SYNC_WARNING_THROTTLE_SEC = 3.0
 
 class MainWindow(QMainWindow):
     """Calibration-only application shell."""
+
+    # Emitted from the UI thread to hand a detection job to the background
+    # detection worker (connected with a queued connection across threads).
+    request_detection = Signal(object)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -65,6 +71,9 @@ class MainWindow(QMainWindow):
         self._live_worker: LiveCaptureWorker | None = None
         self._camera_probe_worker: CameraProbeWorker | None = None
         self._intrinsics_solve_worker: IntrinsicsSolveWorker | None = None
+        self._detection_thread: QThread | None = None
+        self._detection_worker: CalibrationDetectionWorker | None = None
+        self._detection_request_in_flight = False
         self._video_recorder: VideoRecorder | None = None
         self._last_recording_dir: Path | None = None
         self._active_sources: list[CameraSourceConfig] = []
@@ -72,6 +81,7 @@ class MainWindow(QMainWindow):
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
         self._last_rendered_frame_indices: dict[str, int] = {}
+        self._calibration_overlay_cache: dict[str, tuple[tuple[Any, ...], Any, Any]] = {}
         self._active_camera_count = 0
 
         self._calibration_panel = self._create_calibration_panel(
@@ -90,6 +100,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._apply_window_style()
         self._connect_signals()
+        self._setup_detection_worker()
 
         self._calibration_panel.set_pattern_options(
             pattern_names=self._calibration_manager.available_patterns(),
@@ -174,6 +185,31 @@ class MainWindow(QMainWindow):
         self._display_timer.setInterval(interval_ms)
         if not self._display_timer.isActive():
             self._display_timer.start()
+
+    def _setup_detection_worker(self) -> None:
+        """Start the background thread that runs pattern detection.
+
+        Detection is the dominant per-frame cost; running it on the UI thread
+        froze the Qt event loop every detection cycle. The worker lives for the
+        whole session and processes one job at a time (gated by
+        ``_detection_request_in_flight``) so requests never queue up.
+        """
+        self._detection_thread = QThread(self)
+        self._detection_worker = CalibrationDetectionWorker(self._calibration_manager)
+        self._detection_worker.moveToThread(self._detection_thread)
+        self.request_detection.connect(self._detection_worker.run_detection)
+        self._detection_worker.result_ready.connect(self._on_detection_result)
+        self._detection_thread.start()
+
+    def _shutdown_detection_worker(self) -> None:
+        thread = self._detection_thread
+        if thread is None:
+            return
+        thread.quit()
+        thread.wait(2000)
+        self._detection_thread = None
+        self._detection_worker = None
+        self._detection_request_in_flight = False
 
     def _default_calibration_path(self) -> Path:
         return self._config.calibration_dir / "current_calibration.json"
@@ -622,6 +658,7 @@ class MainWindow(QMainWindow):
             return
         now = time.perf_counter()
         overlay_enabled = self._calibration_panel.overlay_enabled()
+        use_qt_overlay = self._uses_qt_preview_overlay()
         detection_needed = overlay_enabled or self._calibration_panel.auto_capture_enabled()
         detection_due = detection_needed and (
             force or now - self._last_calibration_detection_at >= self._calibration_detection_interval_sec
@@ -640,29 +677,25 @@ class MainWindow(QMainWindow):
         }
         detections = dict(self._latest_calibration_detections)
 
-        if detection_due:
-            detections = {}
-            for source_id, preview in previews.items():
-                detection = self._calibration_manager.detect_pattern(
-                    source_id=source_id,
-                    frame_bgr=preview,
-                    pattern=self._calibration_pattern,
-                )
-                detections[source_id] = detection
-                if self._calibration_panel.overlay_enabled_for(source_id):
-                    previews[source_id] = self._draw_calibration_preview_overlay(
-                        source_id=source_id,
-                        frame_bgr=preview,
-                        detection=detection,
-                        sample_count=sample_counts.get(source_id, 0),
-                    )
-
-            self._latest_calibration_detections = detections
+        if detection_due and not self._detection_request_in_flight:
+            # Hand detection to the background worker and keep rendering with the
+            # most recent detections. The result is applied asynchronously in
+            # _on_detection_result, which also drives auto-capture. The frames
+            # snapshot lets that step pair the detected corners with the exact
+            # frames they came from.
             self._last_calibration_detection_at = now
-            if self._maybe_auto_capture_calibration(detections):
-                return
-            sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
-        elif overlay_enabled:
+            self._detection_request_in_flight = True
+            self.request_detection.emit(
+                {
+                    "frames": dict(previews),
+                    "frames_snapshot": dict(self._latest_frames),
+                    "pattern": self._calibration_pattern,
+                }
+            )
+
+        if overlay_enabled and not use_qt_overlay:
+            # Legacy cv2-baked overlay path: bake using the latest known
+            # detections (the Qt overlay path renders the overlay separately).
             for source_id, preview in list(previews.items()):
                 detection = detections.get(source_id)
                 if detection is not None and self._calibration_panel.overlay_enabled_for(source_id):
@@ -677,11 +710,97 @@ class MainWindow(QMainWindow):
             detections = {}
             self._refresh_calibration_panel(force=True)
 
-        display_previews = self._finalize_calibration_preview_frames(previews, detections, overlay_enabled)
-        self._calibration_panel.update_previews(display_previews, detections, sample_counts)
+        overlay_baked = overlay_enabled and not use_qt_overlay
+        display_previews = self._finalize_calibration_preview_frames(
+            previews,
+            detections,
+            overlay_baked=overlay_baked,
+        )
+        overlay_states = (
+            self._build_preview_overlay_states(detections, sample_counts)
+            if use_qt_overlay
+            else None
+        )
+        self._update_preview_panel(display_previews, detections, sample_counts, overlay_states)
         self._last_rendered_frame_indices = frame_indices
         if detection_due or force:
             self._refresh_calibration_panel()
+
+    def _on_detection_result(self, payload: object) -> None:
+        """Apply detection results produced by the background worker.
+
+        Runs on the UI thread, so all sample capture and manager mutation stay
+        single-threaded. Auto-capture uses the frames the detection was computed
+        on (``frames_snapshot``) so the stored corners and the capture frames
+        always belong to the same instant. The overlay/preview picks up the new
+        detections on the next display tick.
+        """
+        self._detection_request_in_flight = False
+        # A result can land just after live capture stopped; _latest_frames is
+        # only empty when not live, so drop the stale detection in that case.
+        if not self._latest_frames:
+            return
+        try:
+            data = dict(payload)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        detections = data.get("detections") or {}
+        self._latest_calibration_detections = detections
+        frames_snapshot = data.get("frames_snapshot") or {}
+        if self._maybe_auto_capture_calibration(detections, frames=frames_snapshot):
+            return
+        self._refresh_calibration_panel()
+
+    def _uses_qt_preview_overlay(self) -> bool:
+        flag = getattr(self._calibration_panel, "uses_qt_preview_overlay", None)
+        return bool(flag()) if callable(flag) else False
+
+    def _update_preview_panel(
+        self,
+        preview_frames: dict[str, Any],
+        detections: dict[str, ChessboardDetectionResult],
+        sample_counts: dict[str, int],
+        overlay_states: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        if overlay_states is not None and self._uses_qt_preview_overlay():
+            self._calibration_panel.update_previews(preview_frames, detections, sample_counts, overlay_states)
+            return
+        self._calibration_panel.update_previews(preview_frames, detections, sample_counts)
+
+    def _build_preview_overlay_states(
+        self,
+        detections: dict[str, ChessboardDetectionResult],
+        sample_counts: dict[str, int],
+        accepted_by_source: dict[str, bool | None] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        accepted_by_source = accepted_by_source or {}
+        target = self._spatial_target_samples_per_cell()
+        states: dict[str, dict[str, Any]] = {}
+        for source_id, detection in detections.items():
+            try:
+                summary = self._calibration_manager.spatial_coverage_summary(
+                    source_id,
+                    include_sync_only=False,
+                    include_sample_summaries=False,
+                    target_samples_per_cell=target,
+                )
+            except Exception:  # noqa: BLE001 - preview metadata must never stop video
+                summary = {}
+            states[source_id] = {
+                "overlay_enabled": self._calibration_panel.overlay_enabled_for(source_id),
+                "overlay_scale": self._overlay_scale(),
+                "mirror": self._calibration_panel.mirror_preview_enabled_for(source_id),
+                "sample_count": int(sample_counts.get(source_id, 0)),
+                "accepted": accepted_by_source.get(source_id),
+                "target_samples_per_cell": target,
+                "grid_shape": tuple(self._calibration_manager.spatial_grid_shape),
+                "hit_counts": summary.get("credited_cell_hit_counts", []),
+                "visited_cells": int(summary.get("credited_visited_cells", 0) or 0),
+                "total_cells": int(summary.get("total_cells", 0) or 0),
+                "coverage_ratio": float(summary.get("credited_grid_coverage_ratio", 0.0) or 0.0),
+                "detection_found": bool(detection.found),
+            }
+        return states
 
     def _prepare_calibration_preview_frame(self, source_id: str, frame_bgr: Any) -> Any:
         if not self._calibration_panel.undistort_enabled_for(source_id):
@@ -732,15 +851,15 @@ class MainWindow(QMainWindow):
         self,
         frames_by_source: dict[str, Any],
         detections: dict[str, ChessboardDetectionResult],
-        overlay_enabled: bool,
+        overlay_baked: bool,
     ) -> dict[str, Any]:
         finalized: dict[str, Any] = {}
         for source_id, frame_bgr in frames_by_source.items():
-            if overlay_enabled and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections:
-                display = frame_bgr
+            if overlay_baked and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections:
+                finalized[source_id] = frame_bgr
             else:
                 display = self._display_calibration_preview_frame(source_id, frame_bgr)
-            finalized[source_id] = self._downscale_for_display(display)
+                finalized[source_id] = self._downscale_for_display(display)
         return finalized
 
     def _draw_calibration_preview_overlay(
@@ -752,16 +871,205 @@ class MainWindow(QMainWindow):
         accepted: bool | None = None,
     ) -> Any:
         mirror_preview = self._calibration_panel.mirror_preview_enabled_for(source_id)
-        display_frame = self._display_calibration_preview_frame(source_id, frame_bgr)
-        display_detection = self._mirror_detection_for_preview(detection, frame_bgr) if mirror_preview else detection
-        return self._calibration_manager.draw_detection_overlay(
-            display_frame,
+        display_frame = self._downscale_for_display(
+            self._display_calibration_preview_frame(source_id, frame_bgr)
+        )
+        display_detection = self._display_detection_for_preview(
+            detection=detection,
+            source_frame_bgr=frame_bgr,
+            display_frame_bgr=display_frame,
+            mirror_preview=mirror_preview,
+        )
+        return self._compose_cached_calibration_overlay(
+            source_id=source_id,
+            display_frame_bgr=display_frame,
             detection=display_detection,
+            sample_count=sample_count,
+            accepted=accepted,
+            mirror_preview=mirror_preview,
+        )
+
+    def _compose_cached_calibration_overlay(
+        self,
+        source_id: str,
+        display_frame_bgr: Any,
+        detection: ChessboardDetectionResult,
+        sample_count: int | None = None,
+        accepted: bool | None = None,
+        mirror_preview: bool = False,
+    ) -> Any:
+        key = self._calibration_overlay_cache_key(
+            display_frame_bgr=display_frame_bgr,
+            detection=detection,
+            sample_count=sample_count,
+            accepted=accepted,
+            mirror_preview=mirror_preview,
+        )
+        cached = self._calibration_overlay_cache.get(source_id)
+        if cached is None or cached[0] != key:
+            overlay_bgr, alpha = self._build_calibration_overlay_layer(
+                display_frame_bgr=display_frame_bgr,
+                detection=detection,
+                sample_count=sample_count,
+                accepted=accepted,
+                mirror_preview=mirror_preview,
+            )
+            cached = (key, overlay_bgr, alpha)
+            self._calibration_overlay_cache[source_id] = cached
+
+        _key, overlay_bgr, alpha = cached
+        return self._blend_calibration_overlay(display_frame_bgr, overlay_bgr, alpha)
+
+    def _calibration_overlay_cache_key(
+        self,
+        display_frame_bgr: Any,
+        detection: ChessboardDetectionResult,
+        sample_count: int | None,
+        accepted: bool | None,
+        mirror_preview: bool,
+    ) -> tuple[Any, ...]:
+        height, width = display_frame_bgr.shape[:2]
+        corners_sig: tuple[float, ...] = ()
+        if detection.corners is not None:
+            corners_sig = tuple(float(value) for value in np.round(detection.corners.reshape(-1), 1))
+        bbox_sig = tuple(round(float(value), 1) for value in detection.board_bbox_px or ())
+        center_sig = tuple(round(float(value), 1) for value in detection.board_center_px or ())
+        diagnostics_sig = tuple(detection.diagnostics[:3])
+        return (
+            int(width),
+            int(height),
+            detection.source_id,
+            detection.pattern_type,
+            bool(detection.found),
+            int(detection.detected_corners),
+            round(float(detection.quality_score), 3),
+            round(float(detection.coverage_ratio), 4),
+            round(float(detection.sharpness_score), 3),
+            int(sample_count if sample_count is not None else -1),
+            accepted,
+            bool(mirror_preview),
+            self._spatial_target_samples_per_cell(),
+            tuple(self._calibration_manager.spatial_grid_shape),
+            round(self._overlay_scale(), 3),
+            bbox_sig,
+            center_sig,
+            diagnostics_sig,
+            corners_sig,
+        )
+
+    def _build_calibration_overlay_layer(
+        self,
+        display_frame_bgr: Any,
+        detection: ChessboardDetectionResult,
+        sample_count: int | None,
+        accepted: bool | None,
+        mirror_preview: bool,
+    ) -> tuple[Any, Any]:
+        blank = np.zeros_like(display_frame_bgr)
+        overlay_bgr = self._calibration_manager.draw_detection_overlay(
+            blank,
+            detection=detection,
             accepted=accepted,
             sample_count=sample_count,
             mirror_x=mirror_preview,
             spatial_target_samples_per_cell=self._spatial_target_samples_per_cell(),
             overlay_scale=self._overlay_scale(),
+        )
+        alpha = np.max(overlay_bgr, axis=2).astype(np.float32) / 255.0
+        band_height = max(0, int(overlay_bgr.shape[0] - display_frame_bgr.shape[0]))
+        if band_height > 0:
+            alpha[:band_height, :] = 1.0
+        if band_height < alpha.shape[0]:
+            frame_overlay = overlay_bgr[band_height:, :, :]
+            frame_alpha = alpha[band_height:, :]
+            nonzero = np.any(frame_overlay > 0, axis=2)
+            frame_alpha[nonzero] = np.maximum(frame_alpha[nonzero], 0.18)
+        return overlay_bgr, np.clip(alpha, 0.0, 1.0)
+
+    def _blend_calibration_overlay(self, display_frame_bgr: Any, overlay_bgr: Any, alpha: Any) -> Any:
+        height, width = display_frame_bgr.shape[:2]
+        band_height = max(0, int(overlay_bgr.shape[0] - height))
+        if overlay_bgr.shape[1] != width or overlay_bgr.shape[0] < height:
+            return display_frame_bgr
+
+        canvas = np.zeros_like(overlay_bgr)
+        canvas[band_height:band_height + height, :width] = display_frame_bgr
+        alpha_3 = alpha[:, :, None].astype(np.float32)
+        blended = overlay_bgr.astype(np.float32) * alpha_3 + canvas.astype(np.float32) * (1.0 - alpha_3)
+        return np.clip(blended, 0, 255).astype(np.uint8)
+
+    def _display_detection_for_preview(
+        self,
+        detection: ChessboardDetectionResult,
+        source_frame_bgr: Any,
+        display_frame_bgr: Any,
+        mirror_preview: bool,
+    ) -> ChessboardDetectionResult:
+        transformed = (
+            self._mirror_detection_for_preview(detection, source_frame_bgr)
+            if mirror_preview
+            else detection
+        )
+        try:
+            target_height, target_width = display_frame_bgr.shape[:2]
+        except (AttributeError, IndexError, TypeError):
+            return transformed
+        return self._scale_detection_for_display(
+            detection=transformed,
+            target_size=(int(target_width), int(target_height)),
+        )
+
+    def _scale_detection_for_display(
+        self,
+        detection: ChessboardDetectionResult,
+        target_size: tuple[int, int],
+    ) -> ChessboardDetectionResult:
+        source_width, source_height = detection.image_size
+        target_width, target_height = target_size
+        if source_width <= 0 or source_height <= 0 or target_width <= 0 or target_height <= 0:
+            return detection
+
+        scale_x = float(target_width) / float(source_width)
+        scale_y = float(target_height) / float(source_height)
+        if scale_x == 1.0 and scale_y == 1.0:
+            return detection
+
+        corners = None
+        if detection.corners is not None:
+            corners = detection.corners.copy()
+            corners[..., 0] *= scale_x
+            corners[..., 1] *= scale_y
+
+        bbox = detection.board_bbox_px
+        scaled_bbox = None
+        if bbox is not None:
+            x_px, y_px, box_width, box_height = bbox
+            scaled_bbox = (
+                float(x_px) * scale_x,
+                float(y_px) * scale_y,
+                float(box_width) * scale_x,
+                float(box_height) * scale_y,
+            )
+
+        center = detection.board_center_px
+        scaled_center = None
+        if center is not None:
+            scaled_center = (float(center[0]) * scale_x, float(center[1]) * scale_y)
+
+        return ChessboardDetectionResult(
+            source_id=detection.source_id,
+            found=detection.found,
+            image_size=(int(target_width), int(target_height)),
+            pattern_type=detection.pattern_type,
+            corners=corners,
+            charuco_ids=detection.charuco_ids.copy() if detection.charuco_ids is not None else None,
+            detected_corners=detection.detected_corners,
+            quality_score=detection.quality_score,
+            coverage_ratio=detection.coverage_ratio,
+            sharpness_score=detection.sharpness_score,
+            board_bbox_px=scaled_bbox,
+            board_center_px=scaled_center,
+            diagnostics=list(detection.diagnostics),
         )
 
     def _spatial_target_samples_per_cell(self) -> int:
@@ -1008,6 +1316,9 @@ class MainWindow(QMainWindow):
         self._latest_frames.clear()
         self._latest_calibration_detections.clear()
         self._last_rendered_frame_indices.clear()
+        # Drop any in-flight detection gate so the next live session can submit
+        # immediately even if a result is still pending for the old frames.
+        self._detection_request_in_flight = False
         self._active_camera_count = 0
         self._refresh_live_status(force=True)
         self._refresh_calibration_panel(force=True)
@@ -1185,7 +1496,7 @@ class MainWindow(QMainWindow):
         accepted: bool | None = None,
     ) -> Any:
         preview = self._prepare_calibration_preview_frame(source_id, frame_bgr)
-        if not self._calibration_panel.overlay_enabled_for(source_id):
+        if not self._calibration_panel.overlay_enabled_for(source_id) or self._uses_qt_preview_overlay():
             return self._downscale_for_display(self._display_calibration_preview_frame(source_id, preview))
         rendered = self._draw_calibration_preview_overlay(
             source_id=source_id,
@@ -1290,20 +1601,24 @@ class MainWindow(QMainWindow):
         after_sync_sets: int,
         auto_trigger: bool,
         sync_metadata: dict[str, Any] | None = None,
+        frames: dict[str, FramePacket] | None = None,
     ) -> bool:
+        active_frames = frames if frames is not None else self._latest_frames
         feedback_messages: list[str] = []
         accepted_total = 0
         preview_frames: dict[str, Any] = {}
         detections: dict[str, ChessboardDetectionResult] = {}
+        accepted_by_source: dict[str, bool | None] = {}
         sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
 
-        for source_id, frame in self._latest_frames.items():
+        for source_id, frame in active_frames.items():
             feedback = feedback_by_source.get(source_id)
             if feedback is not None:
                 feedback_messages.append(feedback.message)
                 if feedback.accepted:
                     accepted_total += 1
                 detections[source_id] = feedback.detection
+                accepted_by_source[source_id] = bool(feedback.accepted)
                 preview_frames[source_id] = self._build_calibration_preview_frame(
                     source_id=source_id,
                     frame_bgr=frame.frame_bgr,
@@ -1326,7 +1641,12 @@ class MainWindow(QMainWindow):
         if detections:
             self._latest_calibration_detections = detections
         if preview_frames:
-            self._calibration_panel.update_previews(preview_frames, detections, sample_counts)
+            overlay_states = (
+                self._build_preview_overlay_states(detections, sample_counts, accepted_by_source)
+                if self._uses_qt_preview_overlay()
+                else None
+            )
+            self._update_preview_panel(preview_frames, detections, sample_counts, overlay_states)
         self._refresh_calibration_panel(force=True)
 
         if accepted_total > 0:
@@ -1360,8 +1680,14 @@ class MainWindow(QMainWindow):
         self,
         auto_trigger: bool,
         detections: dict[str, ChessboardDetectionResult] | None = None,
+        frames: dict[str, FramePacket] | None = None,
     ) -> bool:
-        if not self._latest_frames:
+        # When detection runs on the background worker, ``frames`` is the exact
+        # snapshot the detection was computed on so the stored corners and the
+        # capture frames belong to the same instant. Manual capture falls back
+        # to the latest live frames.
+        active_frames = frames if frames is not None else self._latest_frames
+        if not active_frames:
             if not auto_trigger:
                 self._show_warning("No frames available. Start live capture first.")
             return False
@@ -1371,14 +1697,14 @@ class MainWindow(QMainWindow):
         allow_relaxed_sync = (
             self._calibration_panel.relaxed_sync_enabled() if workflow_mode == "sync_extrinsics" else False
         )
-        if workflow_mode == "sync_extrinsics" and len(self._latest_frames) < 2:
+        if workflow_mode == "sync_extrinsics" and len(active_frames) < 2:
             if not auto_trigger:
                 self._show_warning("Sync / Extrinsics mode requires at least 2 active camera feeds.")
             return False
         sync_metadata: dict[str, Any] | None = None
         if workflow_mode == "sync_extrinsics":
             timing_ok, sync_metadata = self._validate_sync_capture_timing(
-                frames=self._latest_frames,
+                frames=active_frames,
                 auto_trigger=auto_trigger,
             )
             if not timing_ok:
@@ -1386,14 +1712,14 @@ class MainWindow(QMainWindow):
         active_detections = (
             {
                 source_id: detections[source_id]
-                for source_id in self._latest_frames
+                for source_id in active_frames
                 if detections is not None and source_id in detections
             }
             if detections
             else {}
         )
         if auto_trigger and workflow_mode == "intrinsics":
-            allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(self._latest_frames.keys())))
+            allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(active_frames.keys())))
             if not allowed_source_ids:
                 self._stop_auto_capture_if_limit_reached()
                 return False
@@ -1420,7 +1746,7 @@ class MainWindow(QMainWindow):
         else:
             frames_by_source = {
                 source_id: frame.frame_bgr
-                for source_id, frame in self._latest_frames.items()
+                for source_id, frame in active_frames.items()
             }
             if auto_trigger and workflow_mode == "intrinsics":
                 allowed_source_ids = set(self._auto_capture_intrinsics_candidates(list(frames_by_source.keys())))
@@ -1446,11 +1772,13 @@ class MainWindow(QMainWindow):
             after_sync_sets=after_sync_sets,
             auto_trigger=auto_trigger,
             sync_metadata=sync_metadata,
+            frames=active_frames,
         )
 
     def _maybe_auto_capture_calibration(
         self,
         detections: dict[str, ChessboardDetectionResult],
+        frames: dict[str, FramePacket] | None = None,
     ) -> bool:
         if self._intrinsics_solve_worker is not None:
             return False
@@ -1461,7 +1789,9 @@ class MainWindow(QMainWindow):
         now = time.perf_counter()
         if now - self._last_calibration_auto_capture_at < self._calibration_panel.auto_capture_cooldown_sec():
             return False
-        captured = self._capture_calibration_samples(auto_trigger=True, detections=detections)
+        captured = self._capture_calibration_samples(
+            auto_trigger=True, detections=detections, frames=frames
+        )
         if captured:
             self._stop_auto_capture_if_limit_reached()
         return captured
@@ -1931,4 +2261,5 @@ class MainWindow(QMainWindow):
             return
         self._on_stop_live()
         self._stop_camera_probe_worker()
+        self._shutdown_detection_worker()
         super().closeEvent(event)
