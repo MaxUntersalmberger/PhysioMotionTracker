@@ -975,11 +975,29 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.show_feedback("Live source settings applied.", success=True)
 
     def _apply_workflow_settings(self) -> None:
+        self._apply_preview_options_to_tiles()
         self._emit_runtime_tuning_changed()
         self._emit_workflow_mode_changed()
         self._emit_acceptance_thresholds_changed()
         self._emit_spatial_grid_changed()
         self.show_feedback("Workflow settings applied.", success=True)
+
+    def _apply_preview_options_to_tiles(self) -> None:
+        """Push the advanced overlay/mirror/auto-capture options onto every camera tile."""
+        overlay = self._overlay_checkbox.isChecked()
+        mirror = self._mirror_checkbox.isChecked()
+        # Block panel signals while updating tiles: set_overlay_active/set_mirror_active
+        # emit preview_options_changed per tile, which can re-enter set_sources and
+        # mutate self._tiles mid-iteration. Iterate over a snapshot and refresh once.
+        self.blockSignals(True)
+        try:
+            for tile in list(self._tiles.values()):
+                tile.set_overlay_active(overlay)
+                tile.set_mirror_active(mirror)
+        finally:
+            self.blockSignals(False)
+        self._on_tile_auto_capture_toggled(self._auto_capture_checkbox.isChecked())
+        self.preview_options_changed.emit()
 
     def _apply_board_settings(self, message: str) -> None:
         self.board_settings_applied.emit(self.board_settings())
