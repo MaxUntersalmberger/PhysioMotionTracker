@@ -546,9 +546,16 @@ class _AspectRatioBox(QWidget):
     background shows around the box rather than black letterbox bars.
     """
 
-    def __init__(self, child: QWidget, ratio: float = 4.0 / 3.0, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        child: QWidget,
+        ratio: float = 4.0 / 3.0,
+        max_width: int | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._ratio = max(0.1, float(ratio))
+        self._max_width = max_width
         self._child = child
         # Layout-managed centering (instead of manual setGeometry) so the child
         # keeps a normal layout pass — important for complex children and to
@@ -568,6 +575,11 @@ class _AspectRatioBox(QWidget):
         else:
             child_w = width
             child_h = int(round(width / self._ratio))
+        # Cap the size so each camera stays a compact block in the grid instead
+        # of one large field, even when only a few cameras are present.
+        if self._max_width is not None and child_w > self._max_width:
+            child_w = self._max_width
+            child_h = int(round(child_w / self._ratio))
         # Size the child to exactly the aspect box; the layout centers it.
         self._child.setFixedSize(child_w, child_h)
 
@@ -1107,19 +1119,19 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_resolution_combo.addItem("960 x 540", (960, 540))
         self._capture_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._capture_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        # Default to the camera's native resolution. Requesting a higher
-        # resolution than the sensor supports makes the driver upscale, which
-        # looks blurry; Auto keeps the real, sharp frame.
-        self._capture_resolution_combo.setCurrentIndex(0)
+        # Capture at a quality resolution (used for detection/calibration and
+        # recording). Lower this in advanced settings if the camera can't run it
+        # at full frame rate.
+        self._capture_resolution_combo.setCurrentIndex(3)
         self._preview_resolution_combo = QComboBox()
         self._preview_resolution_combo.addItem("Auto", (0, 0))
         self._preview_resolution_combo.addItem("640 x 480", (640, 480))
         self._preview_resolution_combo.addItem("960 x 540", (960, 540))
         self._preview_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._preview_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        # Auto: show the capture frame without an extra downscale, so the
-        # preview is as sharp as the camera allows.
-        self._preview_resolution_combo.setCurrentIndex(0)
+        # Downscale the on-screen preview so display stays fast and low-latency,
+        # independent of the (higher) capture resolution used for calibration.
+        self._preview_resolution_combo.setCurrentIndex(1)
         self._probe_max_spin = self._spin(1, 20, 10)
 
         self._chess_cols_spin = self._spin(2, 30, 9)
@@ -1943,7 +1955,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             self._tiles[source_id] = tile
             # Wrap the whole tile so the camera panel stays a centered box
             # instead of a full-width card.
-            self._tile_boxes[source_id] = _AspectRatioBox(tile, 1.2)
+            self._tile_boxes[source_id] = _AspectRatioBox(tile, 1.2, max_width=460)
 
         self._source_order = list(source_ids)
         self._rebuild_camera_grid()
