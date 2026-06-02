@@ -635,20 +635,51 @@ class MainWindow(QMainWindow):
             return frame_bgr
         return cv2.flip(frame_bgr, 1)
 
+    def _overlay_scale(self) -> float:
+        try:
+            return max(0.1, float(getattr(self._config, "overlay_scale", 1.0)))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _downscale_for_display(self, frame_bgr: Any) -> Any:
+        """Shrink a frame to the preview resolution for display only.
+
+        Detection, calibration and recording use the full capture-resolution
+        frame; this only reduces the cost of rendering the on-screen preview.
+        """
+        max_width = int(getattr(self._runtime_tuning, "preview_max_width", 0) or 0)
+        max_height = int(getattr(self._runtime_tuning, "preview_max_height", 0) or 0)
+        if max_width <= 0 and max_height <= 0:
+            return frame_bgr
+        height, width = frame_bgr.shape[:2]
+        if width <= 0 or height <= 0:
+            return frame_bgr
+        scale_candidates: list[float] = []
+        if max_width > 0:
+            scale_candidates.append(max_width / float(width))
+        if max_height > 0:
+            scale_candidates.append(max_height / float(height))
+        scale = min(scale_candidates) if scale_candidates else 1.0
+        if scale >= 1.0:
+            return frame_bgr
+        target_width = max(1, int(round(width * scale)))
+        target_height = max(1, int(round(height * scale)))
+        return cv2.resize(frame_bgr, (target_width, target_height), interpolation=cv2.INTER_AREA)
+
     def _finalize_calibration_preview_frames(
         self,
         frames_by_source: dict[str, Any],
         detections: dict[str, ChessboardDetectionResult],
         overlay_enabled: bool,
     ) -> dict[str, Any]:
-        return {
-            source_id: (
-                frame_bgr
-                if overlay_enabled and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections
-                else self._display_calibration_preview_frame(source_id, frame_bgr)
-            )
-            for source_id, frame_bgr in frames_by_source.items()
-        }
+        finalized: dict[str, Any] = {}
+        for source_id, frame_bgr in frames_by_source.items():
+            if overlay_enabled and self._calibration_panel.overlay_enabled_for(source_id) and source_id in detections:
+                display = frame_bgr
+            else:
+                display = self._display_calibration_preview_frame(source_id, frame_bgr)
+            finalized[source_id] = self._downscale_for_display(display)
+        return finalized
 
     def _draw_calibration_preview_overlay(
         self,
@@ -668,6 +699,7 @@ class MainWindow(QMainWindow):
             sample_count=sample_count,
             mirror_x=mirror_preview,
             spatial_target_samples_per_cell=self._spatial_target_samples_per_cell(),
+            overlay_scale=self._overlay_scale(),
         )
 
     def _spatial_target_samples_per_cell(self) -> int:
@@ -853,8 +885,6 @@ class MainWindow(QMainWindow):
         worker = LiveCaptureWorker(
             sources=sources,
             target_fps=self._runtime_tuning.capture_fps if self._runtime_tuning.capture_fps > 0 else target_fps,
-            max_frame_width=self._runtime_tuning.preview_max_width,
-            max_frame_height=self._runtime_tuning.preview_max_height,
             requested_width=self._runtime_tuning.capture_width,
             requested_height=self._runtime_tuning.capture_height,
         )
@@ -1094,14 +1124,15 @@ class MainWindow(QMainWindow):
     ) -> Any:
         preview = self._prepare_calibration_preview_frame(source_id, frame_bgr)
         if not self._calibration_panel.overlay_enabled_for(source_id):
-            return self._display_calibration_preview_frame(source_id, preview)
-        return self._draw_calibration_preview_overlay(
+            return self._downscale_for_display(self._display_calibration_preview_frame(source_id, preview))
+        rendered = self._draw_calibration_preview_overlay(
             source_id=source_id,
             frame_bgr=preview,
             detection=detection,
             accepted=accepted,
             sample_count=self._calibration_manager.observation_count(source_id, include_sync_only=False),
         )
+        return self._downscale_for_display(rendered)
 
     def _apply_calibration_capture_feedback(
         self,

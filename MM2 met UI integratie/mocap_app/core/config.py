@@ -41,6 +41,7 @@ class AppConfig:
     sessions_dir: Path = field(default_factory=lambda: _app_root() / "sessions")
     default_sessions_dir: Path = field(default_factory=lambda: _app_root() / "sessions")
     ui_scale: float = 0.70
+    overlay_scale: float = 1.0
     camera_labels: dict[str, str] = field(default_factory=dict)
 
     def ensure_directories(self) -> None:

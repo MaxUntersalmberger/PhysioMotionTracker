@@ -2207,27 +2207,27 @@ class CalibrationManager:
         sample_count: int | None = None,
         mirror_x: bool = False,
         spatial_target_samples_per_cell: int | None = None,
+        overlay_scale: float = 1.0,
     ) -> U8Array:
-        """Render detection and diagnostics overlay for calibration preview."""
+        """Render detection and diagnostics overlay for calibration preview.
+
+        Every overlay element is sized proportionally to the frame height (720p
+        is the reference) and multiplied by ``overlay_scale``, so the overlay
+        keeps the same on-screen size regardless of capture or preview
+        resolution while staying user-adjustable.
+        """
         rendered = frame_bgr.copy()
         height, width = rendered.shape[:2]
+        scale = max(0.1, (height / 720.0) * float(overlay_scale))
         self._draw_spatial_grid_overlay(
             rendered,
             detection,
             mirror_x=mirror_x,
             target_samples_per_cell=spatial_target_samples_per_cell,
+            overlay_scale=float(overlay_scale),
         )
         if detection.found and detection.corners is not None:
-            if detection.pattern_type == "charuco" and self._charuco_available and detection.charuco_ids is not None:
-                aruco = cv2.aruco  # type: ignore[attr-defined]
-                aruco.drawDetectedCornersCharuco(
-                    rendered,
-                    detection.corners,
-                    detection.charuco_ids,
-                    (80, 230, 140),
-                )
-            else:
-                cv2.drawChessboardCorners(rendered, self._board_shape, detection.corners, True)
+            self._draw_corner_markers(rendered, detection, scale)
 
         status_text = "Detected" if detection.found else "Not detected"
         if accepted is True:
@@ -2246,73 +2246,67 @@ class CalibrationManager:
             f"quality:{detection.quality_score:.2f} | coverage:{detection.coverage_ratio * 100:.1f}%"
         )
         diagnostics_text = detection.diagnostics[0] if detection.diagnostics else ""
-        band_height = 78
+
+        line_height = 22.0 * scale
+        band_height = max(1, int(round(line_height * (3.5 if diagnostics_text else 2.4))))
         canvas = np.zeros((height + band_height, width, 3), dtype=rendered.dtype)
         canvas[band_height:, :] = rendered
         rendered = canvas
 
+        x = int(round(12 * scale))
+        header_scale = 0.56 * scale
+        metrics_scale = 0.48 * scale
+        header_outline = max(2, int(round(4 * scale)))
+        header_inner = max(1, int(round(2 * scale)))
+        thin_outline = max(1, int(round(3 * scale)))
+        thin_inner = max(1, int(round(1 * scale)))
+
         cv2.putText(
-            rendered,
-            header_text,
-            (12, 22),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.56,
-            (5, 8, 10),
-            4,
-            cv2.LINE_AA,
+            rendered, header_text, (x, int(round(line_height))),
+            cv2.FONT_HERSHEY_SIMPLEX, header_scale, (5, 8, 10), header_outline, cv2.LINE_AA,
         )
         cv2.putText(
-            rendered,
-            header_text,
-            (12, 22),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.56,
-            color,
-            2,
-            cv2.LINE_AA,
+            rendered, header_text, (x, int(round(line_height))),
+            cv2.FONT_HERSHEY_SIMPLEX, header_scale, color, header_inner, cv2.LINE_AA,
         )
         cv2.putText(
-            rendered,
-            metrics_text,
-            (12, 44),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (5, 8, 10),
-            3,
-            cv2.LINE_AA,
+            rendered, metrics_text, (x, int(round(line_height * 2.0))),
+            cv2.FONT_HERSHEY_SIMPLEX, metrics_scale, (5, 8, 10), thin_outline, cv2.LINE_AA,
         )
         cv2.putText(
-            rendered,
-            metrics_text,
-            (12, 44),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (225, 235, 245),
-            1,
-            cv2.LINE_AA,
+            rendered, metrics_text, (x, int(round(line_height * 2.0))),
+            cv2.FONT_HERSHEY_SIMPLEX, metrics_scale, (225, 235, 245), thin_inner, cv2.LINE_AA,
         )
         if diagnostics_text:
             cv2.putText(
-                rendered,
-                diagnostics_text,
-                (12, 66),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
-                (5, 8, 10),
-                3,
-                cv2.LINE_AA,
+                rendered, diagnostics_text, (x, int(round(line_height * 3.0))),
+                cv2.FONT_HERSHEY_SIMPLEX, metrics_scale, (5, 8, 10), thin_outline, cv2.LINE_AA,
             )
             cv2.putText(
-                rendered,
-                diagnostics_text,
-                (12, 66),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
-                (150, 205, 255),
-                1,
-                cv2.LINE_AA,
+                rendered, diagnostics_text, (x, int(round(line_height * 3.0))),
+                cv2.FONT_HERSHEY_SIMPLEX, metrics_scale, (150, 205, 255), thin_inner, cv2.LINE_AA,
             )
         return rendered
+
+    def _draw_corner_markers(
+        self,
+        rendered: U8Array,
+        detection: ChessboardDetectionResult,
+        scale: float,
+    ) -> None:
+        """Draw detected corners with a resolution-independent marker size."""
+        points = np.asarray(detection.corners, dtype=np.float32).reshape(-1, 2)
+        if points.size == 0:
+            return
+        radius = max(2, int(round(4 * scale)))
+        line_thickness = max(1, int(round(1.6 * scale)))
+        if detection.pattern_type != "charuco":
+            polyline = points.astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(rendered, [polyline], False, (0, 165, 255), line_thickness, cv2.LINE_AA)
+        for point in points:
+            center = (int(round(point[0])), int(round(point[1])))
+            cv2.circle(rendered, center, radius, (70, 220, 120), -1, cv2.LINE_AA)
+            cv2.circle(rendered, center, radius, (15, 25, 20), max(1, line_thickness // 2), cv2.LINE_AA)
 
     def _draw_spatial_grid_overlay(
         self,
@@ -2320,11 +2314,15 @@ class CalibrationManager:
         detection: ChessboardDetectionResult,
         mirror_x: bool = False,
         target_samples_per_cell: int | None = None,
+        overlay_scale: float = 1.0,
     ) -> None:
         height, width = rendered.shape[:2]
         cols, rows = self._spatial_grid_shape
         if width <= 0 or height <= 0 or cols <= 0 or rows <= 0:
             return
+        scale = max(0.1, (height / 720.0) * float(overlay_scale))
+        line_outline = max(1, int(round(3 * scale)))
+        line_inner = max(1, int(round(1 * scale)))
         target = max(1, int(target_samples_per_cell or 3))
 
         summary = self.spatial_coverage_summary(
@@ -2366,11 +2364,11 @@ class CalibrationManager:
 
                 grid_color = (235, 245, 250)
                 if col > 0:
-                    cv2.line(rendered, (x0, 0), (x0, height), (25, 30, 35), 3, cv2.LINE_AA)
-                    cv2.line(rendered, (x0, 0), (x0, height), grid_color, 1, cv2.LINE_AA)
+                    cv2.line(rendered, (x0, 0), (x0, height), (25, 30, 35), line_outline, cv2.LINE_AA)
+                    cv2.line(rendered, (x0, 0), (x0, height), grid_color, line_inner, cv2.LINE_AA)
                 if row > 0:
-                    cv2.line(rendered, (0, y0), (width, y0), (25, 30, 35), 3, cv2.LINE_AA)
-                    cv2.line(rendered, (0, y0), (width, y0), grid_color, 1, cv2.LINE_AA)
+                    cv2.line(rendered, (0, y0), (width, y0), (25, 30, 35), line_outline, cv2.LINE_AA)
+                    cv2.line(rendered, (0, y0), (width, y0), grid_color, line_inner, cv2.LINE_AA)
 
                 hit_count = 0
                 if isinstance(hit_counts, list) and row < len(hit_counts):
@@ -2386,33 +2384,39 @@ class CalibrationManager:
                     target=target,
                     cell_width=cell_width,
                     cell_height=cell_height,
+                    scale=scale,
+                    overlay_scale=float(overlay_scale),
                 )
                 if (row, col) in current_cells:
-                    cv2.rectangle(rendered, (x0 + 1, y0 + 1), (x1 - 1, y1 - 1), (0, 220, 255), 2, cv2.LINE_AA)
+                    cv2.rectangle(
+                        rendered, (x0 + 1, y0 + 1), (x1 - 1, y1 - 1),
+                        (0, 220, 255), max(1, int(round(2 * scale))), cv2.LINE_AA,
+                    )
 
         visited = int(summary.get("credited_visited_cells", 0))
         total = int(summary.get("total_cells", cols * rows))
         grid_ratio = float(summary.get("credited_grid_coverage_ratio", 0.0))
         label = f"coverage grid {visited}/{total} ({grid_ratio * 100.0:.0f}%)"
-        label_y = max(22, height - 12)
+        label_margin = int(round(12 * scale))
+        label_y = max(int(round(22 * scale)), height - label_margin)
         cv2.putText(
             rendered,
             label,
-            (12, label_y),
+            (label_margin, label_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.58,
+            0.58 * scale,
             (5, 8, 10),
-            5,
+            max(2, int(round(5 * scale))),
             cv2.LINE_AA,
         )
         cv2.putText(
             rendered,
             label,
-            (12, label_y),
+            (label_margin, label_y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.58,
+            0.58 * scale,
             (235, 245, 255),
-            2,
+            max(1, int(round(2 * scale))),
             cv2.LINE_AA,
         )
 
@@ -2432,16 +2436,18 @@ class CalibrationManager:
         target: int,
         cell_width: float,
         cell_height: float,
+        scale: float = 1.0,
+        overlay_scale: float = 1.0,
     ) -> None:
         text = f"{hit_count}/{target}"
-        font_scale = float(np.clip(min(cell_width, cell_height) / 160.0, 0.50, 0.72))
-        thickness = 2
+        font_scale = float(np.clip(min(cell_width, cell_height) / 160.0, 0.50, 0.72)) * float(overlay_scale)
+        thickness = max(1, int(round(2 * scale)))
         text_size, baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-        pad_x = 7
-        pad_y = 8
+        pad_x = max(2, int(round(7 * scale)))
+        pad_y = max(2, int(round(8 * scale)))
         text_x = x0 + pad_x
         text_y = y0 + pad_y + text_size[1]
-        bg_pad = 4
+        bg_pad = max(2, int(round(4 * scale)))
         cv2.rectangle(
             rendered,
             (max(x0 + 2, text_x - bg_pad), max(y0 + 2, text_y - text_size[1] - bg_pad)),
@@ -2459,7 +2465,7 @@ class CalibrationManager:
             cv2.FONT_HERSHEY_SIMPLEX,
             font_scale,
             (0, 0, 0),
-            thickness + 3,
+            thickness + max(2, int(round(3 * scale))),
             cv2.LINE_AA,
         )
         cv2.putText(

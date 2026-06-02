@@ -1862,8 +1862,36 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             self._ui_scale_actions.append(action)
 
         self.menuSettings.addMenu(self.menuUiScale)
+
+        self.menuOverlayScale = QtWidgets.QMenu(self.menuSettings)
+        self.menuOverlayScale.setObjectName("menuOverlayScale")
+        self.menuOverlayScale.setTitle("Overlay scale")
+        self._overlay_scale_actions: list[QtGui.QAction] = []
+        self._overlay_scale_group = QtGui.QActionGroup(self)
+        self._overlay_scale_group.setExclusive(True)
+
+        for label, value in [
+            ("50%", 0.50),
+            ("75%", 0.75),
+            ("100%", 1.00),
+            ("125%", 1.25),
+            ("150%", 1.50),
+            ("200%", 2.00),
+        ]:
+            action = QtGui.QAction(label, self)
+            action.setCheckable(True)
+            action.setData(value)
+            action.triggered.connect(
+                lambda checked=False, scale=value: self._apply_overlay_scale(scale)
+            )
+            self._overlay_scale_group.addAction(action)
+            self.menuOverlayScale.addAction(action)
+            self._overlay_scale_actions.append(action)
+
+        self.menuSettings.addMenu(self.menuOverlayScale)
         self.menuBar.insertMenu(self.menuHelp.menuAction(), self.menuSettings)
         self._sync_ui_scale_menu()
+        self._sync_overlay_scale_menu()
 
     def _setup_ui(self) -> None:
         self._designed_status_bar().showMessage("Idle")
@@ -1915,6 +1943,36 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         if not actions:
             return
         current = getattr(self, "_current_ui_scale", self._configured_ui_scale())
+        for action in actions:
+            action.blockSignals(True)
+            action.setChecked(abs(float(action.data()) - current) < 0.001)
+            action.blockSignals(False)
+
+    def _configured_overlay_scale(self) -> float:
+        try:
+            value = float(getattr(self._config, "overlay_scale", 1.0))
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.3, min(3.0, value))
+
+    def _apply_overlay_scale(self, scale: float) -> None:
+        scale = max(0.3, min(3.0, float(scale)))
+        self._config.overlay_scale = scale
+        try:
+            self._config.save()
+        except Exception:  # noqa: BLE001
+            pass
+        self._sync_overlay_scale_menu()
+        # Force a preview refresh so overlays are redrawn at the new scale.
+        panel = getattr(self, "_calibration_panel", None)
+        if panel is not None and hasattr(panel, "preview_options_changed"):
+            panel.preview_options_changed.emit()
+
+    def _sync_overlay_scale_menu(self) -> None:
+        actions = getattr(self, "_overlay_scale_actions", [])
+        if not actions:
+            return
+        current = self._configured_overlay_scale()
         for action in actions:
             action.blockSignals(True)
             action.setChecked(abs(float(action.data()) - current) < 0.001)
