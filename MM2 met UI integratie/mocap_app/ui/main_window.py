@@ -1497,31 +1497,52 @@ class MainWindow(QMainWindow):
         self._calibration_panel.show_feedback("Calibration samples reset.", success=True)
         self._set_status("Calibration samples reset")
 
-    def _calibration_export_text(self, fmt: str) -> str | None:
+    def _build_export_text(self, fmt: str) -> tuple[str | None, str | None, bool]:
+        """Return (text, info_message, usable). text is None when no calibration exists.
+
+        JSON is the full internal profile (re-loadable here); TOML is an
+        aniposelib/Anipose-compatible calibration usable to import into another
+        motion-analysis program.
+        """
         bundle = self._current_calibration_bundle or self._calibration_manager.last_solution()
         if bundle is None:
-            return None
+            return None, None, False
         payload = self._calibration_repo.to_payload(bundle)
         if fmt == "json":
-            return calibration_export.to_json(payload)
-        return calibration_export.to_toml(payload)
+            return calibration_export.to_json(payload), None, True
+        text, skipped, included = calibration_export.to_motion_capture_toml(payload)
+        if included == 0:
+            return (
+                text,
+                "Geen enkele camera heeft opgeloste extrinsics; los extrinsics op voordat je "
+                "naar TOML exporteert voor bewegingsanalyse.",
+                False,
+            )
+        if skipped:
+            return text, "TOML laat camera's zonder extrinsics weg: " + ", ".join(skipped) + ".", True
+        return text, None, True
 
     def _on_export_preview(self, fmt: str) -> None:
         fmt = (fmt or "toml").lower().strip()
-        text = self._calibration_export_text(fmt)
+        text, message, _usable = self._build_export_text(fmt)
         if text is None:
             self._calibration_panel.show_export_preview(
                 "No solved calibration available yet. Capture samples and calculate intrinsics/extrinsics first."
             )
             return
         self._calibration_panel.show_export_preview(text)
+        if message:
+            self._calibration_panel.show_feedback(message, success=False)
         self._set_status(f"Calibration preview ({fmt.upper()})")
 
     def _on_export_calibration(self, fmt: str) -> None:
         fmt = (fmt or "toml").lower().strip()
-        text = self._calibration_export_text(fmt)
+        text, message, usable = self._build_export_text(fmt)
         if text is None:
             self._show_warning("No solved calibration available to export.")
+            return
+        if not usable:
+            self._show_warning(message or "Calibration is not ready for export.")
             return
         extension = "json" if fmt == "json" else "toml"
         file_filter = "JSON (*.json)" if fmt == "json" else "TOML (*.toml)"
@@ -1540,7 +1561,10 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             self._show_error(f"Could not export calibration: {exc}")
             return
-        self._calibration_panel.show_feedback(f"Calibration exported to {path}", success=True)
+        success_message = f"Calibration exported to {path}"
+        if message:
+            success_message += f" ({message})"
+        self._calibration_panel.show_feedback(success_message, success=True)
         self._set_status(f"Calibration exported: {path.name}")
 
     def _on_new_project(self) -> None:

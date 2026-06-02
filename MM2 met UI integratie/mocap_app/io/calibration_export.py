@@ -25,6 +25,77 @@ def to_toml(payload: dict[str, Any]) -> str:
     return "\n".join(_dump_table(cleaned, [])).strip() + "\n"
 
 
+def build_motion_capture_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Build an aniposelib/Anipose-compatible calibration mapping.
+
+    Each usable camera becomes a ``[cam_N]`` table with ``name``, ``size``,
+    ``matrix``, ``distortions``, ``rotation`` (a 3-element Rodrigues vector) and
+    ``translation``. Cameras without solved intrinsics and extrinsics are
+    skipped, since they cannot be used for triangulation/motion analysis.
+    """
+    import numpy as np
+    import cv2
+
+    cameras = payload.get("cameras", {})
+    result: dict[str, Any] = {}
+    skipped: list[str] = []
+    errors: list[float] = []
+    index = 0
+    for source_id in sorted(cameras.keys()):
+        camera = cameras[source_id]
+        intrinsics = camera.get("intrinsics")
+        distortion = camera.get("distortion")
+        rotation = camera.get("rotation")
+        translation = camera.get("translation")
+        size = camera.get("image_size")
+        if not (intrinsics and distortion and rotation and translation and size):
+            skipped.append(str(source_id))
+            continue
+        rotation_array = np.asarray(rotation, dtype=float).reshape(-1)
+        if rotation_array.size == 9:
+            rvec, _ = cv2.Rodrigues(rotation_array.reshape(3, 3))
+            rotation_vec = [float(value) for value in rvec.reshape(3)]
+        elif rotation_array.size == 3:
+            rotation_vec = [float(value) for value in rotation_array]
+        else:
+            skipped.append(str(source_id))
+            continue
+        result[f"cam_{index}"] = {
+            "name": str(camera.get("source_id", source_id)),
+            "size": [int(size[0]), int(size[1])],
+            "matrix": [[float(value) for value in row] for row in intrinsics],
+            "distortions": [float(value) for value in distortion],
+            "rotation": rotation_vec,
+            "translation": [float(value) for value in translation],
+        }
+        error = camera.get("reprojection_error")
+        if isinstance(error, (int, float)):
+            errors.append(float(error))
+        index += 1
+
+    metadata: dict[str, Any] = {"adjusted": False}
+    if errors:
+        metadata["error"] = float(sum(errors) / len(errors))
+    result["metadata"] = metadata
+    return result, skipped
+
+
+def to_motion_capture_toml(payload: dict[str, Any]) -> tuple[str, list[str], int]:
+    """Return (toml_text, skipped_source_ids, included_camera_count)."""
+    mapping, skipped = build_motion_capture_payload(payload)
+    included = sum(1 for key in mapping if key != "metadata")
+    header = [
+        "# Calibration exported by PhysioMotionTracker for motion analysis "
+        "(aniposelib/Anipose-compatible).",
+        "# rotation = Rodrigues vector (3 elements); translation in calibration board "
+        "units (meters); size = [width, height].",
+    ]
+    if skipped:
+        header.append("# Skipped cameras without solved extrinsics: " + ", ".join(skipped))
+    text = "\n".join(header) + "\n\n" + to_toml(mapping)
+    return text, skipped, included
+
+
 def _strip_none(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _strip_none(item) for key, item in value.items() if item is not None}
