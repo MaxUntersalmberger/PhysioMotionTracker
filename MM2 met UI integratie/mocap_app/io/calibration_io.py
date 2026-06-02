@@ -217,6 +217,10 @@ class CalibrationManager:
         self._samples: dict[str, list[CalibrationSample]] = {}
         self._capture_sets: list[CalibrationCaptureSet] = []
         self._last_solution: CalibrationBundle | None = None
+        # Cache of precomputed undistort rectify maps per source. Keyed on the
+        # intrinsics/distortion/image-size signature so the maps are rebuilt
+        # automatically whenever the calibration or frame size changes.
+        self._undistort_map_cache: dict[str, tuple[Any, Any, Any]] = {}
 
     @property
     def board_shape(self) -> tuple[int, int]:
@@ -2233,7 +2237,34 @@ class CalibrationManager:
 
         matrix = np.array(camera.intrinsics, dtype=np.float64)
         distortion = np.array(camera.distortion, dtype=np.float64)
-        return cv2.undistort(frame_bgr, matrix, distortion)
+        height, width = frame_bgr.shape[:2]
+
+        # Precompute and cache the rectify maps; rebuilding them every frame
+        # (as cv2.undistort does internally) is the dominant cost when
+        # undistort preview is enabled. The result is identical to
+        # cv2.undistort because we reuse the same camera matrix for the new
+        # camera matrix argument.
+        signature = (
+            matrix.tobytes(),
+            distortion.tobytes(),
+            int(width),
+            int(height),
+        )
+        cached = self._undistort_map_cache.get(source_id)
+        if cached is None or cached[0] != signature:
+            map1, map2 = cv2.initUndistortRectifyMap(
+                matrix,
+                distortion,
+                None,
+                matrix,
+                (int(width), int(height)),
+                cv2.CV_16SC2,
+            )
+            cached = (signature, map1, map2)
+            self._undistort_map_cache[source_id] = cached
+
+        _signature, map1, map2 = cached
+        return cv2.remap(frame_bgr, map1, map2, interpolation=cv2.INTER_LINEAR)
 
     def draw_detection_overlay(
         self,
