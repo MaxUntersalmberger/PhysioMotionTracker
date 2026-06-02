@@ -698,6 +698,19 @@ class DesignedPreviewTile(QFrame):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         image = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
+        self.set_frame_image(image, status, sample_count, detection, overlay_state)
+
+    def set_frame_image(
+        self,
+        image: QImage,
+        status: str,
+        sample_count: int,
+        detection: ChessboardDetectionResult | None = None,
+        overlay_state: dict[str, Any] | None = None,
+    ) -> None:
+        # The frame is already undistorted, mirrored, downscaled and converted
+        # to RGB on the preview-render worker thread, so the UI thread only does
+        # the cheap QPixmap conversion and paint.
         self._last_pixmap = QPixmap.fromImage(image)
         self._last_detection = detection
         self._last_overlay_state = dict(overlay_state or {})
@@ -1962,6 +1975,19 @@ class DesignedCalibrationPanel(QtCore.QObject):
             self._add_camera_button.setText(f"+ Camera {next_index} Toevoegen")
             self._add_camera_button.setToolTip(f"Voeg gevonden webcam index {next_index} toe.")
 
+    def _tile_status(self, count: int, detection: ChessboardDetectionResult | None) -> str:
+        status = f"Intrinsics={count}"
+        if detection is not None and detection.found:
+            status += (
+                f" | {detection.pattern_type}"
+                f" | corners={detection.detected_corners}"
+                f" | q={detection.quality_score:.2f}"
+                f" | cov={detection.coverage_ratio * 100:.1f}%"
+            )
+        elif detection is not None:
+            status += f" | {detection.pattern_type} not found"
+        return status
+
     def update_previews(
         self,
         preview_frames: dict[str, Any],
@@ -1976,19 +2002,32 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 continue
             detection = detections.get(source_id)
             count = int(sample_counts.get(source_id, 0))
-            status = f"Intrinsics={count}"
-            if detection is not None and detection.found:
-                status += (
-                    f" | {detection.pattern_type}"
-                    f" | corners={detection.detected_corners}"
-                    f" | q={detection.quality_score:.2f}"
-                    f" | cov={detection.coverage_ratio * 100:.1f}%"
-                )
-            elif detection is not None:
-                status += f" | {detection.pattern_type} not found"
             tile.set_frame(
                 frame_bgr,
-                status,
+                self._tile_status(count, detection),
+                count,
+                detection=detection,
+                overlay_state=overlay_states.get(source_id),
+            )
+
+    def update_preview_images(
+        self,
+        images: dict[str, QImage],
+        detections: dict[str, ChessboardDetectionResult],
+        sample_counts: dict[str, int],
+        overlay_states: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        """Display frames already prepared (RGB QImage) by the render worker."""
+        overlay_states = overlay_states or {}
+        for source_id, image in images.items():
+            tile = self._tiles.get(source_id)
+            if tile is None:
+                continue
+            detection = detections.get(source_id)
+            count = int(sample_counts.get(source_id, 0))
+            tile.set_frame_image(
+                image,
+                self._tile_status(count, detection),
                 count,
                 detection=detection,
                 overlay_state=overlay_states.get(source_id),

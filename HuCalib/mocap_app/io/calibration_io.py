@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -219,8 +220,11 @@ class CalibrationManager:
         self._last_solution: CalibrationBundle | None = None
         # Cache of precomputed undistort rectify maps per source. Keyed on the
         # intrinsics/distortion/image-size signature so the maps are rebuilt
-        # automatically whenever the calibration or frame size changes.
+        # automatically whenever the calibration or frame size changes. Guarded
+        # by a lock because undistort_frame is called from the UI thread and the
+        # preview-render worker thread.
         self._undistort_map_cache: dict[str, tuple[Any, Any, Any]] = {}
+        self._undistort_lock = threading.Lock()
 
     @property
     def board_shape(self) -> tuple[int, int]:
@@ -2250,20 +2254,20 @@ class CalibrationManager:
             int(width),
             int(height),
         )
-        cached = self._undistort_map_cache.get(source_id)
-        if cached is None or cached[0] != signature:
-            map1, map2 = cv2.initUndistortRectifyMap(
-                matrix,
-                distortion,
-                None,
-                matrix,
-                (int(width), int(height)),
-                cv2.CV_16SC2,
-            )
-            cached = (signature, map1, map2)
-            self._undistort_map_cache[source_id] = cached
-
-        _signature, map1, map2 = cached
+        with self._undistort_lock:
+            cached = self._undistort_map_cache.get(source_id)
+            if cached is None or cached[0] != signature:
+                map1, map2 = cv2.initUndistortRectifyMap(
+                    matrix,
+                    distortion,
+                    None,
+                    matrix,
+                    (int(width), int(height)),
+                    cv2.CV_16SC2,
+                )
+                cached = (signature, map1, map2)
+                self._undistort_map_cache[source_id] = cached
+            _signature, map1, map2 = cached
         return cv2.remap(frame_bgr, map1, map2, interpolation=cv2.INTER_LINEAR)
 
     def draw_detection_overlay(

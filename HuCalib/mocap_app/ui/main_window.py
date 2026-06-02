@@ -34,6 +34,7 @@ from mocap_app.workers.calibration_solve_worker import IntrinsicsSolveWorker
 from mocap_app.workers.camera_probe_worker import CameraProbeWorker
 from mocap_app.workers.capture_worker import LiveCaptureWorker
 from mocap_app.workers.detection_worker import CalibrationDetectionWorker
+from mocap_app.workers.preview_render_worker import PreviewRenderWorker
 
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class MainWindow(QMainWindow):
     # Emitted from the UI thread to hand a detection job to the background
     # detection worker (connected with a queued connection across threads).
     request_detection = Signal(object)
+    # Emitted to hand a display-frame prep job to the preview-render worker.
+    request_preview_render = Signal(object)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -74,6 +77,9 @@ class MainWindow(QMainWindow):
         self._detection_thread: QThread | None = None
         self._detection_worker: CalibrationDetectionWorker | None = None
         self._detection_request_in_flight = False
+        self._render_thread: QThread | None = None
+        self._render_worker: PreviewRenderWorker | None = None
+        self._render_request_in_flight = False
         self._video_recorder: VideoRecorder | None = None
         self._last_recording_dir: Path | None = None
         self._active_sources: list[CameraSourceConfig] = []
@@ -101,6 +107,7 @@ class MainWindow(QMainWindow):
         self._apply_window_style()
         self._connect_signals()
         self._setup_detection_worker()
+        self._setup_preview_render_worker()
 
         self._calibration_panel.set_pattern_options(
             pattern_names=self._calibration_manager.available_patterns(),
@@ -210,6 +217,31 @@ class MainWindow(QMainWindow):
         self._detection_thread = None
         self._detection_worker = None
         self._detection_request_in_flight = False
+
+    def _setup_preview_render_worker(self) -> None:
+        """Start the background thread that prepares display preview frames.
+
+        Undistort, mirror, downscale and BGR-to-RGB conversion previously ran on
+        the UI thread every display tick. Moving them here keeps the event loop
+        free for painting and input. One job runs at a time (gated by
+        ``_render_request_in_flight``) so frames never queue up.
+        """
+        self._render_thread = QThread(self)
+        self._render_worker = PreviewRenderWorker(self._calibration_manager)
+        self._render_worker.moveToThread(self._render_thread)
+        self.request_preview_render.connect(self._render_worker.render)
+        self._render_worker.rendered.connect(self._on_preview_render_result)
+        self._render_thread.start()
+
+    def _shutdown_preview_render_worker(self) -> None:
+        thread = self._render_thread
+        if thread is None:
+            return
+        thread.quit()
+        thread.wait(2000)
+        self._render_thread = None
+        self._render_worker = None
+        self._render_request_in_flight = False
 
     def _default_calibration_path(self) -> Path:
         return self._config.calibration_dir / "current_calibration.json"
@@ -671,10 +703,6 @@ class MainWindow(QMainWindow):
             return
 
         sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
-        previews: dict[str, Any] = {
-            source_id: self._prepare_calibration_preview_frame(source_id, frame.frame_bgr)
-            for source_id, frame in self._latest_frames.items()
-        }
         detections = dict(self._latest_calibration_detections)
 
         if detection_due and not self._detection_request_in_flight:
@@ -682,47 +710,56 @@ class MainWindow(QMainWindow):
             # most recent detections. The result is applied asynchronously in
             # _on_detection_result, which also drives auto-capture. The frames
             # snapshot lets that step pair the detected corners with the exact
-            # frames they came from.
+            # frames they came from. Undistort happens here (cheap cached remap)
+            # so detection sees the same preview frame it did before.
+            previews = {
+                source_id: self._prepare_calibration_preview_frame(source_id, frame.frame_bgr)
+                for source_id, frame in self._latest_frames.items()
+            }
             self._last_calibration_detection_at = now
             self._detection_request_in_flight = True
             self.request_detection.emit(
                 {
-                    "frames": dict(previews),
+                    "frames": previews,
                     "frames_snapshot": dict(self._latest_frames),
                     "pattern": self._calibration_pattern,
                 }
             )
 
-        if overlay_enabled and not use_qt_overlay:
-            # Legacy cv2-baked overlay path: bake using the latest known
-            # detections (the Qt overlay path renders the overlay separately).
-            for source_id, preview in list(previews.items()):
-                detection = detections.get(source_id)
-                if detection is not None and self._calibration_panel.overlay_enabled_for(source_id):
-                    previews[source_id] = self._draw_calibration_preview_overlay(
-                        source_id=source_id,
-                        frame_bgr=preview,
-                        detection=detection,
-                        sample_count=sample_counts.get(source_id, 0),
-                    )
-        elif not detection_needed and self._latest_calibration_detections:
+        if not detection_needed and self._latest_calibration_detections:
             self._latest_calibration_detections.clear()
             detections = {}
             self._refresh_calibration_panel(force=True)
 
-        overlay_baked = overlay_enabled and not use_qt_overlay
-        display_previews = self._finalize_calibration_preview_frames(
-            previews,
-            detections,
-            overlay_baked=overlay_baked,
-        )
-        overlay_states = (
-            self._build_preview_overlay_states(detections, sample_counts)
-            if use_qt_overlay
-            else None
-        )
-        self._update_preview_panel(display_previews, detections, sample_counts, overlay_states)
-        self._last_rendered_frame_indices = frame_indices
+        if use_qt_overlay:
+            # Display prep (undistort/mirror/downscale/RGB/QImage) runs on the
+            # preview-render worker; results are applied in
+            # _on_preview_render_result. The Qt overlay is drawn by the canvas.
+            self._submit_preview_render(frame_indices)
+        else:
+            # Legacy synchronous path: cv2-bakes the overlay onto the frame.
+            previews = {
+                source_id: self._prepare_calibration_preview_frame(source_id, frame.frame_bgr)
+                for source_id, frame in self._latest_frames.items()
+            }
+            if overlay_enabled:
+                for source_id, preview in list(previews.items()):
+                    detection = detections.get(source_id)
+                    if detection is not None and self._calibration_panel.overlay_enabled_for(source_id):
+                        previews[source_id] = self._draw_calibration_preview_overlay(
+                            source_id=source_id,
+                            frame_bgr=preview,
+                            detection=detection,
+                            sample_count=sample_counts.get(source_id, 0),
+                        )
+            display_previews = self._finalize_calibration_preview_frames(
+                previews,
+                detections,
+                overlay_baked=overlay_enabled,
+            )
+            self._update_preview_panel(display_previews, detections, sample_counts, None)
+            self._last_rendered_frame_indices = frame_indices
+
         if detection_due or force:
             self._refresh_calibration_panel()
 
@@ -750,6 +787,53 @@ class MainWindow(QMainWindow):
         if self._maybe_auto_capture_calibration(detections, frames=frames_snapshot):
             return
         self._refresh_calibration_panel()
+
+    def _submit_preview_render(self, frame_indices: dict[str, int]) -> None:
+        """Hand the latest raw frames + display options to the render worker."""
+        if self._render_request_in_flight or self._render_worker is None:
+            return
+        frames = {source_id: frame.frame_bgr for source_id, frame in self._latest_frames.items()}
+        if not frames:
+            return
+        undistort = {
+            source_id: self._calibration_panel.undistort_enabled_for(source_id) for source_id in frames
+        }
+        mirror = {
+            source_id: self._calibration_panel.mirror_preview_enabled_for(source_id)
+            for source_id in frames
+        }
+        self._render_request_in_flight = True
+        self._last_rendered_frame_indices = dict(frame_indices)
+        self.request_preview_render.emit(
+            {
+                "frames": frames,
+                "undistort": undistort,
+                "mirror": mirror,
+                "bundle": self._current_calibration_bundle,
+                "max_width": int(getattr(self._runtime_tuning, "preview_max_width", 0) or 0),
+                "max_height": int(getattr(self._runtime_tuning, "preview_max_height", 0) or 0),
+                "frame_indices": dict(frame_indices),
+            }
+        )
+
+    def _on_preview_render_result(self, payload: object) -> None:
+        """Display preview images prepared by the render worker (UI thread)."""
+        self._render_request_in_flight = False
+        if not self._latest_frames:
+            return
+        try:
+            data = dict(payload)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        images = data.get("images") or {}
+        if not images or not hasattr(self._calibration_panel, "update_preview_images"):
+            return
+        sample_counts = self._calibration_manager.observations_summary(include_sync_only=False)
+        detections = dict(self._latest_calibration_detections)
+        overlay_states = self._build_preview_overlay_states(detections, sample_counts)
+        self._calibration_panel.update_preview_images(
+            images, detections, sample_counts, overlay_states
+        )
 
     def _uses_qt_preview_overlay(self) -> bool:
         flag = getattr(self._calibration_panel, "uses_qt_preview_overlay", None)
@@ -1316,9 +1400,10 @@ class MainWindow(QMainWindow):
         self._latest_frames.clear()
         self._latest_calibration_detections.clear()
         self._last_rendered_frame_indices.clear()
-        # Drop any in-flight detection gate so the next live session can submit
+        # Drop any in-flight worker gates so the next live session can submit
         # immediately even if a result is still pending for the old frames.
         self._detection_request_in_flight = False
+        self._render_request_in_flight = False
         self._active_camera_count = 0
         self._refresh_live_status(force=True)
         self._refresh_calibration_panel(force=True)
@@ -2262,4 +2347,5 @@ class MainWindow(QMainWindow):
         self._on_stop_live()
         self._stop_camera_probe_worker()
         self._shutdown_detection_worker()
+        self._shutdown_preview_render_worker()
         super().closeEvent(event)
