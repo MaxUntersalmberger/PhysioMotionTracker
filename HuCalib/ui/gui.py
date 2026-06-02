@@ -435,6 +435,7 @@ class Ui_MainWindow(object):
 
         # Grid: labels + value frames
         grid_holder = QtWidgets.QFrame(self.page_results_tab)
+        grid_holder.setObjectName("frame_results_grid")
         grid_holder.setProperty("card", True)
         grid_holder.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         grid = QtWidgets.QGridLayout(grid_holder)
@@ -600,6 +601,7 @@ class Ui_MainWindow(object):
         self.page_diagnostics.setObjectName("page_diagnostics")
 
         holder = QtWidgets.QFrame(self.page_diagnostics)
+        holder.setObjectName("frame_diagnostics")
         holder.setProperty("card", True)
         holder.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
 

@@ -316,7 +316,10 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 /* The camera page wrapper is just a container: the individual camera tiles
    are the visible cards, so keep this transparent instead of a full-width
    white card. */
-QFrame#frame_cam {
+QFrame#frame_cam,
+QFrame#frame_directory,
+QFrame#frame_diagnostics,
+QFrame#frame_results_grid {
     background-color: transparent;
     border: none;
 }

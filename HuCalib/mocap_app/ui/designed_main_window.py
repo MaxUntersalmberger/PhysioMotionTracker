@@ -58,6 +58,10 @@ from ui.gui import Ui_MainWindow
 from ui.guiStyle import apply_styles
 
 
+# Maximum number of cameras that can be added to the preview grid at once.
+_MAX_CAMERAS = 12
+
+
 class _AggregateCheckBox(QCheckBox):
     """Checkbox that can display a partial (mixed) state for per-camera options,
     yet only toggles between checked and unchecked on a user click."""
@@ -1030,7 +1034,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
     def _setup_directory_page(self) -> None:
         layout = QVBoxLayout(self.window.frame_directory)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(10, 10, 10, 10)
 
         toolbar = QHBoxLayout()
         self._directory_up_button = QPushButton("Omhoog")
@@ -1634,7 +1638,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         )
         if not files:
             return
-        files = files[:4]
+        files = files[:_MAX_CAMERAS]
         sources: list[CameraSourceConfig] = []
         for index, file_path in enumerate(files):
             source_id = f"cam{index}"
@@ -1762,21 +1766,38 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
     def _append_camera_source(self) -> None:
         if self._video_sources:
-            self.ui_message.emit("Verwijder eerst de geladen video's voordat je webcams toevoegt.")
+            QMessageBox.information(
+                self.window,
+                "Camera toevoegen",
+                "Verwijder eerst de geladen video's voordat je webcams toevoegt.",
+            )
             return
         tokens = [token.strip() for token in self._sources_input.text().split(",") if token.strip()]
         numeric_tokens = {int(token) for token in tokens if token.isdigit()}
-        if len(tokens) >= 4:
-            self.ui_message.emit("Gebruik maximaal 4 camera's voor de kalibratie.")
+        if len(tokens) >= _MAX_CAMERAS:
+            QMessageBox.information(
+                self.window,
+                "Camera toevoegen",
+                f"Je kunt maximaal {_MAX_CAMERAS} camera's tegelijk gebruiken.",
+            )
             return
         next_index = self._next_detected_camera_index(numeric_tokens)
         if next_index is None:
+            # No camera available: give clear popup feedback instead of silently
+            # doing nothing.
             if self._camera_probe_running:
-                self.ui_message.emit("Camera scan loopt nog. Wacht even tot de scan klaar is.")
-            elif self._detected_cameras:
-                self.ui_message.emit("Alle gevonden camera's zijn al toegevoegd.")
+                QMessageBox.information(
+                    self.window,
+                    "Camera toevoegen",
+                    "De camera scan loopt nog. Wacht even tot de scan klaar is.",
+                )
             else:
-                self.ui_message.emit("Geen gevonden camera's bekend. Klik eerst op 'Camera's zoeken'.")
+                QMessageBox.information(
+                    self.window,
+                    "Geen camera beschikbaar",
+                    "Er is geen extra camera gevonden.\n\n"
+                    "Sluit nog een camera aan en klik op 'Camera's zoeken'.",
+                )
             self._refresh_add_camera_button()
             return
         tokens.append(str(next_index))
@@ -1811,7 +1832,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
     def _source_ids_for_csv(self, csv: str) -> list[str]:
         tokens = [token.strip() for token in csv.split(",") if token.strip()]
-        return [self._source_id_for_token(token, index) for index, token in enumerate(tokens[:4])]
+        return [self._source_id_for_token(token, index) for index, token in enumerate(tokens[:_MAX_CAMERAS])]
 
     def _source_id_for_token(self, token: str, index: int) -> str:
         return f"cam{int(token)}" if token.isdigit() else f"cam{index}"
@@ -1883,7 +1904,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         )
 
     def set_sources(self, source_ids: list[str]) -> None:
-        source_ids = source_ids[:4]
+        source_ids = source_ids[:_MAX_CAMERAS]
         if source_ids == self._source_order and set(self._tiles) == set(source_ids):
             # Nothing changed: keep the existing grid so live tiles don't flicker
             # or jump cells when this is called on every refresh.
@@ -1937,36 +1958,39 @@ class DesignedCalibrationPanel(QtCore.QObject):
             self._camera_grid.setRowStretch(row, 0)
 
         count = len(self._source_order)
-        columns = 1 if count <= 1 else 2
+        show_add = count < _MAX_CAMERAS
+        total_cells = max(1, count + (1 if show_add else 0))
+
+        # Roughly square grid; cap the column count so cells don't get tiny.
+        columns = 1
+        while columns * columns < total_cells:
+            columns += 1
+        columns = min(columns, 4)
+        rows = (total_cells + columns - 1) // columns
+
+        # Each camera is a block in the grid.
         for index, source_id in enumerate(self._source_order):
             self._camera_grid.addWidget(
                 self._tile_boxes[source_id], index // columns, index % columns
             )
 
-        if count == 0:
-            # No cameras yet: show the add button as a centered prompt.
+        # The add button sits in the next free cell, a bit smaller and centered.
+        if show_add:
             self._add_camera_button.setSizePolicy(
                 QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
             )
-            self._add_camera_button.setMinimumHeight(44)
+            self._add_camera_button.setMinimumHeight(44 if count == 0 else 40)
             self._camera_grid.addWidget(
-                self._add_camera_button, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter
+                self._add_camera_button,
+                count // columns,
+                count % columns,
+                alignment=Qt.AlignmentFlag.AlignCenter,
             )
-            self._camera_grid.setColumnStretch(0, 1)
-            self._camera_grid.setRowStretch(0, 1)
-        else:
-            # Cameras present: the tiles fill the grid and the add button is a
-            # slim bar spanning all columns underneath, so it never steals a
-            # tile's space the way an expanding cell did.
-            tile_rows = (count + columns - 1) // columns
-            self._add_camera_button.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-            self._camera_grid.addWidget(self._add_camera_button, tile_rows, 0, 1, columns)
-            for col in range(columns):
-                self._camera_grid.setColumnStretch(col, 1)
-            for row in range(tile_rows):
-                self._camera_grid.setRowStretch(row, 1)
+
+        for col in range(columns):
+            self._camera_grid.setColumnStretch(col, 1)
+        for row in range(rows):
+            self._camera_grid.setRowStretch(row, 1)
 
         self._refresh_add_camera_button()
 
@@ -2006,7 +2030,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             next_tokens.append(str(detected[0]))
 
         next_tokens.extend(non_numeric)
-        next_tokens = next_tokens[:4]
+        next_tokens = next_tokens[:_MAX_CAMERAS]
         if next_tokens != tokens:
             self._sources_input.setText(",".join(next_tokens))
             self._sync_source_input_preview()
@@ -2017,35 +2041,24 @@ class DesignedCalibrationPanel(QtCore.QObject):
         if not hasattr(self, "_add_camera_button") or not hasattr(self, "_sources_input"):
             return
         tokens = self._current_source_tokens()
-        numeric_tokens = {int(token) for token in tokens if token.isdigit()}
-        next_index = self._next_detected_camera_index(numeric_tokens)
-        can_add = (
-            not self._camera_probe_running
-            and not self._video_sources
-            and len(tokens) < 4
-            and next_index is not None
-        )
-        # The add-camera button is always shown. When there is nothing to add it
-        # stays put as a prompt ("Sluit nog een camera aan") rather than
-        # disappearing or turning into a dead "all added" label.
-        self._add_camera_button.setEnabled(can_add)
+        at_max = len(tokens) >= _MAX_CAMERAS
+        # The button is a clear "add". It stays clickable even when nothing is
+        # available so a click can give popup feedback (handled in
+        # _append_camera_source). Only scanning, loaded videos or the max block it.
+        clickable = not self._camera_probe_running and not self._video_sources and not at_max
+        self._add_camera_button.setEnabled(clickable)
         if self._camera_probe_running:
             self._add_camera_button.setText("Scannen...")
             self._add_camera_button.setToolTip("Wacht tot de camera scan klaar is.")
         elif self._video_sources:
             self._add_camera_button.setText("+ Camera toevoegen")
             self._add_camera_button.setToolTip("Verwijder eerst geladen video's om webcams toe te voegen.")
-        elif len(tokens) >= 4:
-            self._add_camera_button.setText("Maximaal aantal camera's bereikt")
-            self._add_camera_button.setToolTip("Je kunt maximaal 4 camera's tegelijk gebruiken.")
-        elif next_index is None:
-            self._add_camera_button.setText("Sluit nog een camera aan")
-            self._add_camera_button.setToolTip(
-                "Geen extra camera gevonden. Sluit een camera aan en klik op 'Camera's zoeken'."
-            )
+        elif at_max:
+            self._add_camera_button.setText(f"Maximaal {_MAX_CAMERAS} camera's")
+            self._add_camera_button.setToolTip(f"Je kunt maximaal {_MAX_CAMERAS} camera's tegelijk gebruiken.")
         else:
-            self._add_camera_button.setText(f"+ Camera {next_index} toevoegen")
-            self._add_camera_button.setToolTip(f"Voeg gevonden webcam index {next_index} toe.")
+            self._add_camera_button.setText("+ Camera toevoegen")
+            self._add_camera_button.setToolTip("Voeg de volgende gevonden camera toe.")
 
     def _tile_status(self, count: int, detection: ChessboardDetectionResult | None) -> str:
         status = f"Intrinsics={count}"
