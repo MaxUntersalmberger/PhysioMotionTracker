@@ -463,12 +463,14 @@ class DesignedCalibrationPanel(QtCore.QObject):
     spatial_grid_changed = Signal(int, int)
     sources_changed = Signal(object)
     preview_options_changed = Signal()
+    record_toggled = Signal(bool)
 
     def __init__(self, window: "DesignedMainWindow", default_camera_csv: str, default_fps: float) -> None:
         super().__init__(window)
         self.window = window
         self._tiles: dict[str, DesignedPreviewTile] = {}
         self._source_order: list[str] = []
+        self._video_sources: list[CameraSourceConfig] = []
         self._live_active = False
         self._active_cameras = 0
         self._project_root = Path.cwd()
@@ -521,6 +523,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         )
         self.window.btn_camera_start_live.clicked.connect(self._emit_start_live)
         self.window.btn_camera_stop_live.clicked.connect(self.stop_live_requested)
+        self.window.btn_camera_record.toggled.connect(self._toggle_record)
+        self.window.btn_camera_load_video.clicked.connect(self._load_video_sources)
 
         self._camera_scroll = QScrollArea()
         self._camera_scroll.setWidgetResizable(True)
@@ -996,6 +1000,78 @@ class DesignedCalibrationPanel(QtCore.QObject):
             return
         self.start_live_requested.emit(sources, self.target_fps())
 
+    def _toggle_record(self, checked: bool) -> None:
+        self.record_toggled.emit(checked)
+
+    def set_recording_active(self, active: bool) -> None:
+        button = self.window.btn_camera_record
+        button.blockSignals(True)
+        button.setChecked(active)
+        button.blockSignals(False)
+        button.setText("Stop opname" if active else "Opnemen")
+        button.setStyleSheet(
+            "background-color: #c62828; color: white; font-weight: bold;" if active else ""
+        )
+
+    def _update_record_button_enabled(self) -> None:
+        button = getattr(self.window, "btn_camera_record", None)
+        if button is None:
+            return
+        button.setEnabled(not self._video_sources)
+        if self._video_sources:
+            button.setToolTip("Opnemen is uitgeschakeld zolang video's als bron geladen zijn.")
+        else:
+            button.setToolTip("Neem de live beelden op en sla ze op als videobestand")
+
+    def _load_video_sources(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(
+            self.window,
+            "Selecteer video('s) voor kalibratie",
+            str(self._project_root),
+            "Videobestanden (*.mp4 *.avi *.mov *.mkv *.m4v);;Alle bestanden (*)",
+        )
+        if not files:
+            return
+        files = files[:4]
+        sources: list[CameraSourceConfig] = []
+        for index, file_path in enumerate(files):
+            source_id = f"cam{index}"
+            sources.append(
+                CameraSourceConfig(
+                    source_id=source_id,
+                    kind="video",
+                    uri=file_path,
+                    label=Path(file_path).name,
+                )
+            )
+        self._video_sources = sources
+        self.set_sources([source.source_id for source in sources])
+        for source in sources:
+            tile = self._tiles.get(source.source_id)
+            if tile is not None:
+                tile.set_display_name(source.label)
+        self._apply_video_fps(files[0])
+        self._update_record_button_enabled()
+        self._emit_sources_changed()
+        self.start_live_requested.emit(sources, self.target_fps())
+        names = ", ".join(source.label for source in sources)
+        self.show_feedback(
+            f"{len(sources)} video('s) geladen: {names}. "
+            "Druk op Start bij Intrinsics of Extrinsics om te berekenen.",
+            success=True,
+        )
+        self.switch_page(1)
+
+    def _apply_video_fps(self, video_path: str) -> None:
+        try:
+            capture = cv2.VideoCapture(video_path)
+            fps = capture.get(cv2.CAP_PROP_FPS)
+            capture.release()
+        except Exception:  # noqa: BLE001 - best effort, fall back to current value
+            return
+        if fps and fps > 0:
+            self.window.spin_cap_fps.setValue(max(1, min(120, int(round(fps)))))
+
     def _toggle_intrinsics_start(self, checked: bool) -> None:
         if checked:
             self.set_workflow_mode("intrinsics")
@@ -1075,6 +1151,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window.text_diag_current_fps.setPlainText(str(self.window.spin_cap_fps.value()))
 
     def _sync_source_input_preview(self) -> None:
+        self._video_sources = []
+        self._update_record_button_enabled()
         self._source_csv = self._sources_input.text().strip()
         self.set_sources(self._source_ids_for_csv(self._source_csv))
         self._emit_sources_changed()
@@ -1093,6 +1171,17 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._sync_source_input_preview()
 
     def _remove_source(self, source_id: str) -> None:
+        if self._video_sources:
+            self._video_sources = [
+                source for source in self._video_sources if source.source_id != source_id
+            ]
+            tile = self._tiles.get(source_id)
+            if tile is not None:
+                tile.close_popout()
+            self.set_sources([source.source_id for source in self._video_sources])
+            self._update_record_button_enabled()
+            self._emit_sources_changed()
+            return
         try:
             index = self._source_order.index(source_id)
         except ValueError:
@@ -1121,6 +1210,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.sources_changed.emit(sources)
 
     def current_sources(self) -> list[CameraSourceConfig]:
+        if self._video_sources:
+            return list(self._video_sources)
         raw = self._sources_input.text().strip()
         if not raw:
             raise ValueError("Camera CSV is empty. Provide at least one source.")
@@ -1608,6 +1699,16 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         self.btn_camera_stop_live.setObjectName("btn_camera_stop_live")
         self.btn_camera_stop_live.setEnabled(False)
 
+        self.btn_camera_record = QPushButton("Opnemen", self.frame)
+        self.btn_camera_record.setObjectName("btn_camera_record")
+        self.btn_camera_record.setCheckable(True)
+        self.btn_camera_record.setToolTip("Neem de live beelden op en sla ze op als videobestand")
+        self.btn_camera_load_video = QPushButton("Video laden", self.frame)
+        self.btn_camera_load_video.setObjectName("btn_camera_load_video")
+        self.btn_camera_load_video.setToolTip(
+            "Laad een videobestand om de intrinsics/extrinsics daaruit te berekenen"
+        )
+
         live_actions = QWidget(self.frame)
         live_actions_layout = QHBoxLayout(live_actions)
         live_actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -1615,6 +1716,13 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         live_actions_layout.addWidget(self.btn_camera_detect)
         live_actions_layout.addWidget(self.btn_camera_start_live)
         live_actions_layout.addWidget(self.btn_camera_stop_live)
+
+        video_actions = QWidget(self.frame)
+        video_actions_layout = QHBoxLayout(video_actions)
+        video_actions_layout.setContentsMargins(0, 0, 0, 0)
+        video_actions_layout.setSpacing(6)
+        video_actions_layout.addWidget(self.btn_camera_record)
+        video_actions_layout.addWidget(self.btn_camera_load_video)
 
         top_layout = self.frame.layout()
         if isinstance(top_layout, QGridLayout):
@@ -1626,6 +1734,7 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             top_layout.addWidget(self.lab_cap_pattern, 1, 0)
             top_layout.addWidget(self.combo_cap_pattern, 1, 1)
             top_layout.addWidget(live_actions, 2, 0, 1, 2)
+            top_layout.addWidget(video_actions, 3, 0, 1, 2)
             top_layout.addWidget(self.frame_2, 0, 2, 3, 1)
             top_layout.addWidget(self.frame_3, 0, 3, 3, 1)
             top_layout.addWidget(
@@ -1659,6 +1768,8 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
             self.btn_camera_detect,
             self.btn_camera_start_live,
             self.btn_camera_stop_live,
+            self.btn_camera_record,
+            self.btn_camera_load_video,
         ]:
             button.setMinimumHeight(28)
 
@@ -1669,7 +1780,7 @@ class DesignedMainWindow(FunctionalMainWindow, Ui_MainWindow):
         self.btn_cap_reset_calibration.setToolTip("Reset calibration")
         self.btn_cap_reset_calibration.setFixedSize(36, 36)
         self.btn_cap_reset_calibration.setProperty("danger", True)
-        self.frame.setMinimumHeight(130)
+        self.frame.setMinimumHeight(160)
 
     def _setup_resizable_shell(self) -> None:
         central_layout = self.centralwidget.layout()

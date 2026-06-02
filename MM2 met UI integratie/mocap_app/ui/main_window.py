@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import cv2
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
 from mocap_app.core.config import AppConfig
@@ -15,6 +17,7 @@ from mocap_app.io.calibration_io import (
     CalibrationRepository,
     ChessboardDetectionResult,
 )
+from mocap_app.io.video_recorder import VideoRecorder
 from mocap_app.models.types import (
     CalibrationBoardSettings,
     CalibrationBundle,
@@ -56,6 +59,7 @@ class MainWindow(QMainWindow):
         self._live_worker: LiveCaptureWorker | None = None
         self._camera_probe_worker: CameraProbeWorker | None = None
         self._intrinsics_solve_worker: IntrinsicsSolveWorker | None = None
+        self._video_recorder: VideoRecorder | None = None
         self._active_sources: list[CameraSourceConfig] = []
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
@@ -144,6 +148,8 @@ class MainWindow(QMainWindow):
         self._calibration_panel.acceptance_thresholds_changed.connect(self._on_acceptance_thresholds_changed)
         self._calibration_panel.workflow_mode_changed.connect(self._on_calibration_workflow_mode_changed)
         self._calibration_panel.spatial_grid_changed.connect(self._on_spatial_grid_changed)
+        if hasattr(self._calibration_panel, "record_toggled"):
+            self._calibration_panel.record_toggled.connect(self._on_record_toggled)
         if hasattr(self._calibration_panel, "sources_changed"):
             self._calibration_panel.sources_changed.connect(self._on_panel_sources_changed)
         if hasattr(self._calibration_panel, "preview_options_changed"):
@@ -886,6 +892,7 @@ class MainWindow(QMainWindow):
             self._set_status(state)
 
     def _on_live_finished(self) -> None:
+        self._finalize_recording()
         if self._live_worker is not None and not self._live_worker.isRunning():
             self._live_worker = None
         self._active_sources = []
@@ -893,6 +900,7 @@ class MainWindow(QMainWindow):
         self._refresh_live_status(force=True)
 
     def _on_stop_live(self) -> None:
+        self._finalize_recording()
         if self._live_worker is None:
             self._refresh_live_status(force=True)
             return
@@ -911,6 +919,66 @@ class MainWindow(QMainWindow):
         self._refresh_calibration_panel(force=True)
         self._set_status("Live capture stopped")
 
+    def _default_recordings_dir(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return self._config.sessions_dir / "recordings" / f"rec_{timestamp}"
+
+    def _on_record_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self._finalize_recording()
+            return
+        if self._video_recorder is not None:
+            return
+        if self._live_worker is None or not self._live_worker.isRunning():
+            self._calibration_panel.set_recording_active(False)
+            self._show_warning("Start eerst de live weergave voordat je een opname maakt.")
+            return
+
+        output_dir = self._default_recordings_dir()
+        labels = {source.source_id: (source.label or source.source_id) for source in self._active_sources}
+        fps = self._runtime_tuning.capture_fps if self._runtime_tuning.capture_fps > 0 else self._calibration_panel.target_fps()
+        try:
+            self._video_recorder = VideoRecorder(output_dir=output_dir, fps=fps, labels=labels)
+        except OSError as exc:
+            LOGGER.error("Could not start recording: %s", exc)
+            self._calibration_panel.set_recording_active(False)
+            self._show_error(f"Kon de opname niet starten: {exc}")
+            return
+        self._calibration_panel.set_recording_active(True)
+        self._calibration_panel.show_feedback(f"Opname gestart -> {output_dir}", success=True)
+        self._set_status(f"Opname gestart: {output_dir}")
+
+    def _finalize_recording(self) -> None:
+        recorder = self._video_recorder
+        self._video_recorder = None
+        if recorder is None:
+            return
+        self._calibration_panel.set_recording_active(False)
+        written = recorder.close()
+        if not written:
+            self._calibration_panel.show_feedback("Opname gestopt; geen frames opgeslagen.", success=False)
+            self._set_status("Opname gestopt (geen frames).")
+            return
+        output_dir = recorder.output_dir
+        files_text = ", ".join(path.name for path in written.values())
+        self._calibration_panel.show_feedback(
+            f"Opname opgeslagen ({recorder.total_frames()} frames): {files_text} in {output_dir}",
+            success=True,
+        )
+        self._set_status(f"Video opgeslagen in {output_dir}")
+        self._prompt_open_recording_folder(output_dir)
+
+    def _prompt_open_recording_folder(self, folder: Path) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Video opgeslagen",
+            f"Video('s) opgeslagen in:\n{folder}\n\nMap openen?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
     def _on_frame_batch(self, batch_obj: object) -> None:
         frames = dict(batch_obj)  # type: ignore[arg-type]
         if not frames:
@@ -922,6 +990,8 @@ class MainWindow(QMainWindow):
                 return
         self._latest_frames = frames
         self._active_camera_count = len(frames)
+        if self._video_recorder is not None:
+            self._video_recorder.write_batch(frames)
         self._refresh_live_status()
 
     def _build_calibration_preview_frame(
