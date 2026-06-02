@@ -71,6 +71,7 @@ class CalibrationCaptureSet:
     pattern_type: Literal["chessboard", "charuco"]
     samples_by_source: dict[str, CalibrationSample]
     captured_at_iso: str
+    sync_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -430,6 +431,9 @@ class CalibrationManager:
             "metadata.spatial_coverage.*.center_spread_y_px": "pixels",
             "metadata.spatial_coverage.*.edge_coverage_score": "0..1 ratio",
             "metadata.spatial_coverage.*.cell_hit_counts": "sample-hit counts per grid cell",
+            "metadata.sample_collection.synchronized_timing.max_timestamp_skew_ms": "milliseconds",
+            "metadata.sample_collection.synchronized_timing.mean_timestamp_skew_ms": "milliseconds",
+            "metadata.sample_collection.synchronized_timing.max_allowed_timestamp_skew_ms": "milliseconds",
             "image_size": "pixels [width, height]",
         }
 
@@ -463,6 +467,7 @@ class CalibrationManager:
                 "total_samples": 0,
                 "total_intrinsics_samples": 0,
                 "synchronized_sets": len(self._capture_sets),
+                "synchronized_timing": self.synchronized_timing_metadata(),
                 "per_camera": {},
             }
 
@@ -495,7 +500,32 @@ class CalibrationManager:
             "total_samples": len(all_samples),
             "total_intrinsics_samples": sum(1 for sample in all_samples if sample.accepted_for_intrinsics),
             "synchronized_sets": len(self._capture_sets),
+            "synchronized_timing": self.synchronized_timing_metadata(),
             "per_camera": per_camera,
+        }
+
+    def synchronized_timing_metadata(self) -> dict[str, Any]:
+        timing_sets = [
+            capture_set.sync_metadata
+            for capture_set in self._capture_sets
+            if capture_set.sync_metadata
+        ]
+        skews = [
+            float(metadata["timestamp_skew_ms"])
+            for metadata in timing_sets
+            if isinstance(metadata.get("timestamp_skew_ms"), (int, float))
+        ]
+        max_allowed_values = [
+            float(metadata["max_allowed_timestamp_skew_ms"])
+            for metadata in timing_sets
+            if isinstance(metadata.get("max_allowed_timestamp_skew_ms"), (int, float))
+        ]
+        return {
+            "software_sync": True,
+            "timing_available_sets": len(timing_sets),
+            "max_timestamp_skew_ms": max(skews) if skews else None,
+            "mean_timestamp_skew_ms": float(np.mean(skews)) if skews else None,
+            "max_allowed_timestamp_skew_ms": max(max_allowed_values) if max_allowed_values else None,
         }
 
     def detect_pattern(
@@ -742,6 +772,7 @@ class CalibrationManager:
         pattern: Literal["chessboard", "charuco"] | str | None = None,
         allow_relaxed_sync: bool = True,
         workflow_mode: Literal["hybrid", "intrinsics", "sync_extrinsics"] = "hybrid",
+        sync_metadata: dict[str, Any] | None = None,
     ) -> dict[str, CalibrationCaptureFeedback]:
         """Store single-camera samples and synchronized capture sets from precomputed detections."""
         selected_pattern = self._normalize_pattern_name(pattern)
@@ -930,6 +961,7 @@ class CalibrationManager:
                     pattern_type=selected_pattern,
                     samples_by_source=dict(accepted_samples),
                     captured_at_iso=captured_at_iso,
+                    sync_metadata=dict(sync_metadata or {}),
                 )
             )
 
@@ -941,6 +973,7 @@ class CalibrationManager:
         pattern: Literal["chessboard", "charuco"] | str | None = None,
         allow_relaxed_sync: bool = True,
         workflow_mode: Literal["hybrid", "intrinsics", "sync_extrinsics"] = "hybrid",
+        sync_metadata: dict[str, Any] | None = None,
     ) -> dict[str, CalibrationCaptureFeedback]:
         """Capture a synchronized multi-camera observation set when multiple views are valid."""
         selected_pattern = self._normalize_pattern_name(pattern)
@@ -957,6 +990,7 @@ class CalibrationManager:
             pattern=selected_pattern,
             allow_relaxed_sync=allow_relaxed_sync,
             workflow_mode=workflow_mode,
+            sync_metadata=sync_metadata,
         )
 
     def add_chessboard_observation(self, source_id: str, frame_bgr: U8Array) -> bool:

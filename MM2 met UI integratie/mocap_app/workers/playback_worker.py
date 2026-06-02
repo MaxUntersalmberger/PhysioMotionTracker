@@ -67,19 +67,26 @@ class SessionPlaybackWorker(QThread):
 
                 loop_start = time.perf_counter()
                 timestamp_sec = time.time()
+                batch_id = f"playback_{int(timestamp_sec * 1000)}_{self._frame_index}"
                 batch: dict[str, FramePacket] = {}
                 read_failed = False
 
                 for source_id, capture in captures.items():
+                    capture_started = time.time()
                     ok, frame = capture.read()
+                    capture_completed = time.time()
                     if not ok:
                         read_failed = True
                         break
                     batch[source_id] = FramePacket(
                         source_id=source_id,
                         frame_index=self._frame_index,
-                        timestamp_sec=timestamp_sec,
+                        timestamp_sec=(capture_started + capture_completed) / 2.0,
                         frame_bgr=frame,
+                        batch_id=batch_id,
+                        batch_timestamp_sec=timestamp_sec,
+                        capture_started_sec=capture_started,
+                        capture_completed_sec=capture_completed,
                     )
 
                 if read_failed:

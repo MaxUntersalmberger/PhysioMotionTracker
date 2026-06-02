@@ -35,6 +35,9 @@ from mocap_app.workers.capture_worker import LiveCaptureWorker
 
 
 LOGGER = logging.getLogger(__name__)
+SYNC_SKEW_WARNING_SEC = 0.050
+SYNC_SKEW_REJECT_SEC = 0.150
+SYNC_WARNING_THROTTLE_SEC = 3.0
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +60,7 @@ class MainWindow(QMainWindow):
         self._calibration_panel_refresh_interval_sec = 0.35
         self._last_calibration_auto_capture_at = 0.0
         self._last_live_status_refresh_at = 0.0
+        self._last_sync_timing_warning_at = 0.0
 
         self._live_worker: LiveCaptureWorker | None = None
         self._camera_probe_worker: CameraProbeWorker | None = None
@@ -64,6 +68,7 @@ class MainWindow(QMainWindow):
         self._video_recorder: VideoRecorder | None = None
         self._last_recording_dir: Path | None = None
         self._active_sources: list[CameraSourceConfig] = []
+        self._detected_cameras: list[CameraProbeResult] = []
         self._runtime_tuning = RuntimeTuning()
         self._latest_frames: dict[str, FramePacket] = {}
         self._last_rendered_frame_indices: dict[str, int] = {}
@@ -104,6 +109,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self._config.app_name)
         self._apply_initial_window_geometry()
         self._set_status("Ready for camera calibration")
+        QTimer.singleShot(250, self._start_initial_camera_probe)
 
     def _setup_ui(self) -> None:
         self.setCentralWidget(self._calibration_panel)
@@ -180,6 +186,18 @@ class MainWindow(QMainWindow):
         self._calibration_detection_interval_sec = 1.0 / max(tuning_obj.calibration_detection_hz, 0.1)
         self._update_calibration_preview(force=True)
 
+    def _start_initial_camera_probe(self) -> None:
+        if self._camera_probe_worker is not None:
+            return
+        probe_max = 10
+        panel_probe_max = getattr(self._calibration_panel, "probe_max_index", None)
+        if callable(panel_probe_max):
+            try:
+                probe_max = int(panel_probe_max())
+            except (TypeError, ValueError):
+                probe_max = 10
+        self._on_probe_cameras(probe_max)
+
     def _stop_camera_probe_worker(self) -> None:
         if self._camera_probe_worker is None:
             return
@@ -210,6 +228,7 @@ class MainWindow(QMainWindow):
         for item in cameras:
             if isinstance(item, CameraProbeResult):
                 results.append(item)
+        self._detected_cameras = sorted(results, key=lambda camera: camera.index)
         self._calibration_panel.set_detected_cameras(results)
         if results:
             self._set_status(f"Detected {len(results)} camera(s).")
@@ -226,8 +245,13 @@ class MainWindow(QMainWindow):
             sources = self._calibration_panel.current_sources()
         except ValueError:
             sources = [
-                CameraSourceConfig(source_id="cam0", kind="webcam", uri=0, label="Webcam 0"),
-                CameraSourceConfig(source_id="cam1", kind="webcam", uri=1, label="Webcam 1"),
+                CameraSourceConfig(
+                    source_id=f"cam{camera.index}",
+                    kind="webcam",
+                    uri=camera.index,
+                    label=f"Webcam {camera.index}",
+                )
+                for camera in self._detected_cameras[:1]
             ]
         self._active_sources = sources
         self._calibration_panel.set_sources([source.source_id for source in sources])
@@ -1172,12 +1196,100 @@ class MainWindow(QMainWindow):
         )
         return self._downscale_for_display(rendered)
 
+    def _sync_capture_timing_metadata(
+        self,
+        frames: dict[str, FramePacket],
+    ) -> dict[str, Any]:
+        source_timestamps: dict[str, float] = {}
+        capture_started: dict[str, float] = {}
+        capture_completed: dict[str, float] = {}
+        batch_ids: set[str] = set()
+
+        for source_id, frame in frames.items():
+            timestamp = getattr(frame, "capture_started_sec", None)
+            if timestamp is None:
+                timestamp = frame.timestamp_sec
+            source_timestamps[source_id] = round(float(timestamp), 6)
+
+            started = getattr(frame, "capture_started_sec", None)
+            if started is not None:
+                capture_started[source_id] = round(float(started), 6)
+            completed = getattr(frame, "capture_completed_sec", None)
+            if completed is not None:
+                capture_completed[source_id] = round(float(completed), 6)
+            batch_id = getattr(frame, "batch_id", None)
+            if batch_id:
+                batch_ids.add(str(batch_id))
+
+        timestamps = list(source_timestamps.values())
+        skew_sec = max(timestamps) - min(timestamps) if len(timestamps) >= 2 else 0.0
+        return {
+            "software_sync": True,
+            "timestamp_source": "capture_started_sec",
+            "timestamp_skew_ms": round(skew_sec * 1000.0, 3),
+            "warning_timestamp_skew_ms": round(SYNC_SKEW_WARNING_SEC * 1000.0, 3),
+            "max_allowed_timestamp_skew_ms": round(SYNC_SKEW_REJECT_SEC * 1000.0, 3),
+            "batch_ids": sorted(batch_ids),
+            "source_timestamps_sec": source_timestamps,
+            "capture_started_sec": capture_started,
+            "capture_completed_sec": capture_completed,
+        }
+
+    def _validate_sync_capture_timing(
+        self,
+        frames: dict[str, FramePacket],
+        auto_trigger: bool,
+    ) -> tuple[bool, dict[str, Any]]:
+        metadata = self._sync_capture_timing_metadata(frames)
+        skew_ms = float(metadata.get("timestamp_skew_ms") or 0.0)
+        batch_ids = metadata.get("batch_ids", [])
+
+        if isinstance(batch_ids, list) and len(batch_ids) > 1:
+            message = "Sync capture rejected: frames came from different software batches."
+            if auto_trigger:
+                self._calibration_panel.set_auto_capture_status(message)
+            else:
+                self._calibration_panel.show_feedback(message, success=False)
+                self._set_status(message)
+            LOGGER.warning("%s batch_ids=%s", message, batch_ids)
+            return False, metadata
+
+        if skew_ms > SYNC_SKEW_REJECT_SEC * 1000.0:
+            message = (
+                "Sync capture rejected: camera timestamp skew "
+                f"{skew_ms:.1f} ms exceeds {SYNC_SKEW_REJECT_SEC * 1000.0:.0f} ms."
+            )
+            if auto_trigger:
+                self._calibration_panel.set_auto_capture_status(message)
+            else:
+                self._calibration_panel.show_feedback(message, success=False)
+                self._set_status(message)
+            LOGGER.warning("%s metadata=%s", message, metadata)
+            return False, metadata
+
+        if skew_ms > SYNC_SKEW_WARNING_SEC * 1000.0:
+            now = time.perf_counter()
+            if not auto_trigger or now - self._last_sync_timing_warning_at >= SYNC_WARNING_THROTTLE_SEC:
+                message = (
+                    "Sync capture warning: camera timestamp skew "
+                    f"{skew_ms:.1f} ms. Hold the calibration board still."
+                )
+                if auto_trigger:
+                    self._calibration_panel.set_auto_capture_status(message)
+                else:
+                    self._set_status(message)
+                LOGGER.warning("%s metadata=%s", message, metadata)
+                self._last_sync_timing_warning_at = now
+
+        return True, metadata
+
     def _apply_calibration_capture_feedback(
         self,
         feedback_by_source: dict[str, Any],
         before_sync_sets: int,
         after_sync_sets: int,
         auto_trigger: bool,
+        sync_metadata: dict[str, Any] | None = None,
     ) -> bool:
         feedback_messages: list[str] = []
         accepted_total = 0
@@ -1221,6 +1333,10 @@ class MainWindow(QMainWindow):
             sync_suffix = ""
             if after_sync_sets > before_sync_sets:
                 sync_suffix = f" Created synchronized set #{after_sync_sets}."
+                if sync_metadata:
+                    skew_ms = float(sync_metadata.get("timestamp_skew_ms") or 0.0)
+                    if skew_ms > SYNC_SKEW_WARNING_SEC * 1000.0:
+                        sync_suffix += f" Software sync skew {skew_ms:.1f} ms."
             message = f"Accepted {accepted_total} sample(s). " + " | ".join(feedback_messages) + sync_suffix
             self._set_status(message)
             self._calibration_panel.show_feedback(message, success=True)
@@ -1259,6 +1375,14 @@ class MainWindow(QMainWindow):
             if not auto_trigger:
                 self._show_warning("Sync / Extrinsics mode requires at least 2 active camera feeds.")
             return False
+        sync_metadata: dict[str, Any] | None = None
+        if workflow_mode == "sync_extrinsics":
+            timing_ok, sync_metadata = self._validate_sync_capture_timing(
+                frames=self._latest_frames,
+                auto_trigger=auto_trigger,
+            )
+            if not timing_ok:
+                return False
         active_detections = (
             {
                 source_id: detections[source_id]
@@ -1291,6 +1415,7 @@ class MainWindow(QMainWindow):
                 pattern=self._calibration_pattern,
                 allow_relaxed_sync=allow_relaxed_sync,
                 workflow_mode=workflow_mode,
+                sync_metadata=sync_metadata,
             )
         else:
             frames_by_source = {
@@ -1312,6 +1437,7 @@ class MainWindow(QMainWindow):
                 pattern=self._calibration_pattern,
                 allow_relaxed_sync=allow_relaxed_sync,
                 workflow_mode=workflow_mode,
+                sync_metadata=sync_metadata,
             )
         after_sync_sets = self._calibration_manager.synchronized_capture_count()
         return self._apply_calibration_capture_feedback(
@@ -1319,6 +1445,7 @@ class MainWindow(QMainWindow):
             before_sync_sets=before_sync_sets,
             after_sync_sets=after_sync_sets,
             auto_trigger=auto_trigger,
+            sync_metadata=sync_metadata,
         )
 
     def _maybe_auto_capture_calibration(

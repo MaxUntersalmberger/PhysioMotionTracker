@@ -485,6 +485,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._tiles: dict[str, DesignedPreviewTile] = {}
         self._source_order: list[str] = []
         self._video_sources: list[CameraSourceConfig] = []
+        self._detected_cameras: list[CameraProbeResult] = []
+        self._camera_probe_running = False
         self._live_active = False
         self._active_cameras = 0
         self._project_root = Path.cwd()
@@ -1116,6 +1118,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             button.setToolTip("Opnemen is uitgeschakeld zolang video's als bron geladen zijn.")
         else:
             button.setToolTip("Neem de live beelden op en sla ze op als videobestand")
+        self._refresh_add_camera_button()
 
     def _load_video_sources(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
@@ -1250,15 +1253,26 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._source_csv = self._sources_input.text().strip()
         self.set_sources(self._source_ids_for_csv(self._source_csv))
         self._emit_sources_changed()
+        self._refresh_add_camera_button()
 
     def _append_camera_source(self) -> None:
+        if self._video_sources:
+            self.ui_message.emit("Verwijder eerst de geladen video's voordat je webcams toevoegt.")
+            return
         tokens = [token.strip() for token in self._sources_input.text().split(",") if token.strip()]
         numeric_tokens = {int(token) for token in tokens if token.isdigit()}
-        next_index = 0
-        while next_index in numeric_tokens:
-            next_index += 1
         if len(tokens) >= 4:
             self.ui_message.emit("Use up to 4 sources for calibration.")
+            return
+        next_index = self._next_detected_camera_index(numeric_tokens)
+        if next_index is None:
+            if self._camera_probe_running:
+                self.ui_message.emit("Camera scan loopt nog. Wacht even tot de scan klaar is.")
+            elif self._detected_cameras:
+                self.ui_message.emit("Alle gevonden camera's zijn al toegevoegd.")
+            else:
+                self.ui_message.emit("Geen gevonden camera's bekend. Gebruik eerst Detect Cameras.")
+            self._refresh_add_camera_button()
             return
         tokens.append(str(next_index))
         self._sources_input.setText(",".join(tokens))
@@ -1288,6 +1302,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             del tokens[index]
         self._sources_input.setText(",".join(tokens))
         self._sync_source_input_preview()
+        self._refresh_add_camera_button()
 
     def _source_ids_for_csv(self, csv: str) -> list[str]:
         tokens = [token.strip() for token in csv.split(",") if token.strip()]
@@ -1392,6 +1407,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._source_order = list(source_ids)
         self._rebuild_camera_grid()
         self._sync_advanced_checkboxes_from_tiles()
+        self._refresh_add_camera_button()
 
     def _rebuild_camera_grid(self) -> None:
         while self._camera_grid.count():
@@ -1406,6 +1422,79 @@ class DesignedCalibrationPanel(QtCore.QObject):
             len(self._source_order) // 3,
             len(self._source_order) % 3,
         )
+        self._refresh_add_camera_button()
+
+    def _current_source_tokens(self) -> list[str]:
+        if not hasattr(self, "_sources_input"):
+            return []
+        return [token.strip() for token in self._sources_input.text().split(",") if token.strip()]
+
+    def _detected_camera_indices(self) -> list[int]:
+        return [camera.index for camera in self._detected_cameras]
+
+    def _next_detected_camera_index(self, used_indices: set[int] | None = None) -> int | None:
+        used = set(used_indices or set())
+        for index in self._detected_camera_indices():
+            if index not in used:
+                return index
+        return None
+
+    def _sync_sources_to_detected_cameras(self) -> None:
+        if not self._detected_cameras or self._video_sources:
+            return
+        detected = self._detected_camera_indices()
+        tokens = self._current_source_tokens()
+        next_tokens: list[str] = []
+        used: set[int] = set()
+        non_numeric = [token for token in tokens if not token.isdigit()]
+
+        for token in tokens:
+            if not token.isdigit():
+                continue
+            index = int(token)
+            if index in detected and index not in used:
+                next_tokens.append(str(index))
+                used.add(index)
+
+        if not next_tokens and not non_numeric and detected:
+            next_tokens.append(str(detected[0]))
+
+        next_tokens.extend(non_numeric)
+        next_tokens = next_tokens[:4]
+        if next_tokens != tokens:
+            self._sources_input.setText(",".join(next_tokens))
+            self._sync_source_input_preview()
+        else:
+            self._refresh_add_camera_button()
+
+    def _refresh_add_camera_button(self) -> None:
+        if not hasattr(self, "_add_camera_button") or not hasattr(self, "_sources_input"):
+            return
+        tokens = self._current_source_tokens()
+        numeric_tokens = {int(token) for token in tokens if token.isdigit()}
+        next_index = self._next_detected_camera_index(numeric_tokens)
+        can_add = (
+            not self._camera_probe_running
+            and not self._video_sources
+            and len(tokens) < 4
+            and next_index is not None
+        )
+        self._add_camera_button.setEnabled(can_add)
+        if self._camera_probe_running:
+            self._add_camera_button.setText("Camera scan...")
+            self._add_camera_button.setToolTip("Wacht tot de camera scan klaar is.")
+        elif self._video_sources:
+            self._add_camera_button.setText("+ Camera Toevoegen")
+            self._add_camera_button.setToolTip("Verwijder eerst geladen video's om webcams toe te voegen.")
+        elif next_index is None and self._detected_cameras:
+            self._add_camera_button.setText("Alle camera's toegevoegd")
+            self._add_camera_button.setToolTip("Alle gevonden camera's staan al in de bronlijst.")
+        elif next_index is None:
+            self._add_camera_button.setText("+ Camera Toevoegen")
+            self._add_camera_button.setToolTip("Geen scanresultaat beschikbaar. Gebruik Detect Cameras.")
+        else:
+            self._add_camera_button.setText(f"+ Camera {next_index} Toevoegen")
+            self._add_camera_button.setToolTip(f"Voeg gevonden webcam index {next_index} toe.")
 
     def update_previews(
         self,
@@ -1529,30 +1618,34 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 button.blockSignals(False)
 
     def set_camera_probe_running(self, running: bool) -> None:
+        self._camera_probe_running = running
         self._probe_button.setEnabled(not running)
         self.window.btn_camera_detect.setEnabled(not running)
         self._probe_max_spin.setEnabled(not running)
         self._probe_button.setText("Scanning..." if running else "Detect Cameras")
         self.window.btn_camera_detect.setText("Scanning..." if running else "Detect Cameras")
+        self._probe_status.setText("Camera scan: scanning..." if running else self._probe_status.text())
+        self._refresh_add_camera_button()
 
     def set_detected_cameras(self, cameras: list[CameraProbeResult]) -> None:
+        self._detected_cameras = sorted(cameras, key=lambda camera: camera.index)
         if not cameras:
             self._probe_status.setText("Camera scan: no cameras found.")
             self._log("Camera scan: no cameras found.")
+            self._refresh_add_camera_button()
             return
-        found = sorted(cameras, key=lambda camera: camera.index)
         parts = []
-        for camera in found:
+        for camera in self._detected_cameras:
             resolution = f"{camera.width}x{camera.height}" if camera.width > 0 and camera.height > 0 else "unknown res"
             backend = f" ({camera.backend})" if camera.backend else ""
             parts.append(f"{camera.index}: {resolution}{backend}")
         text = "Camera scan: " + " | ".join(parts)
         self._probe_status.setText(text)
         self._log(text)
-        csv = ",".join(str(camera.index) for camera in found[:4])
-        if csv:
-            self._sources_input.setText(csv)
-            self._sync_source_input_preview()
+        self._sync_sources_to_detected_cameras()
+
+    def probe_max_index(self) -> int:
+        return int(self._probe_max_spin.value())
 
     def set_intrinsics_solve_running(self, running: bool, message: str = "Solving intrinsics...") -> None:
         for button in [

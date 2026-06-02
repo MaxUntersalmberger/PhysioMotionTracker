@@ -26,6 +26,10 @@ class FramePacket:
     frame_index: int
     timestamp_sec: float
     frame_bgr: FrameArray
+    batch_id: str | None = None
+    batch_timestamp_sec: float | None = None
+    capture_started_sec: float | None = None
+    capture_completed_sec: float | None = None
 
 
 @dataclass(slots=True)

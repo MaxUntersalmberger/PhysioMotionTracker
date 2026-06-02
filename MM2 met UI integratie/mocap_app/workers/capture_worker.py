@@ -57,6 +57,7 @@ class LiveCaptureWorker(QThread):
         source_by_id: dict[str, CameraSourceConfig] = {source.source_id: source for source in self._sources}
         frame_indices: dict[str, int] = {source.source_id: 0 for source in self._sources}
         frame_interval = 1.0 / self._target_fps
+        batch_index = 0
 
         try:
             for source in self._sources:
@@ -75,19 +76,51 @@ class LiveCaptureWorker(QThread):
 
             while not self._stop_event.is_set():
                 loop_start = time.perf_counter()
-                timestamp_sec = time.time()
+                batch_timestamp_sec = time.time()
+                batch_index += 1
+                batch_id = f"live_{int(batch_timestamp_sec * 1000)}_{batch_index}"
                 batch: dict[str, FramePacket] = {}
                 record_batch: dict[str, Any] = {}
+                grabbed_sources: list[str] = []
+                direct_frames: dict[str, Any] = {}
+                capture_started_by_source: dict[str, float] = {}
+                capture_completed_by_source: dict[str, float] = {}
 
                 for source_id, capture in captures.items():
-                    ok, frame = capture.read()
+                    capture_started = time.time()
+                    capture_started_by_source[source_id] = capture_started
+                    try:
+                        ok = bool(capture.grab())
+                    except Exception:  # noqa: BLE001 - keep capture alive if a backend lacks grab support
+                        LOGGER.exception("Capture grab failed for source '%s'; falling back to read().", source_id)
+                        ok = False
                     if not ok:
                         source = source_by_id[source_id]
                         if source.kind == "video":
                             capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
                             continue
-                        self.error.emit(f"Capture read failed for source '{source_id}'.")
+                        read_ok, frame = capture.read()
+                        capture_completed_by_source[source_id] = time.time()
+                        if not read_ok:
+                            self.error.emit(f"Capture read failed for source '{source_id}'.")
+                            continue
+                        direct_frames[source_id] = frame
                         continue
+                    grabbed_sources.append(source_id)
+
+                for source_id in grabbed_sources:
+                    capture = captures[source_id]
+                    ok, frame = capture.retrieve()
+                    capture_completed_by_source[source_id] = time.time()
+                    if not ok:
+                        self.error.emit(f"Capture retrieve failed for source '{source_id}'.")
+                        continue
+                    direct_frames[source_id] = frame
+
+                for source_id, frame in direct_frames.items():
+                    capture_started = capture_started_by_source.get(source_id, batch_timestamp_sec)
+                    capture_completed = capture_completed_by_source.get(source_id, time.time())
+                    timestamp_sec = (capture_started + capture_completed) / 2.0
 
                     frame_indices[source_id] += 1
                     # Emit the full capture-resolution frame. Detection, calibration
@@ -99,6 +132,10 @@ class LiveCaptureWorker(QThread):
                         frame_index=frame_indices[source_id],
                         timestamp_sec=timestamp_sec,
                         frame_bgr=frame,
+                        batch_id=batch_id,
+                        batch_timestamp_sec=batch_timestamp_sec,
+                        capture_started_sec=capture_started,
+                        capture_completed_sec=capture_completed,
                     )
 
                 if record_batch:

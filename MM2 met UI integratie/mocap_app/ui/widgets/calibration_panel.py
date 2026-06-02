@@ -730,6 +730,9 @@ class CalibrationPanelWidget(QWidget):
         if csv:
             self._camera_input.setText(csv)
 
+    def probe_max_index(self) -> int:
+        return int(self._probe_max_spin.value())
+
     def set_intrinsics_solve_running(self, running: bool, message: str = "Solving intrinsics...") -> None:
         self._solve_progress.setVisible(running)
         self._solve_button.setEnabled(not running)

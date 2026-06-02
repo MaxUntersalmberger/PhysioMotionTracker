@@ -15,6 +15,10 @@ import cv2
 import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
+SYNC_SKEW_WARNING_SEC = 0.050
+SYNC_SKEW_REJECT_SEC = 0.150
+SYNC_WARNING_THROTTLE_SEC = 3.0
+
 
 # ----- discovery -----------------------------------------------------------
 
@@ -42,7 +46,7 @@ def discover_cameras(max_index: int = 6) -> list[tuple[int, str]]:
 
 class CameraThread(QtCore.QThread):
     change_pixmap_signal = QtCore.Signal(QtGui.QImage)
-    frame_ready = QtCore.Signal(object)  # numpy BGR ndarray (main-thread copy)
+    frame_ready = QtCore.Signal(object)  # dict with numpy BGR ndarray + capture timing
     fps_updated = QtCore.Signal(float)
     dropped_updated = QtCore.Signal(int)
 
@@ -83,7 +87,9 @@ class CameraThread(QtCore.QThread):
                 cap.set(cv2.CAP_PROP_EXPOSURE, self.exposure)
                 current_exp = self.exposure
 
+            capture_started = time.time()
             ret, frame = cap.read()
+            capture_completed = time.time()
             if not ret or frame is None:
                 self._dropped += 1
                 self.dropped_updated.emit(self._dropped)
@@ -110,7 +116,13 @@ class CameraThread(QtCore.QThread):
                     self.fps_updated.emit(self._measured_fps)
             last_frame_time = now
 
-            self.frame_ready.emit(frame.copy())
+            self.frame_ready.emit(
+                {
+                    "frame": frame.copy(),
+                    "timestamp_sec": capture_started,
+                    "capture_completed_sec": capture_completed,
+                }
+            )
 
             rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb_image.shape
@@ -397,10 +409,24 @@ class CameraFrame(QtWidgets.QFrame):
                 )
             )
 
-    def _on_bgr_frame_ready(self, frame: Any) -> None:
+    def _on_bgr_frame_ready(self, payload: Any) -> None:
+        frame = payload
+        timestamp_sec = time.time()
+        capture_completed_sec = timestamp_sec
+        if isinstance(payload, dict):
+            frame = payload.get("frame")
+            timestamp_sec = float(payload.get("timestamp_sec", timestamp_sec))
+            capture_completed_sec = float(payload.get("capture_completed_sec", capture_completed_sec))
+        if frame is None:
+            return
         self.last_bgr_frame = frame
         if self.parent_tab is not None:
-            self.parent_tab.on_camera_frame(self, frame)
+            self.parent_tab.on_camera_frame(
+                self,
+                frame,
+                timestamp_sec=timestamp_sec,
+                capture_completed_sec=capture_completed_sec,
+            )
 
     def _on_fps_updated(self, value: float) -> None:
         self._measured_fps = float(value)
@@ -438,9 +464,10 @@ class TabCameras:
         self._intrinsics_active = False
         self._extrinsics_active = False
         self._last_detection_at: dict[str, float] = {}
-        self._extrinsics_latest: dict[str, np.ndarray] = {}
+        self._extrinsics_latest: dict[str, dict[str, Any]] = {}
         self._extrinsics_timer: QtCore.QTimer | None = None
         self._extrinsics_last_tick = 0.0
+        self._last_sync_timing_warning_at = 0.0
         self._available_cameras: list[tuple[int, str]] = []
 
     # ----- backend handles ----------------------------------------------
@@ -648,13 +675,27 @@ class TabCameras:
 
     # ----- frame handlers -----------------------------------------------
 
-    def on_camera_frame(self, frame: CameraFrame, frame_bgr: np.ndarray) -> None:
+    def on_camera_frame(
+        self,
+        frame: CameraFrame,
+        frame_bgr: np.ndarray,
+        timestamp_sec: float | None = None,
+        capture_completed_sec: float | None = None,
+    ) -> None:
         source_id = frame.source_id
         if not source_id:
             return
 
         if self._extrinsics_active:
-            self._extrinsics_latest[source_id] = frame_bgr
+            capture_started = float(timestamp_sec if timestamp_sec is not None else time.time())
+            capture_completed = float(
+                capture_completed_sec if capture_completed_sec is not None else capture_started
+            )
+            self._extrinsics_latest[source_id] = {
+                "frame": frame_bgr,
+                "timestamp_sec": capture_started,
+                "capture_completed_sec": capture_completed,
+            }
 
         if not self._intrinsics_active:
             return
@@ -690,9 +731,50 @@ class TabCameras:
     def _extrinsics_tick(self) -> None:
         if not self._extrinsics_active:
             return
-        frames = dict(self._extrinsics_latest)
+        latest = dict(self._extrinsics_latest)
+        if len(latest) < 2:
+            return
+        timestamps = [
+            float(payload.get("timestamp_sec", 0.0))
+            for payload in latest.values()
+            if isinstance(payload, dict)
+        ]
+        skew_sec = max(timestamps) - min(timestamps) if len(timestamps) >= 2 else 0.0
+        if skew_sec > SYNC_SKEW_REJECT_SEC:
+            self._log_sync_timing_message(
+                "Sync extrinsics set geweigerd: camera timestamp-skew "
+                f"{skew_sec * 1000.0:.1f} ms > {SYNC_SKEW_REJECT_SEC * 1000.0:.0f} ms."
+            )
+            return
+        if skew_sec > SYNC_SKEW_WARNING_SEC:
+            self._log_sync_timing_message(
+                "Waarschuwing: sync extrinsics timestamp-skew "
+                f"{skew_sec * 1000.0:.1f} ms; houd het bord stil."
+            )
+        frames = {
+            source_id: payload["frame"]
+            for source_id, payload in latest.items()
+            if isinstance(payload, dict) and payload.get("frame") is not None
+        }
         if len(frames) < 2:
             return
+        sync_metadata = {
+            "software_sync": True,
+            "timestamp_source": "capture_thread_timestamp_sec",
+            "timestamp_skew_ms": round(skew_sec * 1000.0, 3),
+            "warning_timestamp_skew_ms": round(SYNC_SKEW_WARNING_SEC * 1000.0, 3),
+            "max_allowed_timestamp_skew_ms": round(SYNC_SKEW_REJECT_SEC * 1000.0, 3),
+            "source_timestamps_sec": {
+                source_id: round(float(payload.get("timestamp_sec", 0.0)), 6)
+                for source_id, payload in latest.items()
+                if isinstance(payload, dict)
+            },
+            "capture_completed_sec": {
+                source_id: round(float(payload.get("capture_completed_sec", 0.0)), 6)
+                for source_id, payload in latest.items()
+                if isinstance(payload, dict)
+            },
+        }
         pattern = self._current_pattern()
         try:
             feedback = self.manager.try_add_observation_set(
@@ -700,6 +782,7 @@ class TabCameras:
                 pattern=pattern,
                 allow_relaxed_sync=True,
                 workflow_mode="sync_extrinsics",
+                sync_metadata=sync_metadata,
             )
         except Exception as exc:  # noqa: BLE001
             self.log_to_console(f"Fout tijdens extrinsics detectie: {exc}")
@@ -712,6 +795,13 @@ class TabCameras:
                 f"Sync extrinsics set toegevoegd ({len(accepted_sources)} camera's): "
                 + ", ".join(accepted_sources)
             )
+
+    def _log_sync_timing_message(self, message: str) -> None:
+        now = time.perf_counter()
+        if now - self._last_sync_timing_warning_at < SYNC_WARNING_THROTTLE_SEC:
+            return
+        self._last_sync_timing_warning_at = now
+        self.log_to_console(message)
 
     # ----- calculate actions --------------------------------------------
 
