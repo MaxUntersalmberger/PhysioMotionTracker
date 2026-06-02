@@ -87,10 +87,9 @@ class CalibrationCaptureFeedback:
 class CalibrationRepository:
     """Reads and writes calibration profiles using an explicit JSON schema."""
 
-    def save(self, bundle: CalibrationBundle, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        payload = {
+    def to_payload(self, bundle: CalibrationBundle) -> dict:
+        """Build the serializable calibration payload (shared by save and export)."""
+        return {
             "schema_version": CALIBRATION_SCHEMA_VERSION,
             "saved_at_iso": datetime.now().isoformat(),
             "metadata": dict(bundle.metadata),
@@ -113,6 +112,9 @@ class CalibrationRepository:
             },
         }
 
+    def save(self, bundle: CalibrationBundle, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self.to_payload(bundle)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         LOGGER.info("Calibration saved: %s", path)
 

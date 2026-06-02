@@ -18,6 +18,7 @@ from mocap_app.io.calibration_io import (
     CalibrationRepository,
     ChessboardDetectionResult,
 )
+from mocap_app.io import calibration_export
 from mocap_app.io.video_recorder import VideoRecorder
 from mocap_app.models.types import (
     CalibrationBoardSettings,
@@ -152,6 +153,10 @@ class MainWindow(QMainWindow):
         self._calibration_panel.spatial_grid_changed.connect(self._on_spatial_grid_changed)
         if hasattr(self._calibration_panel, "record_toggled"):
             self._calibration_panel.record_toggled.connect(self._on_record_toggled)
+        if hasattr(self._calibration_panel, "export_preview_requested"):
+            self._calibration_panel.export_preview_requested.connect(self._on_export_preview)
+        if hasattr(self._calibration_panel, "export_requested"):
+            self._calibration_panel.export_requested.connect(self._on_export_calibration)
         if hasattr(self._calibration_panel, "sources_changed"):
             self._calibration_panel.sources_changed.connect(self._on_panel_sources_changed)
         if hasattr(self._calibration_panel, "preview_options_changed"):
@@ -1491,6 +1496,52 @@ class MainWindow(QMainWindow):
         self._refresh_calibration_panel(force=True)
         self._calibration_panel.show_feedback("Calibration samples reset.", success=True)
         self._set_status("Calibration samples reset")
+
+    def _calibration_export_text(self, fmt: str) -> str | None:
+        bundle = self._current_calibration_bundle or self._calibration_manager.last_solution()
+        if bundle is None:
+            return None
+        payload = self._calibration_repo.to_payload(bundle)
+        if fmt == "json":
+            return calibration_export.to_json(payload)
+        return calibration_export.to_toml(payload)
+
+    def _on_export_preview(self, fmt: str) -> None:
+        fmt = (fmt or "toml").lower().strip()
+        text = self._calibration_export_text(fmt)
+        if text is None:
+            self._calibration_panel.show_export_preview(
+                "No solved calibration available yet. Capture samples and calculate intrinsics/extrinsics first."
+            )
+            return
+        self._calibration_panel.show_export_preview(text)
+        self._set_status(f"Calibration preview ({fmt.upper()})")
+
+    def _on_export_calibration(self, fmt: str) -> None:
+        fmt = (fmt or "toml").lower().strip()
+        text = self._calibration_export_text(fmt)
+        if text is None:
+            self._show_warning("No solved calibration available to export.")
+            return
+        extension = "json" if fmt == "json" else "toml"
+        file_filter = "JSON (*.json)" if fmt == "json" else "TOML (*.toml)"
+        default_path = self._config.calibration_dir / f"calibration.{extension}"
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export calibration",
+            str(default_path),
+            file_filter,
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            self._show_error(f"Could not export calibration: {exc}")
+            return
+        self._calibration_panel.show_feedback(f"Calibration exported to {path}", success=True)
+        self._set_status(f"Calibration exported: {path.name}")
 
     def _on_new_project(self) -> None:
         reply = QMessageBox.question(

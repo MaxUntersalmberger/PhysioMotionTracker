@@ -476,6 +476,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
     sources_changed = Signal(object)
     preview_options_changed = Signal()
     record_toggled = Signal(bool)
+    export_preview_requested = Signal(str)
+    export_requested = Signal(str)
 
     def __init__(self, window: "DesignedMainWindow", default_camera_csv: str, default_fps: float) -> None:
         super().__init__(window)
@@ -584,6 +586,8 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._tmol_preview = existing_preview or QPlainTextEdit()
         self._tmol_preview.setReadOnly(True)
         self._tmol_preview.setPlainText("No export preview available yet.")
+        self._tmol_preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._tmol_preview.setFont(QtGui.QFont("Consolas", 9))
         if existing_preview is None:
             preview_layout = self.window.frame_res_preview_tmol.layout()
             if preview_layout is None:
@@ -591,9 +595,24 @@ class DesignedCalibrationPanel(QtCore.QObject):
                 preview_layout.setContentsMargins(4, 4, 4, 4)
             preview_layout.addWidget(self._tmol_preview)
 
-        self.window.btn_res_show_tmol.clicked.connect(lambda: self.window.stackedWidget_2.setCurrentIndex(1))
+        # Format selector (TOML / JSON) for both preview and export.
+        self._export_format_combo = QComboBox()
+        self._export_format_combo.addItem("TOML", "toml")
+        self._export_format_combo.addItem("JSON", "json")
+        export_bar = self.window.frame_4.layout()
+        if export_bar is not None:
+            format_label = QLabel("Formaat:")
+            insert_at = max(0, export_bar.indexOf(self.window.btn_res_show_tmol))
+            export_bar.insertWidget(insert_at, format_label)
+            export_bar.insertWidget(insert_at + 1, self._export_format_combo)
+        self.window.btn_res_show_tmol.setText("Preview")
+        self.window.btn_res_show_tmol.setToolTip("Toon de huidige kalibratie in het gekozen formaat")
+        self.window.export_toml.setText("Export")
+        self.window.export_toml.setToolTip("Exporteer de huidige kalibratie naar een bestand")
+
+        self.window.btn_res_show_tmol.clicked.connect(self._request_export_preview)
         self.window.pushButton.clicked.connect(lambda: self.window.stackedWidget_2.setCurrentIndex(0))
-        self.window.export_toml.clicked.connect(self._show_export_hint)
+        self.window.export_toml.clicked.connect(self._request_export)
 
     def _setup_directory_page(self) -> None:
         layout = QVBoxLayout(self.window.frame_directory)
@@ -1053,11 +1072,18 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.board_settings_applied.emit(self.board_settings())
         self.show_feedback(message, success=True)
 
-    def _show_export_hint(self) -> None:
-        self._tmol_preview.setPlainText(
-            "The calibration backend stores JSON profiles. Use Save Profile in advanced settings to export the "
-            "current calibration."
-        )
+    def _current_export_format(self) -> str:
+        data = self._export_format_combo.currentData()
+        return str(data if data is not None else "toml").lower().strip()
+
+    def _request_export_preview(self) -> None:
+        self.export_preview_requested.emit(self._current_export_format())
+
+    def _request_export(self) -> None:
+        self.export_requested.emit(self._current_export_format())
+
+    def show_export_preview(self, text: str) -> None:
+        self._tmol_preview.setPlainText(text)
         self.window.stackedWidget_2.setCurrentIndex(1)
 
     def _emit_start_live(self) -> None:
