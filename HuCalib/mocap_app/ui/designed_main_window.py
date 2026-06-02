@@ -544,14 +544,16 @@ class _AspectRatioBox(QWidget):
         super().__init__(parent)
         self._ratio = max(0.1, float(ratio))
         self._child = child
-        child.setParent(self)
+        # Layout-managed centering (instead of manual setGeometry) so the child
+        # keeps a normal layout pass — important for complex children and to
+        # avoid paint ghosting.
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(child, alignment=Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._reflow()
-
-    def _reflow(self) -> None:
         width = max(1, self.width())
         height = max(1, self.height())
         if width / height > self._ratio:
@@ -560,9 +562,8 @@ class _AspectRatioBox(QWidget):
         else:
             child_w = width
             child_h = int(round(width / self._ratio))
-        x = (width - child_w) // 2
-        y = (height - child_h) // 2
-        self._child.setGeometry(x, y, child_w, child_h)
+        # Size the child to exactly the aspect box; the layout centers it.
+        self._child.setFixedSize(child_w, child_h)
 
 
 class DesignedPreviewTile(QFrame):
@@ -627,10 +628,6 @@ class DesignedPreviewTile(QFrame):
 
         self._image = _PreviewCanvas("Geen beeld")
         self._image.setMinimumSize(1, 1)
-        # Keep the video a tidy 4:3 box centered in its cell instead of
-        # stretching across the whole workspace.
-        self._image_box = _AspectRatioBox(self._image, 4.0 / 3.0)
-        self._image_box.setMinimumSize(160, 120)
 
         self._status = QLabel("Wachten op livebeeld")
         self._status.setWordWrap(True)
@@ -644,12 +641,13 @@ class DesignedPreviewTile(QFrame):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
         layout.addLayout(controls)
-        layout.addWidget(self._image_box, stretch=1)
+        layout.addWidget(self._image, stretch=1)
         layout.addWidget(self._status)
         layout.addWidget(self._progress)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setMinimumSize(300, 220)
+        self.setProperty("camera-tile", True)
+        self.setMinimumSize(220, 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._title_button.clicked.connect(self._rename_camera)
@@ -888,6 +886,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         super().__init__(window)
         self.window = window
         self._tiles: dict[str, DesignedPreviewTile] = {}
+        self._tile_boxes: dict[str, _AspectRatioBox] = {}
         self._source_order: list[str] = []
         self._video_sources: list[CameraSourceConfig] = []
         self._detected_cameras: list[CameraProbeResult] = []
@@ -963,8 +962,13 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._add_camera_button = QPushButton("+ Camera Toevoegen")
         self._add_camera_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._add_camera_button.clicked.connect(self._append_camera_source)
-        self._source_csv = default_camera_csv
-        self.set_sources(self._source_ids_for_csv(default_camera_csv))
+        # Open with an empty preview page: the user runs a scan and then adds
+        # detected cameras one by one via the add-camera button.
+        self._source_csv = ""
+        self.set_sources([])
+        # set_sources([]) early-returns when already empty, so build the grid
+        # once explicitly to place the add-camera button.
+        self._rebuild_camera_grid()
 
     def _setup_camera_splitter(self) -> None:
         page_layout = self.window.page_cameras.layout()
@@ -1088,7 +1092,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.window.doubleSpinBox.setSingleStep(0.5)
         self.window.doubleSpinBox.setValue(24.0)
 
-        self._sources_input = QLineEdit(default_camera_csv)
+        self._sources_input = QLineEdit("")
         self._preview_fps_spin = self._double_spin(1.0, 120.0, min(default_fps, 30.0), 1.0, 1)
         self._detect_hz_spin = self._double_spin(0.5, 20.0, 5.0, 0.5, 1)
         self._capture_resolution_combo = QComboBox()
@@ -1763,7 +1767,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
         tokens = [token.strip() for token in self._sources_input.text().split(",") if token.strip()]
         numeric_tokens = {int(token) for token in tokens if token.isdigit()}
         if len(tokens) >= 4:
-            self.ui_message.emit("Use up to 4 sources for calibration.")
+            self.ui_message.emit("Gebruik maximaal 4 camera's voor de kalibratie.")
             return
         next_index = self._next_detected_camera_index(numeric_tokens)
         if next_index is None:
@@ -1772,7 +1776,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
             elif self._detected_cameras:
                 self.ui_message.emit("Alle gevonden camera's zijn al toegevoegd.")
             else:
-                self.ui_message.emit("Geen gevonden camera's bekend. Gebruik eerst Detect Cameras.")
+                self.ui_message.emit("Geen gevonden camera's bekend. Klik eerst op 'Camera's zoeken'.")
             self._refresh_add_camera_button()
             return
         tokens.append(str(next_index))
@@ -1889,9 +1893,14 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         for source_id in sorted(existing - requested):
             tile = self._tiles.pop(source_id)
-            self._camera_grid.removeWidget(tile)
+            box = self._tile_boxes.pop(source_id, None)
             tile.close_popout()
-            tile.deleteLater()
+            if box is not None:
+                self._camera_grid.removeWidget(box)
+                box.deleteLater()  # deletes the tile it owns too
+            else:
+                self._camera_grid.removeWidget(tile)
+                tile.deleteLater()
 
         for source_id in source_ids:
             if source_id in self._tiles:
@@ -1904,6 +1913,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
             tile.remove_requested.connect(self._remove_source)
             tile.name_changed.connect(self._on_camera_name_changed)
             self._tiles[source_id] = tile
+            # Wrap the whole tile so the camera panel stays a centered box
+            # instead of a full-width card.
+            self._tile_boxes[source_id] = _AspectRatioBox(tile, 1.2)
 
         self._source_order = list(source_ids)
         self._rebuild_camera_grid()
@@ -1927,14 +1939,19 @@ class DesignedCalibrationPanel(QtCore.QObject):
         count = len(self._source_order)
         columns = 1 if count <= 1 else 2
         for index, source_id in enumerate(self._source_order):
-            self._camera_grid.addWidget(self._tiles[source_id], index // columns, index % columns)
+            self._camera_grid.addWidget(
+                self._tile_boxes[source_id], index // columns, index % columns
+            )
 
         if count == 0:
-            # No cameras yet: let the add button fill the area as a big prompt.
+            # No cameras yet: show the add button as a centered prompt.
             self._add_camera_button.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
             )
-            self._camera_grid.addWidget(self._add_camera_button, 0, 0)
+            self._add_camera_button.setMinimumHeight(44)
+            self._camera_grid.addWidget(
+                self._add_camera_button, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter
+            )
             self._camera_grid.setColumnStretch(0, 1)
             self._camera_grid.setRowStretch(0, 1)
         else:
@@ -2008,21 +2025,26 @@ class DesignedCalibrationPanel(QtCore.QObject):
             and len(tokens) < 4
             and next_index is not None
         )
+        # The add-camera button is always shown. When there is nothing to add it
+        # stays put as a prompt ("Sluit nog een camera aan") rather than
+        # disappearing or turning into a dead "all added" label.
         self._add_camera_button.setEnabled(can_add)
         if self._camera_probe_running:
-            self._add_camera_button.setText("Camera scan...")
+            self._add_camera_button.setText("Scannen...")
             self._add_camera_button.setToolTip("Wacht tot de camera scan klaar is.")
         elif self._video_sources:
-            self._add_camera_button.setText("+ Camera Toevoegen")
+            self._add_camera_button.setText("+ Camera toevoegen")
             self._add_camera_button.setToolTip("Verwijder eerst geladen video's om webcams toe te voegen.")
-        elif next_index is None and self._detected_cameras:
-            self._add_camera_button.setText("Alle camera's toegevoegd")
-            self._add_camera_button.setToolTip("Alle gevonden camera's staan al in de bronlijst.")
+        elif len(tokens) >= 4:
+            self._add_camera_button.setText("Maximaal aantal camera's bereikt")
+            self._add_camera_button.setToolTip("Je kunt maximaal 4 camera's tegelijk gebruiken.")
         elif next_index is None:
-            self._add_camera_button.setText("+ Camera Toevoegen")
-            self._add_camera_button.setToolTip("Geen scanresultaat beschikbaar. Gebruik Detect Cameras.")
+            self._add_camera_button.setText("Sluit nog een camera aan")
+            self._add_camera_button.setToolTip(
+                "Geen extra camera gevonden. Sluit een camera aan en klik op 'Camera's zoeken'."
+            )
         else:
-            self._add_camera_button.setText(f"+ Camera {next_index} Toevoegen")
+            self._add_camera_button.setText(f"+ Camera {next_index} toevoegen")
             self._add_camera_button.setToolTip(f"Voeg gevonden webcam index {next_index} toe.")
 
     def _tile_status(self, count: int, detection: ChessboardDetectionResult | None) -> str:

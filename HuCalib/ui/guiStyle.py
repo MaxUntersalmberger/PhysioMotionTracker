@@ -81,18 +81,18 @@ QFrame#frame_menu QLabel {
     background: transparent;
 }
 QPushButton[nav="true"] {
-    background-color: transparent;
+    background-color: #1e293b;
     color: #d1d5db;
-    border: 1px solid transparent;
+    border: 1px solid #334155;
     border-radius: 6px;
     padding: 8px 12px;
     text-align: center;
     font-weight: 600;
 }
 QPushButton[nav="true"]:hover {
-    background-color: #1f2937;
+    background-color: #334155;
     color: #ffffff;
-    border-color: #374151;
+    border-color: #475569;
 }
 QPushButton[nav="true"]:checked,
 QPushButton[nav="true"][active="true"] {
@@ -311,6 +311,14 @@ QScrollBar::handle:horizontal:hover {
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     background: transparent;
     width: 0;
+}
+
+/* The camera page wrapper is just a container: the individual camera tiles
+   are the visible cards, so keep this transparent instead of a full-width
+   white card. */
+QFrame#frame_cam {
+    background-color: transparent;
+    border: none;
 }
 
 /* Camera tile internals (set by tab_cameras) */
