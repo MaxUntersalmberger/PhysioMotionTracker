@@ -1288,6 +1288,10 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
     def set_sources(self, source_ids: list[str]) -> None:
         source_ids = source_ids[:4]
+        if source_ids == self._source_order and set(self._tiles) == set(source_ids):
+            # Nothing changed: keep the existing grid so live tiles don't flicker
+            # or jump cells when this is called on every refresh.
+            return
         existing = set(self._tiles)
         requested = set(source_ids)
 

@@ -347,15 +347,19 @@ class MainWindow(QMainWindow):
         self._last_live_status_refresh_at = now
 
     def _active_source_ids(self) -> list[str]:
-        live_active = self._live_worker is not None and self._live_worker.isRunning()
-        if live_active and self._active_sources:
+        # Always prefer the configured source order so tiles keep a stable grid
+        # position; falling back to sorted frame keys would reorder tiles.
+        if self._active_sources:
             return [source.source_id for source in self._active_sources]
+        try:
+            configured = [source.source_id for source in self._calibration_panel.current_sources()]
+        except ValueError:
+            configured = []
+        if configured:
+            return configured
         if self._latest_frames:
             return sorted(self._latest_frames.keys())
-        try:
-            return [source.source_id for source in self._calibration_panel.current_sources()]
-        except ValueError:
-            return []
+        return []
 
     def _on_panel_sources_changed(self, sources_obj: object) -> None:
         sources = [source for source in sources_obj if isinstance(source, CameraSourceConfig)] if isinstance(sources_obj, list) else []
