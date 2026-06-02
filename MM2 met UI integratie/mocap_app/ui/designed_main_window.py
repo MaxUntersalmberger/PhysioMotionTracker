@@ -58,6 +58,18 @@ from ui.gui import Ui_MainWindow
 from ui.guiStyle import apply_styles
 
 
+class _AggregateCheckBox(QCheckBox):
+    """Checkbox that can display a partial (mixed) state for per-camera options,
+    yet only toggles between checked and unchecked on a user click."""
+
+    def nextCheckState(self) -> None:  # type: ignore[override]
+        self.setCheckState(
+            Qt.CheckState.Unchecked
+            if self.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+
+
 class ConsoleStream(io.StringIO):
     def __init__(self, console_widget: QPlainTextEdit) -> None:
         super().__init__()
@@ -670,9 +682,11 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._workflow_combo = QComboBox()
         self._workflow_combo.addItem("Intrinsics", "intrinsics")
         self._workflow_combo.addItem("Sync / Extrinsics", "sync_extrinsics")
-        self._overlay_checkbox = QCheckBox("Show Detection Overlay")
+        self._overlay_checkbox = _AggregateCheckBox("Show Detection Overlay")
+        self._overlay_checkbox.setTristate(True)
         self._overlay_checkbox.setChecked(True)
-        self._mirror_checkbox = QCheckBox("Mirror Preview")
+        self._mirror_checkbox = _AggregateCheckBox("Mirror Preview")
+        self._mirror_checkbox.setTristate(True)
         self._auto_capture_checkbox = QCheckBox("Auto Capture Valid Samples")
         self._relaxed_sync_checkbox = QCheckBox("Relax Sync Thresholds")
         self._relaxed_sync_checkbox.setChecked(True)
@@ -765,6 +779,10 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._load_profile_button.clicked.connect(self.load_profile_requested)
         self._reset_samples_button.clicked.connect(self._emit_reset)
         self.window.doubleSpinBox.valueChanged.connect(lambda _value: None)
+        # Reflect the current per-camera overlay/mirror state back into the
+        # advanced checkboxes whenever a tile option changes.
+        self.preview_options_changed.connect(self._sync_advanced_checkboxes_from_tiles)
+        self._sync_advanced_checkboxes_from_tiles()
 
     def _plain_text_in_frame(self, frame: QFrame) -> QPlainTextEdit:
         existing = frame.findChild(QPlainTextEdit)
@@ -983,21 +1001,53 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self.show_feedback("Workflow settings applied.", success=True)
 
     def _apply_preview_options_to_tiles(self) -> None:
-        """Push the advanced overlay/mirror/auto-capture options onto every camera tile."""
-        overlay = self._overlay_checkbox.isChecked()
-        mirror = self._mirror_checkbox.isChecked()
+        """Push the advanced overlay/mirror/auto-capture options onto every camera tile.
+
+        A checkbox left in the mixed (partial) state means "leave each camera as
+        it is", so only a deliberate checked/unchecked choice forces all cameras.
+        """
+        overlay_state = self._overlay_checkbox.checkState()
+        mirror_state = self._mirror_checkbox.checkState()
         # Block panel signals while updating tiles: set_overlay_active/set_mirror_active
         # emit preview_options_changed per tile, which can re-enter set_sources and
         # mutate self._tiles mid-iteration. Iterate over a snapshot and refresh once.
         self.blockSignals(True)
         try:
             for tile in list(self._tiles.values()):
-                tile.set_overlay_active(overlay)
-                tile.set_mirror_active(mirror)
+                if overlay_state != Qt.CheckState.PartiallyChecked:
+                    tile.set_overlay_active(overlay_state == Qt.CheckState.Checked)
+                if mirror_state != Qt.CheckState.PartiallyChecked:
+                    tile.set_mirror_active(mirror_state == Qt.CheckState.Checked)
         finally:
             self.blockSignals(False)
         self._on_tile_auto_capture_toggled(self._auto_capture_checkbox.isChecked())
         self.preview_options_changed.emit()
+
+    def _sync_advanced_checkboxes_from_tiles(self) -> None:
+        """Reflect the aggregate per-camera overlay/mirror state in the checkboxes."""
+        if not getattr(self, "_overlay_checkbox", None) or not getattr(self, "_mirror_checkbox", None):
+            return
+        if not self._tiles:
+            return
+        self._set_aggregate_check_state(
+            self._overlay_checkbox, [tile.overlay_enabled() for tile in self._tiles.values()]
+        )
+        self._set_aggregate_check_state(
+            self._mirror_checkbox, [tile.mirror_enabled() for tile in self._tiles.values()]
+        )
+
+    def _set_aggregate_check_state(self, checkbox: QCheckBox, states: list[bool]) -> None:
+        if not states:
+            return
+        if all(states):
+            state = Qt.CheckState.Checked
+        elif not any(states):
+            state = Qt.CheckState.Unchecked
+        else:
+            state = Qt.CheckState.PartiallyChecked
+        checkbox.blockSignals(True)
+        checkbox.setCheckState(state)
+        checkbox.blockSignals(False)
 
     def _apply_board_settings(self, message: str) -> None:
         self.board_settings_applied.emit(self.board_settings())
@@ -1315,6 +1365,7 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         self._source_order = list(source_ids)
         self._rebuild_camera_grid()
+        self._sync_advanced_checkboxes_from_tiles()
 
     def _rebuild_camera_grid(self) -> None:
         while self._camera_grid.count():
