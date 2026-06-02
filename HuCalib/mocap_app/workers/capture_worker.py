@@ -104,7 +104,10 @@ class LiveCaptureWorker(QThread):
                         if not read_ok:
                             self.error.emit(f"Capture read failed for source '{source_id}'.")
                             continue
-                        direct_frames[source_id] = frame
+                        # Copy so the frame is independent of any internal capture
+                        # buffer the backend may reuse on the next grab (avoids
+                        # tearing/smearing once it crosses to the UI thread).
+                        direct_frames[source_id] = frame.copy()
                         continue
                     grabbed_sources.append(source_id)
 
@@ -115,7 +118,10 @@ class LiveCaptureWorker(QThread):
                     if not ok:
                         self.error.emit(f"Capture retrieve failed for source '{source_id}'.")
                         continue
-                    direct_frames[source_id] = frame
+                    # Copy so the frame is independent of any internal capture
+                    # buffer the backend may reuse on the next grab (avoids
+                    # tearing/smearing once it crosses to the UI thread).
+                    direct_frames[source_id] = frame.copy()
 
                 for source_id, frame in direct_frames.items():
                     capture_started = capture_started_by_source.get(source_id, batch_timestamp_sec)

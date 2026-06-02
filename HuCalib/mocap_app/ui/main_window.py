@@ -41,6 +41,9 @@ LOGGER = logging.getLogger(__name__)
 SYNC_SKEW_WARNING_SEC = 0.050
 SYNC_SKEW_REJECT_SEC = 0.150
 SYNC_WARNING_THROTTLE_SEC = 3.0
+# With this many cameras or fewer, prepare the display frame inline on the UI
+# thread (lowest latency). Above it, offload to the preview-render worker.
+INLINE_PREVIEW_MAX_CAMERAS = 3
 
 
 class MainWindow(QMainWindow):
@@ -731,10 +734,26 @@ class MainWindow(QMainWindow):
             detections = {}
             self._refresh_calibration_panel(force=True)
 
-        if use_qt_overlay:
-            # Display prep (undistort/mirror/downscale/RGB/QImage) runs on the
-            # preview-render worker; results are applied in
-            # _on_preview_render_result. The Qt overlay is drawn by the canvas.
+        if use_qt_overlay and len(self._latest_frames) <= INLINE_PREVIEW_MAX_CAMERAS:
+            # Few cameras: prepare the display frame on the UI thread. The work
+            # is small and this avoids the render-worker round-trip latency, so
+            # the live view feels immediate. The Qt overlay is drawn by the
+            # canvas from the detections/overlay state.
+            display_previews = {
+                source_id: self._downscale_for_display(
+                    self._display_calibration_preview_frame(
+                        source_id,
+                        self._prepare_calibration_preview_frame(source_id, frame.frame_bgr),
+                    )
+                )
+                for source_id, frame in self._latest_frames.items()
+            }
+            overlay_states = self._build_preview_overlay_states(detections, sample_counts)
+            self._update_preview_panel(display_previews, detections, sample_counts, overlay_states)
+            self._last_rendered_frame_indices = frame_indices
+        elif use_qt_overlay:
+            # Many cameras: offload display prep to the preview-render worker;
+            # results are applied in _on_preview_render_result.
             self._submit_preview_render(frame_indices)
         else:
             # Legacy synchronous path: cv2-bakes the overlay onto the frame.
@@ -1572,6 +1591,9 @@ class MainWindow(QMainWindow):
         self._latest_frames = frames
         self._active_camera_count = len(frames)
         self._refresh_live_status()
+        # Render as soon as a frame arrives (frame-driven) for the lowest
+        # latency, instead of waiting for the next display-timer tick.
+        self._update_calibration_preview()
 
     def _build_calibration_preview_frame(
         self,

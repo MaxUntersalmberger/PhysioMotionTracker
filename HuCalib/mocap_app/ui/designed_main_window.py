@@ -132,7 +132,9 @@ class _PreviewCanvas(QLabel):
             painter.end()
             return
 
-        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, False)
+        # Smooth scaling avoids the jagged/shimmering look (which reads as
+        # "smearing") when the frame is scaled to the tile.
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
         image_rect = self._image_rect()
         painter.drawPixmap(image_rect, self._frame_pixmap, QtCore.QRectF(self._frame_pixmap.rect()))
         overlay = self._overlay_pixmap(image_rect)
@@ -1105,14 +1107,19 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_resolution_combo.addItem("960 x 540", (960, 540))
         self._capture_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._capture_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        self._capture_resolution_combo.setCurrentIndex(3)
+        # Default to the camera's native resolution. Requesting a higher
+        # resolution than the sensor supports makes the driver upscale, which
+        # looks blurry; Auto keeps the real, sharp frame.
+        self._capture_resolution_combo.setCurrentIndex(0)
         self._preview_resolution_combo = QComboBox()
         self._preview_resolution_combo.addItem("Auto", (0, 0))
         self._preview_resolution_combo.addItem("640 x 480", (640, 480))
         self._preview_resolution_combo.addItem("960 x 540", (960, 540))
         self._preview_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._preview_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        self._preview_resolution_combo.setCurrentIndex(1)
+        # Auto: show the capture frame without an extra downscale, so the
+        # preview is as sharp as the camera allows.
+        self._preview_resolution_combo.setCurrentIndex(0)
         self._probe_max_spin = self._spin(1, 20, 10)
 
         self._chess_cols_spin = self._spin(2, 30, 9)

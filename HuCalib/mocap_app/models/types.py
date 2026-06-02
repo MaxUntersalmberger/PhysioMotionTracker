@@ -151,10 +151,10 @@ class PipelineResult:
 class RuntimeTuning:
     """Runtime performance and workload controls surfaced by the UI."""
 
-    capture_fps: float = 20.0
+    capture_fps: float = 30.0
     capture_width: int = 0
     capture_height: int = 0
-    preview_fps: float = 20.0
+    preview_fps: float = 30.0
     preview_max_width: int = 640
     preview_max_height: int = 480
     calibration_detection_hz: float = 5.0
