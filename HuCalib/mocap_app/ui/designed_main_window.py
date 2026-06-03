@@ -1127,10 +1127,11 @@ class DesignedCalibrationPanel(QtCore.QObject):
         self._capture_resolution_combo.addItem("960 x 540", (960, 540))
         self._capture_resolution_combo.addItem("1280 x 720", (1280, 720))
         self._capture_resolution_combo.addItem("1920 x 1080", (1920, 1080))
-        # Capture at a quality resolution (used for detection/calibration and
-        # recording). Lower this in advanced settings if the camera can't run it
-        # at full frame rate.
-        self._capture_resolution_combo.setCurrentIndex(3)
+        # Default to 640x480: the resolution most webcams run at full frame rate,
+        # so the live view stays smooth. It is still a standard, sharp
+        # calibration resolution. Raise this in advanced settings for more detail
+        # if the camera can sustain a higher resolution at a good frame rate.
+        self._capture_resolution_combo.setCurrentIndex(1)
         self._preview_resolution_combo = QComboBox()
         self._preview_resolution_combo.addItem("Auto", (0, 0))
         self._preview_resolution_combo.addItem("640 x 480", (640, 480))
