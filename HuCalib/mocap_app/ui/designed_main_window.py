@@ -603,38 +603,44 @@ class DesignedPreviewTile(QFrame):
         self._popout: DesignedPreviewPopout | None = None
 
         self._display_name = source_id
+        # Compact controls so they fit inside a small camera card without the
+        # labels getting clipped.
         self._title_button = QPushButton(source_id)
         self._title_button.setToolTip("Camera hernoemen")
-        self._title_button.setMinimumWidth(72)
-        self._title_button.setMaximumWidth(240)
-        self._open_button = QPushButton("Vergroten")
+        self._title_button.setMaximumWidth(150)
+        self._open_button = QPushButton("Groot")
         self._open_button.setToolTip("Camerabeeld in apart venster openen")
-        self._open_button.setMinimumWidth(58)
         self._open_button.setCheckable(True)
         self._auto_button = QPushButton("Auto")
         self._auto_button.setToolTip("Automatisch vastleggen starten")
-        self._auto_button.setMinimumWidth(58)
         self._auto_button.setCheckable(True)
         self._overlay_button = QPushButton("Overlay")
         self._overlay_button.setToolTip("Detectie-overlay aan/uit voor deze camera")
-        self._overlay_button.setMinimumWidth(70)
         self._overlay_button.setCheckable(True)
         self._overlay_button.setChecked(True)
-        self._mirror_button = QPushButton("Spiegelen")
+        self._mirror_button = QPushButton("Spiegel")
         self._mirror_button.setToolTip("Camerabeeld spiegelen")
-        self._mirror_button.setMinimumWidth(62)
         self._mirror_button.setCheckable(True)
-        self._undistort = QPushButton("Corrigeren")
+        self._undistort = QPushButton("Lens")
         self._undistort.setToolTip("Lenscorrectie-preview aan/uit")
-        self._undistort.setMinimumWidth(82)
         self._undistort.setCheckable(True)
         self._delete_button = QPushButton("X")
         self._delete_button.setToolTip("Deze bron uit de lijst verwijderen")
-        self._delete_button.setFixedWidth(42)
+        self._delete_button.setFixedWidth(28)
+        for _btn in (
+            self._title_button,
+            self._open_button,
+            self._auto_button,
+            self._overlay_button,
+            self._mirror_button,
+            self._undistort,
+            self._delete_button,
+        ):
+            _btn.setProperty("compact", True)
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
-        controls.setSpacing(8)
+        controls.setSpacing(4)
         controls.addWidget(self._title_button)
         controls.addStretch(1)
         controls.addWidget(self._open_button)
@@ -644,8 +650,9 @@ class DesignedPreviewTile(QFrame):
         controls.addWidget(self._undistort)
         controls.addWidget(self._delete_button)
 
+        # Fixed, compact video area so each camera stays a small card in the grid.
         self._image = _PreviewCanvas("Geen beeld")
-        self._image.setMinimumSize(1, 1)
+        self._image.setFixedSize(380, 285)
 
         self._status = QLabel("Wachten op livebeeld")
         self._status.setWordWrap(True)
@@ -656,17 +663,18 @@ class DesignedPreviewTile(QFrame):
         self._progress.setFormat("0/100")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(5)
         layout.addLayout(controls)
-        layout.addWidget(self._image, stretch=1)
+        layout.addWidget(self._image)
         layout.addWidget(self._status)
         layout.addWidget(self._progress)
 
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setProperty("camera-tile", True)
-        self.setMinimumSize(220, 180)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Size to content so the card stays compact and the grid can pack the
+        # cards from the top-left instead of stretching one over the whole area.
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         self._title_button.clicked.connect(self._rename_camera)
         self._open_button.clicked.connect(self._toggle_popout)
@@ -1933,14 +1941,9 @@ class DesignedCalibrationPanel(QtCore.QObject):
 
         for source_id in sorted(existing - requested):
             tile = self._tiles.pop(source_id)
-            box = self._tile_boxes.pop(source_id, None)
             tile.close_popout()
-            if box is not None:
-                self._camera_grid.removeWidget(box)
-                box.deleteLater()  # deletes the tile it owns too
-            else:
-                self._camera_grid.removeWidget(tile)
-                tile.deleteLater()
+            self._camera_grid.removeWidget(tile)
+            tile.deleteLater()
 
         for source_id in source_ids:
             if source_id in self._tiles:
@@ -1953,9 +1956,6 @@ class DesignedCalibrationPanel(QtCore.QObject):
             tile.remove_requested.connect(self._remove_source)
             tile.name_changed.connect(self._on_camera_name_changed)
             self._tiles[source_id] = tile
-            # Wrap the whole tile so the camera panel stays a centered box
-            # instead of a full-width card.
-            self._tile_boxes[source_id] = _AspectRatioBox(tile, 1.2, max_width=460)
 
         self._source_order = list(source_ids)
         self._rebuild_camera_grid()
@@ -1969,47 +1969,42 @@ class DesignedCalibrationPanel(QtCore.QObject):
             if widget is not None:
                 widget.setParent(None)
 
-        # Clear any stretch left over from a previous layout so dropped rows or
-        # columns stop reserving space (e.g. going from 3 cameras back to 1).
+        # Clear any stretch left over from a previous layout.
         for col in range(self._camera_grid.columnCount()):
             self._camera_grid.setColumnStretch(col, 0)
         for row in range(self._camera_grid.rowCount()):
             self._camera_grid.setRowStretch(row, 0)
 
+        # The cards are fixed-size; pack them from the top-left instead of
+        # stretching/centering one large field in the middle.
+        top_left = Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+        self._camera_grid.setAlignment(top_left)
+
         count = len(self._source_order)
         show_add = count < _MAX_CAMERAS
         total_cells = max(1, count + (1 if show_add else 0))
 
-        # Roughly square grid; cap the column count so cells don't get tiny.
+        # Roughly square grid; cap the column count so it doesn't get too wide.
         columns = 1
         while columns * columns < total_cells:
             columns += 1
         columns = min(columns, 4)
-        rows = (total_cells + columns - 1) // columns
 
-        # Each camera is a block in the grid.
         for index, source_id in enumerate(self._source_order):
             self._camera_grid.addWidget(
-                self._tile_boxes[source_id], index // columns, index % columns
+                self._tiles[source_id], index // columns, index % columns, alignment=top_left
             )
 
-        # The add button sits in the next free cell, a bit smaller and centered.
+        # The add button sits in the next free cell, compact.
         if show_add:
             self._add_camera_button.setSizePolicy(
                 QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
             )
-            self._add_camera_button.setMinimumHeight(44 if count == 0 else 40)
+            self._add_camera_button.setMinimumHeight(36)
+            self._add_camera_button.setMinimumWidth(150)
             self._camera_grid.addWidget(
-                self._add_camera_button,
-                count // columns,
-                count % columns,
-                alignment=Qt.AlignmentFlag.AlignCenter,
+                self._add_camera_button, count // columns, count % columns, alignment=top_left
             )
-
-        for col in range(columns):
-            self._camera_grid.setColumnStretch(col, 1)
-        for row in range(rows):
-            self._camera_grid.setRowStretch(row, 1)
 
         self._refresh_add_camera_button()
 

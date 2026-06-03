@@ -324,6 +324,13 @@ QFrame#frame_results_grid {
     border: none;
 }
 
+/* Compact buttons for the small camera-card control row */
+QPushButton[compact="true"] {
+    padding: 2px 7px;
+    min-height: 22px;
+    font-size: 9pt;
+}
+
 /* Camera tile internals (set by tab_cameras) */
 QFrame[camera-tile="true"] {
     background-color: #ffffff;
